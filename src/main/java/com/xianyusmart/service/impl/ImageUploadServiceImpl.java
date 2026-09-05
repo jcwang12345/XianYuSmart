@@ -4,6 +4,7 @@ import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.ImageUploadService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -43,6 +44,9 @@ public class ImageUploadServiceImpl implements ImageUploadService {
     
     @Autowired
     private AccountService accountService;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
     
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
@@ -71,7 +75,7 @@ public class ImageUploadServiceImpl implements ImageUploadService {
             }
             
             // 上传到闲鱼CDN
-            String cdnUrl = uploadToGoofishCDN(cookie, compressedData, filename);
+            String cdnUrl = uploadToGoofishCDN(accountId, cookie, compressedData, filename);
             if (cdnUrl == null) {
                 return ResultObject.failed("上传到闲鱼CDN失败");
             }
@@ -174,7 +178,7 @@ public class ImageUploadServiceImpl implements ImageUploadService {
         }
     }
     
-    private String uploadToGoofishCDN(String cookie, byte[] imageData, String filename) {
+    private String uploadToGoofishCDN(Long accountId, String cookie, byte[] imageData, String filename) {
         try {
             String boundary = "----WebKitFormBoundary" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
             
@@ -196,7 +200,7 @@ public class ImageUploadServiceImpl implements ImageUploadService {
                     .uri(URI.create(UPLOAD_URL))
                     .header("Cookie", cookie)
                     .header("Referer", "https://www.goofish.com/")
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("User-Agent", accountBrowserProfileService.userAgentForAccount(accountId))
                     .header("Content-Type", "multipart/form-data; boundary=" + boundary)
                     .header("x-requested-with", "XMLHttpRequest")
                     .header("Accept", "application/json, text/javascript, */*; q=0.01")
@@ -208,7 +212,7 @@ public class ImageUploadServiceImpl implements ImageUploadService {
             
             if (response.statusCode() == 200) {
                 String responseBody = response.body();
-                log.debug("上传响应: {}", responseBody);
+                log.debug("上传响应长度: {}", responseBody == null ? 0 : responseBody.length());
                 
                 return parseUploadResponse(responseBody);
             } else if (response.statusCode() == 302 || response.statusCode() == 301) {
@@ -260,7 +264,7 @@ public class ImageUploadServiceImpl implements ImageUploadService {
                 return root.get("data").get("fileUrl").asText();
             }
             
-            log.error("无法从响应中提取图片URL: {}", responseBody);
+            log.error("无法从上传响应中提取图片URL");
             return null;
             
         } catch (Exception e) {

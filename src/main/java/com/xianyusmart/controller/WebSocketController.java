@@ -375,9 +375,6 @@ public class WebSocketController {
 
             if (cookie != null) {
                 respDTO.setCookieStatus(cookie.getCookieStatus());
-                respDTO.setCookieText(cookie.getCookieText());
-                respDTO.setMH5Tk(cookie.getMH5Tk());
-                respDTO.setWebsocketToken(cookie.getWebsocketToken());
                 respDTO.setTokenExpireTime(cookie.getTokenExpireTime());
 
                 // 构建简洁的状态信息
@@ -401,8 +398,6 @@ public class WebSocketController {
                 log.debug("✅ WebSocket状态: {}", statusInfo);
             } else {
                 respDTO.setCookieStatus(null);
-                respDTO.setCookieText(null);
-                respDTO.setWebsocketToken(null);
                 respDTO.setTokenExpireTime(null);
 
                 log.warn("⚠️ WebSocket状态: 账号ID={}, 连接={}, Cookie=未找到",
@@ -1003,9 +998,6 @@ public class WebSocketController {
         private Boolean connected;     // 是否已连接
         private String status;         // 连接状态描述
         private Integer cookieStatus;  // Cookie状态 1:有效 2:过期 3:失效
-        private String cookieText;     // Cookie值
-        private String mH5Tk;          // H5 Token (_m_h5_tk)
-        private String websocketToken; // WebSocket Token
         private Long tokenExpireTime;  // Token过期时间戳（毫秒）
         private Boolean autoDeliveryOn; // 是否有商品开启了自动发货
         private Boolean autoReplyOn;     // 是否有商品开启了自动回复

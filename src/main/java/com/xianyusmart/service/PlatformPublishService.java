@@ -227,7 +227,7 @@ public class PlatformPublishService {
             }
             return Map.of("success", true, "itemId", goodsId, "onSale", false);
         }
-        try (BrowserContext context = playwrightManager.createContext()) {
+        try (BrowserContext context = playwrightManager.createContext(accountId)) {
             addCookies(context, cookieText);
             Page page = context.newPage();
             page.navigate("https://www.goofish.com/item?id=" + goodsId,
@@ -245,6 +245,7 @@ public class PlatformPublishService {
                 confirmButton.click();
             }
             page.waitForTimeout(2000);
+            playwrightManager.persistStorageState(accountId, context);
             return Map.of("success", true, "itemId", goodsId, "onSale", onSale);
         }
     }

@@ -15,6 +15,9 @@ services:
       - --collation-server=utf8mb4_0900_ai_ci
       - --default-time-zone=+08:00
       - --max-connections=100
+      # Flyway V3 creates tenant-normalization triggers. MySQL with binary logging
+      # rejects trigger creation by the application user unless this is enabled.
+      - --log-bin-trust-function-creators=1
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -39,6 +42,7 @@ services:
       DB_USERNAME: ${DB_USERNAME:-xianyusmart}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ACCOUNT_DATA_ENCRYPTION_KEY: ${ACCOUNT_DATA_ENCRYPTION_KEY:?ACCOUNT_DATA_ENCRYPTION_KEY is required}
       JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-28800000}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}

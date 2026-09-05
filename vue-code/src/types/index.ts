@@ -14,6 +14,11 @@ export interface Account {
   status: number
   createdTime: string
   updatedTime: string
+  runtimeProfileKey?: string
+  runtimeProfileType?: 'DESKTOP_WEB'
+  runtimePlatform?: 'LINUX' | 'MACOS' | 'WINDOWS'
+  runtimeViewport?: string
+  browserStateReady?: boolean
 }
 
 // 商品类型
@@ -73,7 +78,9 @@ export interface Message {
 export interface QRLoginSession {
   sessionId: string
   qrCodeUrl: string
-  status: 'pending' | 'scanned' | 'confirmed' | 'expired'
+  status: 'pending' | 'scanned' | 'confirmed' | 'expired' | 'cancelled' | 'verification_required' | 'error'
+  accountId?: number
+  message?: string
 }
 
 // 自动发货配置

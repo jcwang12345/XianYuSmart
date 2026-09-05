@@ -2,10 +2,11 @@ import { request } from '@/utils/request'
 import type { ApiResponse, QRLoginSession } from '@/types'
 
 // 生成二维码
-export function generateQRCode() {
+export function generateQRCode(targetAccountId?: number) {
   return request<QRLoginSession>({
     url: '/qrlogin/generate',
-    method: 'POST'
+    method: 'POST',
+    data: targetAccountId ? { targetAccountId } : {}
   })
 }
 
@@ -13,14 +14,6 @@ export function generateQRCode() {
 export function getQRCodeStatus(sessionId: string) {
   return request<QRLoginSession>({
     url: `/qrlogin/status/${sessionId}`,
-    method: 'POST'
-  })
-}
-
-// 获取 Cookie
-export function getQRCodeCookies(sessionId: string) {
-  return request<{ cookies: string; unb: string }>({
-    url: `/qrlogin/cookies/${sessionId}`,
     method: 'POST'
   })
 }

@@ -92,6 +92,13 @@ const getStatusBg = (status: number) => {
           <span class="account-card__value">{{ account.id }}</span>
         </div>
         <div class="account-card__row">
+          <span class="account-card__label">运行档案</span>
+          <span class="account-card__value">
+            桌面 Web · {{ account.runtimeViewport || '初始化中' }} ·
+            {{ account.browserStateReady ? '状态已保存' : '状态待建立' }}
+          </span>
+        </div>
+        <div class="account-card__row">
           <div class="account-card__label-icon"><IconClock /></div>
           <span class="account-card__label">创建</span>
           <span class="account-card__value">{{ formatTime(account.createdTime) }}</span>
@@ -131,6 +138,7 @@ const getStatusBg = (status: number) => {
           <th class="table__th">UNB</th>
           <th class="table__th">账号备注</th>
           <th class="table__th table__th--status">状态</th>
+          <th class="table__th">账号运行档案</th>
           <th class="table__th table__th--time">创建时间</th>
           <th class="table__th table__th--time">更新时间</th>
           <th class="table__th table__th--actions">操作</th>
@@ -151,6 +159,14 @@ const getStatusBg = (status: number) => {
             >
               {{ getAccountStatusText(account.status).text }}
             </span>
+          </td>
+          <td class="table__td">
+            <div>桌面 Web · {{ account.runtimePlatform || '-' }}</div>
+            <div class="profile-meta">
+              {{ account.runtimeViewport || '初始化中' }} ·
+              {{ account.browserStateReady ? '状态已保存' : '状态待建立' }} ·
+              {{ account.runtimeProfileKey?.slice(0, 8) || '-' }}
+            </div>
           </td>
           <td class="table__td table__td--time">{{ formatTime(account.createdTime) }}</td>
           <td class="table__td table__td--time">{{ formatTime(account.updatedTime) }}</td>
@@ -202,6 +218,12 @@ const getStatusBg = (status: number) => {
   --c-blur: blur(28px) saturate(1.8);
   --c-shadow-sm: 0 8px 32px rgba(0,0,0,0.10), 0 1.5px 4px rgba(0,0,0,0.06);
   --c-shadow-md: 0 16px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.profile-meta {
+  margin-top: 3px;
+  color: var(--c-text-2);
+  font-size: 12px;
 }
 
 /* ============================================================

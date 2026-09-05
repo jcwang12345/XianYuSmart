@@ -105,7 +105,6 @@ public class ItemServiceImpl implements ItemService {
             }
             
             log.info("API调用成功，响应长度: {}", response.length());
-            log.info("API响应完整内容: {}", response);
 
             // 解析响应
             log.info("开始解析响应JSON...");
@@ -643,14 +642,11 @@ public class ItemServiceImpl implements ItemService {
             }
             
             log.info("API响应成功，响应长度: {}, itemId={}", response.length(), itemId);
-            log.info("mtop.taobao.idle.pc.detail 完整响应: itemId={}, response={}", itemId, response);
             
             // 检查响应是否成功
             if (!XianyuApiUtils.isSuccess(response)) {
                 String error = XianyuApiUtils.extractError(response);
                 log.error("API返回失败: {}, itemId={}", error, itemId);
-                // 打印完整响应用于调试
-                log.error("完整响应内容: {}", response);
                 return null;
             }
             
@@ -660,7 +656,6 @@ public class ItemServiceImpl implements ItemService {
             Map<String, Object> data = XianyuApiUtils.extractData(response);
             if (data == null) {
                 log.error("无法提取data字段, itemId={}", itemId);
-                log.error("响应内容: {}", response);
                 return null;
             }
             

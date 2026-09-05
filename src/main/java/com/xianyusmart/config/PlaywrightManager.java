@@ -8,6 +8,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import com.xianyusmart.service.AccountBrowserProfileService;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -19,6 +20,12 @@ import java.util.concurrent.locks.ReentrantLock;
 @Slf4j
 @Component
 public class PlaywrightManager {
+
+    private final AccountBrowserProfileService accountBrowserProfileService;
+
+    public PlaywrightManager(AccountBrowserProfileService accountBrowserProfileService) {
+        this.accountBrowserProfileService = accountBrowserProfileService;
+    }
 
     private volatile Playwright playwright;
     private volatile Browser browser;
@@ -65,18 +72,22 @@ public class PlaywrightManager {
     }
 
     public BrowserContext createContext() {
+        throw new IllegalArgumentException("创建浏览器上下文必须指定闲鱼账号");
+    }
+
+    public BrowserContext createContext(Long accountId) {
         lock.lock();
         try {
             ensureBrowserReady();
-            Browser.NewContextOptions contextOptions = new Browser.NewContextOptions()
-                    .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            Browser.NewContextOptions contextOptions =
+                    accountBrowserProfileService.contextOptions(accountId, browser.version());
             return browser.newContext(contextOptions);
         } catch (Exception e) {
             log.error("创建BrowserContext失败，尝试重建浏览器实例", e);
             try {
                 rebuild();
-                Browser.NewContextOptions contextOptions = new Browser.NewContextOptions()
-                        .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                Browser.NewContextOptions contextOptions =
+                        accountBrowserProfileService.contextOptions(accountId, browser.version());
                 return browser.newContext(contextOptions);
             } catch (Exception ex) {
                 log.error("重建浏览器后仍然失败", ex);
@@ -85,6 +96,10 @@ public class PlaywrightManager {
         } finally {
             lock.unlock();
         }
+    }
+
+    public void persistStorageState(Long accountId, BrowserContext context) {
+        accountBrowserProfileService.persistStorageState(accountId, context);
     }
 
     private void ensureBrowserReady() {

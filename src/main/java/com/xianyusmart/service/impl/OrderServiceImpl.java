@@ -262,7 +262,7 @@ public class OrderServiceImpl implements OrderService {
             dataMap.put("picList", new String[0]);
             dataMap.put("newUnconsign", true);
             
-            log.info("【账号{}】data参数: {}", accountId, dataMap);
+            log.debug("【账号{}】确认发货请求参数已构造", accountId);
             
             XianyuApiCallUtils.ApiCallResult result = xianyuApiCallUtils.callApiWithRetry(
                     accountId, 

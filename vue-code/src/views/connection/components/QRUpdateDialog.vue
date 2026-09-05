@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { generateQRCode, getQRCodeStatus, getQRCodeCookies } from '@/api/qrlogin'
-import { updateCookie } from '@/api/websocket'
+import { generateQRCode, getQRCodeStatus } from '@/api/qrlogin'
 import { showSuccess, showError } from '@/utils'
 import type { QRLoginSession } from '@/types'
 
@@ -35,7 +34,7 @@ watch(() => props.modelValue, (newVal) => {
 
 const generateQR = async () => {
   try {
-    const response = await generateQRCode()
+    const response = await generateQRCode(props.accountId)
     if (response.code === 0 || response.code === 200) {
       qrCodeUrl.value = response.data?.qrCodeUrl || ''
       sessionId.value = response.data?.sessionId || ''
@@ -79,6 +78,13 @@ const startPolling = () => {
             statusText.value = '二维码已过期'
             stopPolling()
             break
+          case 'error':
+          case 'cancelled':
+          case 'verification_required':
+            statusText.value = data?.message || '更新失败，请重试'
+            showError(statusText.value)
+            stopPolling()
+            break
         }
       }
     } catch (error) {
@@ -97,46 +103,9 @@ const stopPolling = () => {
 }
 
 const handleLoginSuccess = async () => {
-  try {
-    // 1. 获取Cookie
-    const cookieRes = await getQRCodeCookies(sessionId.value)
-    if (cookieRes.code !== 0 && cookieRes.code !== 200) {
-      showError(cookieRes.msg || '获取Cookie失败')
-      handleClose()
-      return
-    }
-
-    // 2. 直接使用返回的Cookie字符串和UNB
-    const cookieText = cookieRes.data?.cookies || ''
-    if (!cookieText) {
-      showError('Cookie为空，请重试')
-      handleClose()
-      return
-    }
-
-    // 3. 更新Cookie
-    const cookieUpdateRes = await updateCookie({
-      xianyuAccountId: props.accountId,
-      cookieText: cookieText
-    })
-
-    if (cookieUpdateRes.code !== 0 && cookieUpdateRes.code !== 200) {
-      showError(cookieUpdateRes.msg || '更新Cookie失败')
-      handleClose()
-      return
-    }
-
-    // 4. 后端已使用最新Cookie完成连接刷新
-    showSuccess(cookieUpdateRes.data?.message || 'Cookie更新成功，连接已刷新')
-
-    emit('success')
-    handleClose()
-
-  } catch (error: any) {
-    console.error('更新失败:', error)
-    showError(error.message || '更新失败')
-    handleClose()
-  }
+  showSuccess('Cookie更新成功')
+  emit('success')
+  handleClose()
 }
 
 const handleClose = () => {

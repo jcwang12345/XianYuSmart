@@ -2,6 +2,7 @@ package com.xianyusmart.utils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import com.xianyusmart.service.AccountBrowserProfileService;
 
 import java.util.HashMap;
 import java.util.List;
@@ -35,7 +36,7 @@ public class XianyuApiUtils {
     public static Map<String, String> buildStandardHeaders(String cookiesStr) {
         Map<String, String> headers = new HashMap<>();
         headers.put("Cookie", cookiesStr);
-        headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
+        headers.put("User-Agent", AccountBrowserProfileService.defaultDesktopUserAgent());
         headers.put("Accept", "application/json");
         headers.put("Accept-Language", "zh-CN,zh;q=0.9");
         headers.put("Cache-Control", "no-cache");
@@ -45,9 +46,13 @@ public class XianyuApiUtils {
         headers.put("Sec-Fetch-Dest", "empty");
         headers.put("Sec-Fetch-Mode", "cors");
         headers.put("Sec-Fetch-Site", "same-site");
-        headers.put("Sec-Ch-Ua", "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\"");
+        headers.put("Sec-Ch-Ua", "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"146\", \"Chromium\";v=\"146\"");
         headers.put("Sec-Ch-Ua-Mobile", "?0");
-        headers.put("Sec-Ch-Ua-Platform", "\"Windows\"");
+        headers.put("Sec-Ch-Ua-Platform", "\"" + switch (AccountBrowserProfileService.runtimePlatform()) {
+            case "MACOS" -> "macOS";
+            case "WINDOWS" -> "Windows";
+            default -> "Linux";
+        } + "\"");
         return headers;
     }
     

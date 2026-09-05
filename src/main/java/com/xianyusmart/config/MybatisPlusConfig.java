@@ -3,6 +3,7 @@ package com.xianyusmart.config;
 import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.xianyusmart.context.UserContext;
@@ -30,7 +31,8 @@ public class MybatisPlusConfig {
             "xianyu_goods_sku_property", "xianyu_human_intervention_record",
             "xianyu_buyer_profile", "xianyu_notification_channel", "xianyu_notification_log",
             "xianyu_kami_external_request",
-            "merchant_resource", "merchant_task", "merchant_distribution", "merchant_short_link"
+            "merchant_resource", "merchant_task", "merchant_distribution", "merchant_short_link",
+            "xianyu_device_profile"
     );
 
     /**
@@ -52,6 +54,7 @@ public class MybatisPlusConfig {
                 return TenantContext.get() == null || !TENANT_TABLES.contains(tableName.toLowerCase());
             }
         }));
+        interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
         return interceptor;
     }

@@ -1,5 +1,6 @@
 package com.xianyusmart.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 import java.util.HashMap;
 import java.util.Map;
@@ -20,6 +21,12 @@ public class QRLoginSession {
     private long expireTime = 300000; // 5分钟过期（毫秒）
     private Map<String, String> params = new HashMap<>();
     private String verificationUrl;
+    @JsonIgnore
+    private Long tenantId;
+    private Long accountId;
+    private Long targetAccountId;
+    @JsonIgnore
+    private String errorMessage;
     
     public QRLoginSession(String sessionId) {
         this.sessionId = sessionId;

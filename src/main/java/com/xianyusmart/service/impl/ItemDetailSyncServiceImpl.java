@@ -159,7 +159,7 @@ public class ItemDetailSyncServiceImpl implements ItemDetailSyncService {
                 return false;
             }
 
-            log.debug("mtop.taobao.idle.pc.detail 响应: itemId={}, response={}", itemId, response);
+            log.debug("mtop.taobao.idle.pc.detail 响应已接收: itemId={}, length={}", itemId, response.length());
             JsonNode itemDONode = readSuccessfulItem(response, itemId);
             if (itemDONode == null) {
                 log.warn("商品详情同步被平台拒绝: itemId={}", itemId);

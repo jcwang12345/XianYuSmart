@@ -27,7 +27,7 @@ public class HttpClientUtils {
      */
     public static String post(String url, Map<String, String> headers, Map<String, String> body) {
         try {
-            log.info("发送POST请求: {}", url);
+            log.info("发送POST请求");
             HttpHeaders httpHeaders = new HttpHeaders();
             httpHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
             
@@ -46,7 +46,7 @@ public class HttpClientUtils {
                         }
                         formData.append(key).append("=").append(URLEncoder.encode(value, "UTF-8"));
                     } catch (UnsupportedEncodingException e) {
-                        log.error("URL编码失败: key={}, value={}", key, value, e);
+                        log.error("URL编码失败: key={}", key, e);
                     }
                 });
                 log.debug("表单数据长度: {}", formData.length());
@@ -59,7 +59,7 @@ public class HttpClientUtils {
             log.info("HTTP请求完成，状态码: {}", response.getStatusCode());
             return response.getBody();
         } catch (Exception e) {
-            log.error("HTTP POST请求失败: url={}", url, e);
+            log.error("HTTP POST请求失败", e);
             return null;
         }
     }
@@ -75,7 +75,7 @@ public class HttpClientUtils {
      */
     public static HttpResponseResult postWithHeaders(String url, Map<String, String> headers, Map<String, String> body) {
         try {
-            log.info("发送POST请求(带响应头): {}", url);
+            log.info("发送POST请求(带响应头)");
             HttpHeaders httpHeaders = new HttpHeaders();
             httpHeaders.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
 
@@ -93,7 +93,7 @@ public class HttpClientUtils {
                         }
                         formData.append(key).append("=").append(URLEncoder.encode(value, "UTF-8"));
                     } catch (UnsupportedEncodingException e) {
-                        log.error("URL编码失败: key={}, value={}", key, value, e);
+                        log.error("URL编码失败: key={}", key, e);
                     }
                 });
             }
@@ -113,7 +113,7 @@ public class HttpClientUtils {
 
             return result;
         } catch (Exception e) {
-            log.error("HTTP POST请求失败(带响应头): url={}", url, e);
+            log.error("HTTP POST请求失败(带响应头)", e);
             return null;
         }
     }
@@ -163,7 +163,7 @@ public class HttpClientUtils {
 
             return response.getBody();
         } catch (Exception e) {
-            log.error("HTTP GET请求失败: url={}", url, e);
+            log.error("HTTP GET请求失败", e);
             return null;
         }
     }

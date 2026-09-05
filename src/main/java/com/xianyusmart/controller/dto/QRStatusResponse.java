@@ -10,8 +10,7 @@ public class QRStatusResponse {
     
     private String status;
     private String sessionId;
-    private String cookies;
-    private String unb;
+    private Long accountId;
     private String verificationUrl;
     private String message;
 }

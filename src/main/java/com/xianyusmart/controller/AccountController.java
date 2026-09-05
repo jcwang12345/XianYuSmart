@@ -14,6 +14,7 @@ import com.xianyusmart.controller.dto.ManualAddAccountReqDTO;
 import com.xianyusmart.controller.dto.UpdateAccountReqDTO;
 import com.xianyusmart.controller.dto.UpdateAccountRespDTO;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.utils.XianyuSignUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,6 +36,9 @@ public class AccountController {
     @Autowired
     private AccountService accountService;
 
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
+
     /**
      * 获取账号列表
      */
@@ -42,6 +46,7 @@ public class AccountController {
     public ResultObject<GetAccountListRespDTO> getAccountList() {
         try {
             List<XianyuAccount> accounts = accountMapper.selectList(null);
+            accounts.forEach(accountBrowserProfileService::decorate);
             GetAccountListRespDTO respDTO = new GetAccountListRespDTO();
             respDTO.setAccounts(accounts);
             return ResultObject.success(respDTO);
@@ -68,6 +73,7 @@ public class AccountController {
                     reqDTO.getUnb(),
                     reqDTO.getCookie()
             );
+            accountBrowserProfileService.getOrCreate(accountId);
             
             AddAccountRespDTO respDTO = new AddAccountRespDTO();
             respDTO.setAccountId(accountId);
@@ -111,6 +117,7 @@ public class AccountController {
                     unb,
                     normalizedCookie
             );
+            accountBrowserProfileService.getOrCreate(accountId);
             
             AddAccountRespDTO respDTO = new AddAccountRespDTO();
             respDTO.setAccountId(accountId);
@@ -194,6 +201,7 @@ public class AccountController {
             if (account == null) {
                 return ResultObject.failed("账号不存在");
             }
+            accountBrowserProfileService.decorate(account);
             GetAccountDetailRespDTO respDTO = new GetAccountDetailRespDTO();
             respDTO.setAccount(account);
             return ResultObject.success(respDTO);

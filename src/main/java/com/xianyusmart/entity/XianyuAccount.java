@@ -2,6 +2,7 @@ package com.xianyusmart.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
@@ -64,4 +65,16 @@ public class XianyuAccount {
      * 更新时间（SQLite存储为TEXT）
      */
     private String updatedTime;
+
+    /** 仅用于账号管理接口展示，不落在账号主表。 */
+    @TableField(exist = false)
+    private String runtimeProfileKey;
+    @TableField(exist = false)
+    private String runtimeProfileType;
+    @TableField(exist = false)
+    private String runtimePlatform;
+    @TableField(exist = false)
+    private String runtimeViewport;
+    @TableField(exist = false)
+    private Boolean browserStateReady;
 }

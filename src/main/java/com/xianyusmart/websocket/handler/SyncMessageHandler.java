@@ -1,7 +1,6 @@
 package com.xianyusmart.websocket.handler;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xianyusmart.config.WebSocketConfig;
 import com.xianyusmart.entity.XianyuChatMessage;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageData;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageReceivedEvent;
@@ -39,9 +38,6 @@ public class SyncMessageHandler extends AbstractLwpHandler {
     
     @Autowired
     private GoodsInfoService goodsInfoService;
-    
-    @Autowired
-    private WebSocketConfig webSocketConfig;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -109,19 +105,13 @@ public class SyncMessageHandler extends AbstractLwpHandler {
                 continue;
             }
             
-            log.info("【账号{}】加密消息[{}]: {}", accountId, i, encryptedData);
+            log.debug("【账号{}】收到加密消息[{}]，长度={}", accountId, i, encryptedData.length());
             
             // 解密消息
             String decryptedData = MessageDecryptUtils.decrypt(encryptedData);
             if (decryptedData != null) {
-                log.info("【账号{}】解密消息[{}]: {}", accountId, i, decryptedData);
+                log.debug("【账号{}】消息[{}]解密成功，长度={}", accountId, i, decryptedData.length());
                 decryptedMessages.add(decryptedData);
-                
-                // 打印解密后的原始消息（根据配置开关）
-                if (webSocketConfig.isPrintRawMessage()) {
-                    log.info("【账号{}】📝 解密后的原始消息[{}]:\n{}", 
-                            accountId, i, formatJson(decryptedData));
-                }
                 
                 // 解析并发布事件
                 parseAndPublishEvent(accountId, decryptedData, lwp);
@@ -349,7 +339,7 @@ public class SyncMessageHandler extends AbstractLwpHandler {
                         Object level5 = ((Map<?, ?>) level3).get("5");
                         if (level5 instanceof String) {
                             String jsonStr = (String) level5;
-                            log.debug("📋 提取订单ID: 找到字段1.6.3.5={}", jsonStr.length() > 200 ? jsonStr.substring(0, 200) + "..." : jsonStr);
+                            log.debug("📋 已从字段1.6.3.5提取订单信息，载荷长度={}", jsonStr.length());
                             
                             try {
                                 // 解析嵌套的JSON字符串
@@ -509,25 +499,12 @@ public class SyncMessageHandler extends AbstractLwpHandler {
                 return orderId;
             }
             
-            log.warn("⚠️ URL中未找到orderId或id参数: {}", url);
+            log.warn("⚠️ 消息URL中未找到orderId或id参数");
             return null;
             
         } catch (Exception e) {
-            log.error("❌ 从URL提取订单ID失败: {}", url, e);
+            log.error("❌ 从消息URL提取订单ID失败", e);
             return null;
-        }
-    }
-    
-    /**
-     * 格式化JSON字符串（美化输出）
-     */
-    private String formatJson(String json) {
-        try {
-            Object obj = objectMapper.readValue(json, Object.class);
-            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(obj);
-        } catch (Exception e) {
-            // 如果格式化失败，返回原始字符串
-            return json;
         }
     }
     

@@ -32,7 +32,6 @@ public class MessageDecryptUtils {
                 return null;
             }
 
-            log.debug("原始加密数据: {}", encryptedData);
             log.debug("加密数据长度: {}", encryptedData.length());
 
             // 清理数据，移除可能的非ASCII字符
@@ -42,7 +41,7 @@ public class MessageDecryptUtils {
             } catch (Exception e) {
                 // 如果包含非ASCII字符，进行清理
                 cleanedData = new String(encryptedData.getBytes(StandardCharsets.UTF_8), StandardCharsets.US_ASCII);
-                log.debug("清理后的数据: {}", cleanedData);
+                log.debug("清理后的加密数据长度: {}", cleanedData.length());
             }
 
             // Base64解码
@@ -56,7 +55,7 @@ public class MessageDecryptUtils {
                 int missingPadding = cleanedData.length() % 4;
                 if (missingPadding > 0) {
                     cleanedData += "=".repeat(4 - missingPadding);
-                    log.debug("添加填充后: {}", cleanedData);
+                    log.debug("添加填充后的加密数据长度: {}", cleanedData.length());
                 }
                 decodedBytes = Base64.getDecoder().decode(cleanedData);
                 log.debug("添加填充后Base64解码成功，字节长度: {}", decodedBytes.length);
@@ -69,19 +68,19 @@ public class MessageDecryptUtils {
                 
                 // 将MessagePack值转换为JSON字符串
                 String jsonString = value.toJson();
-                log.debug("转换为JSON: {}", jsonString);
+                log.debug("MessagePack转换为JSON，长度: {}", jsonString.length());
                 
                 // 格式化JSON（可选）
                 Object jsonObject = objectMapper.readValue(jsonString, Object.class);
                 String result = objectMapper.writeValueAsString(jsonObject);
-                log.debug("格式化后的JSON: {}", result);
+                log.debug("消息JSON格式化完成，长度: {}", result.length());
                 return result;
                 
             } catch (Exception e) {
                 log.error("MessagePack解码失败", e);
                 // 如果MessagePack解码失败，尝试直接返回字符串
                 String fallback = new String(decodedBytes, StandardCharsets.UTF_8);
-                log.debug("使用fallback返回: {}", fallback);
+                log.debug("使用文本fallback，长度: {}", fallback.length());
                 return fallback;
             }
 

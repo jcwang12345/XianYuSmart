@@ -259,7 +259,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-启动前必须修改 `.env` 中的三个示例密钥。`JWT_SECRET` 至少使用 32 个随机字节，数据库密码不得复用。
+启动前必须修改 `.env` 中的四个示例密钥。`JWT_SECRET` 与 `ACCOUNT_DATA_ENCRYPTION_KEY` 至少使用 32 个随机字节，数据库密码不得复用。账号数据加密密钥用于解密 Cookie、Token 与浏览器状态，首次投入使用后必须稳定保存；直接更换会导致已有凭据无法解密。
 
 启动后访问：`http://localhost:12400`
 
@@ -302,6 +302,7 @@ docker compose --profile proxy up -d --build
 | `DB_PASSWORD` | 业务数据库密码 | 随机强密码 |
 | `DB_ROOT_PASSWORD` | MySQL root 密码 | 与业务密码不同 |
 | `JWT_SECRET` | 登录令牌签名密钥 | 48 字节以上随机值 |
+| `ACCOUNT_DATA_ENCRYPTION_KEY` | Cookie、Token 与浏览器状态加密密钥 | 独立的 48 字节以上随机值，投入使用后不得直接更换 |
 | `ALLOWED_ORIGINS` | 允许访问的前端来源 | 完整 HTTPS 域名 |
 | `TRUST_PROXY` | 是否信任代理头 | 仅 Nginx 部署设为 `true` |
 | `UPDATE_RELEASE_API` | GitHub 发行版 API | 默认使用本项目最新 Release，留空可关闭更新检查 |

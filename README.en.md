@@ -259,7 +259,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-All three example secrets in `.env` must be changed before startup. `JWT_SECRET` must contain at least 32 random bytes, and database passwords must not be reused.
+All four example secrets in `.env` must be changed before startup. `JWT_SECRET` and `ACCOUNT_DATA_ENCRYPTION_KEY` must each contain at least 32 random bytes, and database passwords must not be reused. The account-data key decrypts cookies, tokens, and browser state; store it durably after first use because replacing it directly makes existing credentials unreadable.
 
 Open `http://localhost:12400` after startup.
 
@@ -302,6 +302,7 @@ Copy `.env.example` to `.env`, then update it for the environment:
 | `DB_PASSWORD` | Application database password | Random strong password |
 | `DB_ROOT_PASSWORD` | MySQL root password | Different from the application password |
 | `JWT_SECRET` | Login token signing secret | At least 48 random bytes |
+| `ACCOUNT_DATA_ENCRYPTION_KEY` | Cookie, token, and browser-state encryption key | Independent random value of at least 48 bytes; do not replace after first use |
 | `ALLOWED_ORIGINS` | Frontend origins allowed to access the application | Complete HTTPS domain |
 | `TRUST_PROXY` | Whether proxy headers are trusted | Set to `true` only behind Nginx |
 | `UPDATE_RELEASE_API` | GitHub Releases API | Uses this project's latest Release by default; leave empty to disable update checks |

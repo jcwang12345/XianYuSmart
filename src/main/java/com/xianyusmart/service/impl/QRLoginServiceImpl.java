@@ -4,6 +4,8 @@ import com.xianyusmart.controller.dto.QRLoginResponse;
 import com.xianyusmart.controller.dto.QRLoginSession;
 import com.xianyusmart.controller.dto.QRStatusResponse;
 import com.xianyusmart.service.QRLoginService;
+import com.xianyusmart.service.AccountBrowserProfileService;
+import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.utils.CookieUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -67,7 +69,7 @@ public class QRLoginServiceImpl implements QRLoginService {
     private Headers generateHeaders() {
         // 注意：不要手动设置Accept-Encoding，让OkHttp自动处理gzip
         return new Headers.Builder()
-                .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .add("User-Agent", AccountBrowserProfileService.defaultDesktopUserAgent())
                 .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
                 .add("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                 .add("Upgrade-Insecure-Requests", "1")
@@ -77,7 +79,7 @@ public class QRLoginServiceImpl implements QRLoginService {
     private Headers generateApiHeaders() {
         // 注意：不要手动设置Accept-Encoding，让OkHttp自动处理gzip
         return new Headers.Builder()
-                .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .add("User-Agent", AccountBrowserProfileService.defaultDesktopUserAgent())
                 .add("Accept", "application/json, text/plain, */*")
                 .add("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                 .add("Referer", "https://passport.goofish.com/")
@@ -114,7 +116,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                     String[] parts = cookie.split(";")[0].split("=", 2);
                     if (parts.length == 2) {
                         session.getCookies().put(parts[0], parts[1]);
-                        log.debug("提取到Cookie: {} = {}", parts[0], parts[1].substring(0, Math.min(20, parts[1].length())));
+                        log.debug("二维码会话收到Cookie字段: {}", parts[0]);
                     }
                 }
                 
@@ -123,7 +125,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                 String token = "";
                 if (mh5tk != null && mh5tk.contains("_")) {
                     token = mh5tk.split("_")[0];
-                    log.info("提取到_m_h5_tk token: {}", token.substring(0, Math.min(10, token.length())));
+                    log.info("二维码会话已取得_m_h5_tk token");
                 } else {
                     log.warn("未找到_m_h5_tk，当前cookies: {}", session.getCookies().keySet());
                 }
@@ -164,8 +166,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                                 session.getCookies().put(parts[0], parts[1]);
                             }
                         }
-                        log.info("_m_h5_tk获取成功: sessionId={}, cookies包含: {}", 
-                                session.getSessionId(), session.getCookies().keySet());
+                        log.info("二维码会话已获取签名Cookie，字段数: {}", session.getCookies().size());
                     } else {
                         log.warn("第二次请求失败，状态码: {}", response2.code());
                     }
@@ -212,7 +213,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                 
                 if (matcher.find()) {
                     String jsonString = matcher.group(1);
-                    log.debug("提取到的viewData: {}", jsonString.substring(0, Math.min(200, jsonString.length())));
+                    log.debug("登录页已提取viewData，长度: {}", jsonString.length());
                     
                     JsonObject viewData = gson.fromJson(jsonString, JsonObject.class);
                     JsonObject loginFormData = viewData.getAsJsonObject("loginFormData");
@@ -260,8 +261,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                     }
                 }
                 
-                // 如果都失败了，保存HTML用于调试
-                log.error("无法提取登录参数，HTML内容前1000字符: {}", html.substring(0, Math.min(1000, html.length())));
+                log.error("无法提取登录参数，HTML长度: {}", html.length());
                 
                 // 尝试直接查找所有可能的参数
                 Map<String, String> params = extractParamsFromHtml(html);
@@ -280,11 +280,20 @@ public class QRLoginServiceImpl implements QRLoginService {
 
     
     @Override
-    public QRLoginResponse generateQRCode() {
+    public QRLoginResponse generateQRCode(Long targetAccountId) {
         try {
             // 创建新会话
             String sessionId = UUID.randomUUID().toString();
             QRLoginSession session = new QRLoginSession(sessionId);
+            Long tenantId = TenantContext.get();
+            if (tenantId == null) {
+                throw new IllegalStateException("未识别当前登录用户");
+            }
+            session.setTenantId(tenantId);
+            if (targetAccountId != null && accountService.getXianyuUserId(targetAccountId) == null) {
+                throw new IllegalArgumentException("目标账号不存在或不属于当前用户");
+            }
+            session.setTargetAccountId(targetAccountId);
             
             // 1. 获取m_h5_tk
             getMh5tk(session);
@@ -305,7 +314,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             try (Response response = httpClient.newCall(request).execute()) {
                 if (response.isSuccessful()) {
                     String responseBody = response.body().string();
-                    log.debug("获取二维码接口原始响应: {}", responseBody);
+                    log.debug("二维码接口响应长度: {}", responseBody.length());
                     
                     JsonObject results = gson.fromJson(responseBody, JsonObject.class);
                     JsonObject content = results.getAsJsonObject("content");
@@ -332,7 +341,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                         // 启动状态监控
                         taskExecutor.execute(() -> monitorQRStatus(sessionId));
                         
-                        log.info("二维码生成成功: {}", sessionId);
+                        log.info("二维码生成成功");
                         return new QRLoginResponse(true, sessionId, qrDataUrl, null);
                     } else {
                         return new QRLoginResponse(false, "获取登录二维码失败");
@@ -401,7 +410,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                 return;
             }
             
-            log.info("开始监控二维码状态: {}", sessionId);
+            log.info("开始监控二维码状态");
             
             long maxWaitTime = 300000; // 5分钟
             long startTime = System.currentTimeMillis();
@@ -418,25 +427,25 @@ public class QRLoginServiceImpl implements QRLoginService {
                     
                     if ("CONFIRMED".equals(qrCodeStatus)) {
                         // 登录确认
-                        log.info("扫码登录成功: {}, UNB: {}", sessionId, session.getUnb());
+                        log.info("扫码登录成功");
                         break;
                     } else if ("NEW".equals(qrCodeStatus)) {
                         // 二维码未被扫描，继续轮询
                     } else if ("EXPIRED".equals(qrCodeStatus)) {
                         // 二维码已过期
                         session.setStatus("expired");
-                        log.info("二维码已过期: {}", sessionId);
+                        log.info("二维码已过期");
                         break;
                     } else if ("SCANED".equals(qrCodeStatus)) {
                         // 二维码已被扫描，等待确认
                         if ("waiting".equals(session.getStatus())) {
                             session.setStatus("scanned");
-                            log.info("二维码已扫描，等待确认: {}", sessionId);
+                            log.info("二维码已扫描，等待确认");
                         }
                     } else {
                         // 用户取消确认
                         session.setStatus("cancelled");
-                        log.info("用户取消登录: {}", sessionId);
+                        log.info("用户取消登录");
                         break;
                     }
                     
@@ -451,7 +460,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             // 超时处理
             if (session != null && !Arrays.asList("success", "expired", "cancelled", "verification_required").contains(session.getStatus())) {
                 session.setStatus("expired");
-                log.info("二维码监控超时，标记为过期: {}", sessionId);
+                log.info("二维码监控超时，标记为过期");
             }
             
         } catch (Exception e) {
@@ -495,8 +504,6 @@ public class QRLoginServiceImpl implements QRLoginService {
                                 String iframeUrl = data.get("iframeRedirectUrl").getAsString();
                                 session.setVerificationUrl(iframeUrl);
                                 log.warn("⚠️ 账号被风控，需要手机验证");
-                                log.warn("   - 会话ID: {}", session.getSessionId());
-                                log.warn("   - 验证URL: {}", iframeUrl);
                             } else {
                                 // 登录成功，保存Cookie
                                 log.info("🎉 扫码确认成功！开始保存账号信息...");
@@ -513,7 +520,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                                         session.getCookies().put(parts[0], parts[1]);
                                         if ("unb".equals(parts[0])) {
                                             session.setUnb(parts[1]);
-                                            log.info("✅ 获取到UNB: {}", parts[1]);
+                                            log.info("扫码登录已取得账号标识");
                                         }
                                     }
                                 }
@@ -521,7 +528,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                                 // 恢复之前获取的 _m_h5_tk（如果响应中没有新的）
                                 if (existingMh5tk != null && !session.getCookies().containsKey("_m_h5_tk")) {
                                     session.getCookies().put("_m_h5_tk", existingMh5tk);
-                                    log.info("✅ 恢复之前获取的_m_h5_tk: {}", existingMh5tk.substring(0, Math.min(20, existingMh5tk.length())));
+                                    log.info("已恢复二维码会话中的_m_h5_tk");
                                 }
                                 if (existingMh5tkEnc != null && !session.getCookies().containsKey("_m_h5_tk_enc")) {
                                     session.getCookies().put("_m_h5_tk_enc", existingMh5tkEnc);
@@ -545,7 +552,7 @@ public class QRLoginServiceImpl implements QRLoginService {
     @Override
     public QRStatusResponse getSessionStatus(String sessionId) {
         QRStatusResponse response = new QRStatusResponse();
-        QRLoginSession session = sessions.get(sessionId);
+        QRLoginSession session = ownedSession(sessionId);
         
         if (session == null) {
             response.setStatus("not_found");
@@ -572,11 +579,14 @@ public class QRLoginServiceImpl implements QRLoginService {
                 break;
             case "success":
                 response.setMessage("登录成功！账号已添加");
-                // 如果登录成功，返回Cookie信息
-                if (!session.getCookies().isEmpty() && session.getUnb() != null) {
-                    response.setCookies(CookieUtils.formatCookies(session.getCookies()));
-                    response.setUnb(session.getUnb());
+                response.setAccountId(session.getAccountId());
+                if (session.getTargetAccountId() != null) {
+                    response.setMessage("登录成功！账号凭证已刷新");
                 }
+                break;
+            case "error":
+                response.setMessage(session.getErrorMessage() == null
+                        ? "登录结果保存失败，请重试" : session.getErrorMessage());
                 break;
             case "expired":
                 response.setMessage("二维码已过期，请重新生成");
@@ -613,22 +623,20 @@ public class QRLoginServiceImpl implements QRLoginService {
             case "expired":
             case "cancelled":
             case "verification_required":
+            case "error":
                 return backendStatus;
             default:
                 return "pending";
         }
     }
     
-    @Override
-    public Map<String, String> getSessionCookies(String sessionId) {
+    QRLoginSession ownedSession(String sessionId) {
         QRLoginSession session = sessions.get(sessionId);
-        if (session != null && "success".equals(session.getStatus())) {
-            Map<String, String> result = new HashMap<>();
-            result.put("cookies", CookieUtils.formatCookies(session.getCookies()));
-            result.put("unb", session.getUnb());
-            return result;
+        Long tenantId = TenantContext.get();
+        if (session == null || tenantId == null || !tenantId.equals(session.getTenantId())) {
+            return null;
         }
-        return null;
+        return session;
     }
     
     @Override
@@ -653,7 +661,7 @@ public class QRLoginServiceImpl implements QRLoginService {
         try {
             String unb = session.getUnb();
             if (unb == null || unb.isEmpty()) {
-                log.error("❌ UNB为空，无法保存Cookie: sessionId={}", session.getSessionId());
+            log.error("❌ UNB为空，无法保存Cookie");
                 session.setStatus("error");
                 return;
             }
@@ -667,7 +675,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             if (mH5Tk == null || mH5Tk.isEmpty()) {
                 log.warn("⚠️ Cookie中缺少_m_h5_tk字段！这可能导致后续API调用失败");
             } else {
-                log.info("✅ _m_h5_tk已包含: {}", mH5Tk.substring(0, Math.min(20, mH5Tk.length())));
+                log.info("✅ _m_h5_tk已包含");
             }
             
             // 格式化Cookie字符串
@@ -677,26 +685,52 @@ public class QRLoginServiceImpl implements QRLoginService {
             // 使用UNB作为账号备注（可以后续优化为用户自定义）
             String accountNote = "账号_" + unb.substring(0, Math.min(8, unb.length()));
             
-            // 保存到数据库（包含 m_h5_tk）
-            Long accountId = accountService.saveAccountAndCookie(accountNote, unb, cookieText, mH5Tk);
+            Long accountId;
+            if (session.getTargetAccountId() != null) {
+                String expectedUnb = accountService.getXianyuUserId(session.getTargetAccountId());
+                if (!Objects.equals(expectedUnb, unb)) {
+                    session.setStatus("error");
+                    session.setErrorMessage("扫码账号与待刷新账号不一致，未更新任何凭证");
+                    log.warn("二维码刷新账号校验失败: accountId={}", session.getTargetAccountId());
+                    return;
+                }
+                boolean updated = accountService.updateAccountCookie(
+                        session.getTargetAccountId(), unb, cookieText);
+                accountId = updated ? session.getTargetAccountId() : null;
+            } else {
+                // 新增入口按扫码得到的UNB新增或更新同一账号。
+                accountId = accountService.saveAccountAndCookie(accountNote, unb, cookieText, mH5Tk);
+            }
             
             if (accountId != null && accountId > 0) {
+                session.setAccountId(accountId);
                 log.info("✅ 扫码登录成功！Cookie已保存到数据库");
-                log.info("   - 会话ID: {}", session.getSessionId());
                 log.info("   - 账号ID: {}", accountId);
-                log.info("   - UNB: {}", unb);
                 log.info("   - Cookie字段数: {}", cookies.size());
                 log.info("   - m_h5_tk: {}", mH5Tk != null ? "已保存" : "未提供");
                 log.info("   - 账号备注: {}", accountNote);
+                clearSensitiveSessionData(session);
             } else {
                 log.error("❌ 保存Cookie失败：accountId为空");
                 session.setStatus("error");
+                session.setErrorMessage("账号凭证保存失败，请重试");
             }
             
         } catch (Exception e) {
-            log.error("❌ 保存Cookie到数据库失败: sessionId={}", session.getSessionId(), e);
+            log.error("❌ 保存Cookie到数据库失败", e);
             session.setStatus("error");
         }
+    }
+
+    /**
+     * 凭证写入数据库后立即从内存会话清除，状态轮询只保留账号ID和结果。
+     */
+    private void clearSensitiveSessionData(QRLoginSession session) {
+        session.getCookies().clear();
+        session.getParams().clear();
+        session.setUnb(null);
+        session.setQrContent(null);
+        session.setVerificationUrl(null);
     }
     
     /**

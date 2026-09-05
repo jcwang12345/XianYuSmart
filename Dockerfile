@@ -26,6 +26,11 @@ COPY .mvn/ .mvn/
 COPY mvnw mvnw.cmd pom.xml ./
 RUN chmod +x mvnw
 
+# 浏览器版本只由 Maven 依赖决定，先于业务源码安装。这样普通代码改动不会
+# 反复下载数百 MB 的 Playwright 浏览器。
+RUN --mount=type=cache,target=/root/.m2/repository ./mvnw dependency:build-classpath -Dmdep.outputFile=classpath.txt \
+    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright java -cp "$(cat classpath.txt)" com.microsoft.playwright.CLI install chromium
+
 # 复制后端源码
 COPY src/ src/
 # 复制前端构建产物到 static 目录
@@ -35,10 +40,6 @@ COPY vue-code/src/data/ vue-code/src/data/
 
 # 构建 JAR并执行测试
 RUN --mount=type=cache,target=/root/.m2/repository ./mvnw clean package
-
-# 预置 Playwright Chromium，保证容器内的 Cookie 与 Token 维护功能可用
-RUN --mount=type=cache,target=/root/.m2/repository ./mvnw dependency:build-classpath -Dmdep.outputFile=target/classpath.txt \
-    && PLAYWRIGHT_BROWSERS_PATH=/ms-playwright java -cp "target/classes:$(cat target/classpath.txt)" com.microsoft.playwright.CLI install chromium
 
 # 阶段3: 运行时镜像
 FROM eclipse-temurin:21-jre-jammy

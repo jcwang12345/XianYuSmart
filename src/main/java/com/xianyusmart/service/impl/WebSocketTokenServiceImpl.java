@@ -7,8 +7,11 @@ import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.entity.XianyuCookie;
 import com.xianyusmart.exception.CaptchaRequiredException;
 import com.xianyusmart.mapper.XianyuCookieMapper;
+import com.xianyusmart.security.SensitiveDataCodec;
 
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AccountCredentialCoordinator;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.CookieRefreshService;
 import com.xianyusmart.service.EmailNotifyService;
 import com.xianyusmart.service.OperationLogService;
@@ -117,7 +120,11 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
     /**
      * 每个账号的Token获取锁，防止并发获取
      */
-    private final Map<Long, Object> tokenLocks = new ConcurrentHashMap<>();
+    @Autowired
+    private AccountCredentialCoordinator credentialCoordinator;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
 
     /**
      * 共享的OkHttpClient（用于发送token API请求）
@@ -133,7 +140,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      * 获取账号级别的锁对象
      */
     private Object getTokenLock(Long accountId) {
-        return tokenLocks.computeIfAbsent(accountId, k -> new Object());
+        return credentialCoordinator.lockFor(accountId);
     }
 
     @Override
@@ -232,8 +239,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             if (mh5tk != null && mh5tk.contains("_")) {
                 token = mh5tk.split("_")[0];
             }
-            log.info("【账号{}】签名使用的_m_h5_tk前缀: {}", accountId,
-                    token.isEmpty() ? "空" : token.substring(0, Math.min(10, token.length())) + "...");
+            log.debug("【账号{}】签名Token状态: {}", accountId, token.isEmpty() ? "缺失" : "可用");
 
             // 5. 构建data参数
             String deviceId = getDeviceId(accountId, cookies);
@@ -272,10 +278,12 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     .url(fullUrl)
                     .post(RequestBody.create(formData, MediaType.parse("application/x-www-form-urlencoded")))
                     .header("Host", "h5api.m.goofish.com")
-                    .header("sec-ch-ua-platform", "\"Windows\"")
-                    .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+                    .header("sec-ch-ua-platform", "\"" + accountBrowserProfileService.clientHintPlatformForAccount(accountId) + "\"")
+                    .header("user-agent", accountBrowserProfileService.userAgentForAccount(accountId))
                     .header("accept", "application/json")
-                    .header("sec-ch-ua", "\"Chromium\";v=\"146\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"146\"")
+                    .header("sec-ch-ua", "\"Chromium\";v=\"" + accountBrowserProfileService.browserMajorForAccount(accountId)
+                            + "\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\""
+                            + accountBrowserProfileService.browserMajorForAccount(accountId) + "\"")
                     .header("sec-ch-ua-mobile", "?0")
                     .header("origin", "https://www.goofish.com")
                     .header("sec-fetch-site", "same-site")
@@ -286,9 +294,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     .header("priority", "u=1, i")
                     .header("Cookie", cookiesStr);
 
-            log.info("【账号{}】============", accountId);
-            log.info("【账号{}】1、请求体: data={}", accountId, dataVal);
-            log.info("【账号{}】2、发送POST请求: {}", accountId, fullUrl);
+            log.debug("【账号{}】Token请求已构造，参数长度: {}", accountId, dataVal.length());
 
             // 10. 发送请求（OkHttp能正确返回Set-Cookie头）
             try (Response httpResponse = httpClient.newCall(requestBuilder.build()).execute()) {
@@ -316,8 +322,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     log.info("【账号{}】响应中无Set-Cookie", accountId);
                 }
 
-                log.info("【账号{}】3、响应内容: {}", accountId, responseBody);
-                log.info("【账号{}】============", accountId);
+                log.debug("【账号{}】Token接口响应长度: {}", accountId, responseBody.length());
 
                 if (responseBody == null || responseBody.isEmpty()) {
                     log.error("【账号{}】获取accessToken失败：响应为空", accountId);
@@ -350,8 +355,6 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                             updateAccountStatusToNormal(accountId);
 
                             log.info("【账号{}】accessToken获取成功并已保存到数据库", accountId);
-                            log.debug("【账号{}】accessToken: {}...", accountId,
-                                    accessToken.substring(0, Math.min(20, accessToken.length())));
 
                             operationLogService.log(accountId,
                                 com.xianyusmart.constants.OperationConstants.Type.REFRESH,
@@ -373,7 +376,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     if (needCaptcha) {
                         @SuppressWarnings("unchecked")
                         Map<String, Object> dataMap = (Map<String, Object>) responseMap.get("data");
-                        log.info("【账号{}】data字段内容: {}", accountId, dataMap);
+                        log.debug("【账号{}】Token接口返回验证数据: {}", accountId, dataMap != null);
 
                         if (dataMap != null && dataMap.containsKey("url")) {
                             String captchaUrl = (String) dataMap.get("url");
@@ -404,7 +407,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     }
                 }
 
-                log.error("【账号{}】获取accessToken失败：{}", accountId, responseBody);
+                log.error("【账号{}】获取accessToken失败，响应长度: {}", accountId, responseBody.length());
 
                 // Token获取失败，进入失败处理流程
                 return handleTokenFailure(accountId, retryCount, responseBody, "Token API调用失败");
@@ -465,7 +468,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             response.contains("FAIL_SYS_RGV587_ERROR"));
 
         if (isRiskControl) {
-            log.error("【账号{}】❌ 触发风控: {}", accountId, response);
+            log.error("【账号{}】❌ Token接口触发风控", accountId);
             log.error("【账号{}】系统目前无法自动解决，请进入闲鱼网页版-点击消息-过滑块-复制最新的Cookie", accountId);
             
             // 标记为失效（风控）
@@ -589,11 +592,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 if (newCookieStr != null && !newCookieStr.isEmpty()) {
                     Map<String, String> newCookies = XianyuSignUtils.parseCookies(newCookieStr);
                     String newMh5tk = newCookies.get("_m_h5_tk");
-                    log.info("【账号{}】hasLogin后从数据库获取到最新Cookie，长度: {}，_m_h5_tk前缀: {}",
-                            accountId, newCookieStr.length(),
-                            newMh5tk != null && newMh5tk.contains("_")
-                                    ? newMh5tk.split("_")[0].substring(0, Math.min(10, newMh5tk.split("_")[0].length())) + "..."
-                                    : "空");
+                    log.info("【账号{}】hasLogin后已取得最新Cookie，长度: {}，_m_h5_tk={}",
+                            accountId, newCookieStr.length(), newMh5tk == null ? "缺失" : "可用");
                     // 重置retryCount为0，重新开始获取token流程
                     return getAccessTokenWithRetry(accountId, 0);
                 } else {
@@ -630,16 +630,14 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      */
     private String updateCookiesFromResponse(Long accountId, String currentCookieStr, List<String> setCookieHeaders) {
         try {
-            // 打印所有Set-Cookie内容（调试用，确认Set-Cookie中是否包含_m_h5_tk）
+            // 只记录字段是否存在，任何日志级别都不输出凭证内容。
             for (int i = 0; i < setCookieHeaders.size(); i++) {
                 String setCookie = setCookieHeaders.get(i);
                 // 只打印name=value部分，不打印Path等属性
                 if (setCookie.contains("_m_h5_tk")) {
-                    log.info("【账号{}】Set-Cookie中包含_m_h5_tk: {}", accountId,
-                            setCookie.length() > 80 ? setCookie.substring(0, 80) + "..." : setCookie);
+                    log.info("【账号{}】Set-Cookie中包含_m_h5_tk", accountId);
                 } else {
-                    log.debug("【账号{}】Set-Cookie[{}]: {}", accountId, i,
-                            setCookie.length() > 80 ? setCookie.substring(0, 80) + "..." : setCookie);
+                    log.debug("【账号{}】收到Set-Cookie[{}]", accountId, i);
                 }
             }
 
@@ -657,9 +655,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
             boolean mh5tkUpdated = (newMh5tk != null && !newMh5tk.equals(oldMh5tk));
             if (mh5tkUpdated) {
-                log.info("【账号{}】✅ _m_h5_tk已从响应中更新: {} -> {}", accountId,
-                        oldMh5tk != null ? oldMh5tk.substring(0, Math.min(20, oldMh5tk.length())) + "..." : "null",
-                        newMh5tk.substring(0, Math.min(20, newMh5tk.length())) + "...");
+                log.info("【账号{}】✅ _m_h5_tk已从响应中更新", accountId);
             } else {
                 log.info("【账号{}】_m_h5_tk未变化（可能Set-Cookie中没有新的_m_h5_tk）", accountId);
             }
@@ -669,7 +665,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 xianyuCookieMapper.update(null,
                         new LambdaUpdateWrapper<XianyuCookie>()
                                 .eq(XianyuCookie::getXianyuAccountId, accountId)
-                                .set(XianyuCookie::getCookieText, newCookieStr)
+                                .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(newCookieStr))
                                 .set(XianyuCookie::getCookieStatus, 1)
                 );
 
@@ -678,7 +674,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     xianyuCookieMapper.update(null,
                             new LambdaUpdateWrapper<XianyuCookie>()
                                     .eq(XianyuCookie::getXianyuAccountId, accountId)
-                                    .set(XianyuCookie::getMH5Tk, newMh5tk)
+                                    .set(XianyuCookie::getMH5Tk, SensitiveDataCodec.encrypt(newMh5tk))
                     );
                 }
 
@@ -743,23 +739,27 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
     @Override
     public void saveToken(Long accountId, String token) {
-        saveTokenToDatabase(accountId, token);
+        synchronized (getTokenLock(accountId)) {
+            saveTokenToDatabase(accountId, token);
+        }
     }
 
     @Override
     public void clearToken(Long accountId) {
-        try {
-            log.info("【账号{}】清除数据库中的Token缓存", accountId);
+        synchronized (getTokenLock(accountId)) {
+            try {
+                log.info("【账号{}】清除数据库中的Token缓存", accountId);
 
-            xianyuCookieMapper.update(null,
-                    new LambdaUpdateWrapper<XianyuCookie>()
-                            .eq(XianyuCookie::getXianyuAccountId, accountId)
-                            .set(XianyuCookie::getTokenExpireTime, 0L)
-            );
+                xianyuCookieMapper.update(null,
+                        new LambdaUpdateWrapper<XianyuCookie>()
+                                .eq(XianyuCookie::getXianyuAccountId, accountId)
+                                .set(XianyuCookie::getTokenExpireTime, 0L)
+                );
 
-            log.info("【账号{}】Token缓存已清除", accountId);
-        } catch (Exception e) {
-            log.error("【账号{}】清除Token缓存失败", accountId, e);
+                log.info("【账号{}】Token缓存已清除", accountId);
+            } catch (Exception e) {
+                log.error("【账号{}】清除Token缓存失败", accountId, e);
+            }
         }
     }
 
@@ -905,7 +905,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             int updated = xianyuCookieMapper.update(null,
                     new LambdaUpdateWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
-                            .set(XianyuCookie::getWebsocketToken, token)
+                            .set(XianyuCookie::getWebsocketToken, SensitiveDataCodec.encrypt(token))
                             .set(XianyuCookie::getTokenExpireTime, expireTime)
             );
 

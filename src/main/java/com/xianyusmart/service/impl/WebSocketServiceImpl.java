@@ -5,6 +5,7 @@ import com.xianyusmart.constants.OperationConstants;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.OfflineRecoveryService;
 import com.xianyusmart.service.OperationLogService;
 
@@ -43,6 +44,9 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     @Autowired
     private AccountService accountService;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
     
     @Autowired
     private WebSocketMessageHandler messageHandler;
@@ -192,7 +196,7 @@ public class WebSocketServiceImpl implements WebSocketService {
                 log.error("获取或生成设备ID失败: accountId={}", accountId);
                 throw new RuntimeException("无法获取或生成设备ID");
             }
-            log.info("使用设备ID: accountId={}, deviceId={}", accountId, deviceId);
+            log.debug("账号设备ID已就绪: accountId={}", accountId);
             
             // 获取accessToken（参考Python的refresh_token）
             log.info("正在获取accessToken: accountId={}", accountId);
@@ -208,7 +212,7 @@ public class WebSocketServiceImpl implements WebSocketService {
             return connectWebSocket(accountId, cookieStr, deviceId, accessToken, unb);
 
         } catch (com.xianyusmart.exception.CaptchaRequiredException e) {
-            log.warn("启动WebSocket需要滑块验证: accountId={}, url={}", accountId, e.getCaptchaUrl());
+            log.warn("启动WebSocket需要滑块验证: accountId={}", accountId);
             throw e; // 重新抛出，让Controller处理
         } catch (Exception e) {
             log.error("启动WebSocket失败: accountId={}", accountId, e);
@@ -223,8 +227,6 @@ public class WebSocketServiceImpl implements WebSocketService {
             log.info("========== 使用手动Token启动WebSocket连接 ==========");
             log.info("【账号{}】accountId={}", accountId, accountId);
             log.info("【账号{}】accessToken长度={}", accountId, accessToken != null ? accessToken.length() : 0);
-            log.info("【账号{}】accessToken前50字符={}", accountId, 
-                    accessToken != null && accessToken.length() > 50 ? accessToken.substring(0, 50) + "..." : accessToken);
 
             // 检查是否已经连接
             if (webSocketClients.containsKey(accountId)) {
@@ -263,7 +265,7 @@ public class WebSocketServiceImpl implements WebSocketService {
                 log.error("【账号{}】获取或生成设备ID失败", accountId);
                 throw new RuntimeException("无法获取或生成设备ID");
             }
-            log.info("【账号{}】设备ID={}", accountId, deviceId);
+            log.debug("【账号{}】设备ID已就绪", accountId);
             
             log.info("【账号{}】准备调用通用连接方法（Token将在注册成功后保存）...", accountId);
             
@@ -289,7 +291,7 @@ public class WebSocketServiceImpl implements WebSocketService {
             // 构建WebSocket请求头（参考Python的WEBSOCKET_HEADERS配置）
             Map<String, String> headers = new HashMap<>();
             headers.put("Cookie", cookieStr);
-            headers.put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36");
+            headers.put("User-Agent", accountBrowserProfileService.userAgentForAccount(accountId));
             headers.put("Origin", "https://www.goofish.com");
             headers.put("Host", "wss-goofish.dingtalk.com");
             headers.put("Accept-Encoding", "gzip, deflate, br, zstd");

@@ -1,11 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { generateQRCode, getQRCodeStatus, getQRCodeCookies } from '@/api/qrlogin'
-import { updateCookie } from '@/api/websocket'
-import { showSuccess, showError, showWarning } from '@/utils'
+import { generateQRCode, getQRCodeStatus } from '@/api/qrlogin'
+import { showSuccess, showError } from '@/utils'
 import type { QRLoginSession } from '@/types'
-import { showConfirm } from '@/utils/confirm'
-import { toast } from '@/utils/toast'
 
 interface Props {
   modelValue: boolean
@@ -37,7 +34,7 @@ watch(() => props.modelValue, (newVal) => {
 
 const generateQR = async () => {
   try {
-    const response = await generateQRCode()
+    const response = await generateQRCode(props.accountId)
     // request拦截器会自动处理错误，这里只处理成功的情况
     if (response.code === 200) {
       qrCodeUrl.value = response.data?.qrCodeUrl || ''
@@ -73,6 +70,13 @@ const startPolling = () => {
             statusText.value = '二维码已过期'
             stopPolling()
             break
+          case 'error':
+          case 'cancelled':
+          case 'verification_required':
+            statusText.value = data?.message || '刷新失败，请重试'
+            showError(statusText.value)
+            stopPolling()
+            break
         }
       }
     } catch (error) {
@@ -89,53 +93,9 @@ const stopPolling = () => {
 }
 
 const handleLoginSuccess = async () => {
-  try {
-    // 1. 获取Cookie
-    const cookieRes = await getQRCodeCookies(sessionId.value)
-    if (cookieRes.code !== 200) {
-      showError(cookieRes.msg || '获取Cookie失败')
-      handleClose()
-      return
-    }
-    
-    // 2. 解析Cookie数据
-    const cookieData = cookieRes.data as any
-    const cookieText = typeof cookieData?.cookies === 'string' ? cookieData.cookies : JSON.stringify(cookieData?.cookies || {})
-    const scannedUnb = cookieData?.unb || ''
-    
-    if (!cookieText) {
-      showError('Cookie为空，请重试')
-      handleClose()
-      return
-    }
-    
-    // 3. 判断扫码账号是否与当前账号匹配
-    if (scannedUnb === props.currentUnb) {
-      // 匹配，更新Cookie
-      const updateRes = await updateCookie({
-        xianyuAccountId: props.accountId,
-        cookieText
-      })
-      
-      if (updateRes.code === 200) {
-        showSuccess('Cookie刷新成功')
-        emit('success')
-      } else {
-        showError(updateRes.msg || 'Cookie刷新失败')
-      }
-      handleClose()
-    } else {
-      // 不匹配，弹窗提示
-      toast.info(`扫码登录账号(${scannedUnb})与当前账号(${props.currentUnb})不匹配，已刷新或新增账号`)
-      handleClose()
-      emit('success')
-    }
-    
-  } catch (error: any) {
-    console.error('处理登录失败:', error)
-    showError(error.message || '处理登录失败')
-    handleClose()
-  }
+  showSuccess('Cookie刷新成功')
+  emit('success')
+  handleClose()
 }
 
 const handleClose = () => {

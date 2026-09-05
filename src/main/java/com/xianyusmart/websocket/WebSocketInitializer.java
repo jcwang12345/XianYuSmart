@@ -2,6 +2,7 @@ package com.xianyusmart.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.utils.AccountDisplayNameUtils;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -23,6 +24,9 @@ public class WebSocketInitializer {
     
     @Autowired
     private AccountDisplayNameUtils displayNameUtils;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
     
     /**
      * 生成消息ID
@@ -65,7 +69,9 @@ public class WebSocketInitializer {
             headers.put("cache-header", "app-key token ua wv");
             headers.put("app-key", "444e9908a51d1cb236a27862abc769c9");
             headers.put("token", token);
-            headers.put("ua", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 DingTalk(2.1.5) OS(Windows/10) Browser(Chrome/133.0.0.0) DingWeb/2.1.5 IMPaaS DingWeb/2.1.5");
+            Long numericAccountId = Long.valueOf(accountId);
+            headers.put("ua", accountBrowserProfileService.userAgentForAccount(numericAccountId)
+                    + " DingTalk(2.1.5) DingWeb/2.1.5 IMPaaS");
             headers.put("dt", "j");
             headers.put("wv", "im:3,au:3,sy:6");
             headers.put("sync", "0,0;0;0;");
@@ -78,7 +84,6 @@ public class WebSocketInitializer {
             client.send(jsonMessage);
             
             log.info("{}已发送注册消息", logPrefix(accountId));
-            log.info("{}注册消息内容: {}", logPrefix(accountId), jsonMessage);
             
         } catch (Exception e) {
             log.error("{}发送注册消息失败", logPrefix(accountId), e);
@@ -122,7 +127,6 @@ public class WebSocketInitializer {
             client.send(jsonMessage);
             
             log.info("{}已发送同步状态消息", logPrefix(accountId));
-            log.info("{}同步状态消息内容: {}", logPrefix(accountId), jsonMessage);
             log.info("{}消息同步游标: pts={}, seq={}", logPrefix(accountId),
                     effectiveCursor.pts(), effectiveCursor.seq());
             return effectiveCursor;
@@ -145,7 +149,7 @@ public class WebSocketInitializer {
     public WebSocketSyncCursor initialize(XianyuWebSocketClient client, String token, String deviceId,
                                           String accountId, WebSocketSyncCursor cursor) {
         log.info("{}开始WebSocket初始化流程...", logPrefix(accountId));
-        log.info("{}设备ID: {}", logPrefix(accountId), deviceId);
+        log.debug("{}设备ID已就绪", logPrefix(accountId));
         log.info("{}Token长度: {}", logPrefix(accountId), token != null ? token.length() : 0);
         
         // 1. 发送注册消息

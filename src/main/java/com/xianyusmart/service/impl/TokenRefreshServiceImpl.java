@@ -7,6 +7,8 @@ import com.xianyusmart.entity.XianyuCookie;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuCookieMapper;
 import com.xianyusmart.service.CookieRefreshService;
+import com.xianyusmart.service.AccountCredentialCoordinator;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.OperationLogService;
 import com.xianyusmart.service.TokenRefreshService;
 import com.xianyusmart.service.WebSocketTokenService;
@@ -73,6 +75,12 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
     @Autowired
     private PlaywrightManager playwrightManager;
 
+    @Autowired
+    private AccountCredentialCoordinator credentialCoordinator;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
+
     @Autowired(required = false)
     private com.xianyusmart.service.EmailNotifyService emailNotifyService;
 
@@ -112,7 +120,9 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
      */
     @Override
     public boolean refreshMh5tkToken(Long accountId) {
-        return refreshMh5tkTokenWithRetry(accountId, 0, false);
+        synchronized (credentialCoordinator.lockFor(accountId)) {
+            return refreshMh5tkTokenWithRetry(accountId, 0, false);
+        }
     }
     
     /**
@@ -142,7 +152,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
 
             Request request = new Request.Builder()
                     .url(API_H5_TK)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .header("User-Agent", accountBrowserProfileService.userAgentForAccount(accountId))
                     .header("Referer", "https://market.m.goofish.com/")
                     .get()
                     .build();
@@ -164,8 +174,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
                         cookie.setMH5Tk(newMh5tk);
                         cookieMapper.updateById(cookie);
 
-                        log.info("【账号{}】✅ _m_h5_tk token刷新成功: {}",
-                                accountId, newMh5tk.substring(0, Math.min(20, newMh5tk.length())));
+                        log.info("【账号{}】✅ _m_h5_tk token刷新成功", accountId);
 
                         operationLogService.log(accountId,
                             com.xianyusmart.constants.OperationConstants.Type.REFRESH,

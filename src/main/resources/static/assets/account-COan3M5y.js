@@ -1,0 +1,1 @@
+import{r as u}from"./index-_RdBFn_b.js";function c(){return u({url:"/account/list",method:"POST",data:{}})}function a(t){return u({url:"/account/update",method:"POST",data:t})}function e(t){return u({url:"/account/delete",method:"POST",data:{accountId:t.id}})}function o(t){return u({url:"/account/manualAdd",method:"POST",data:t})}export{e as d,c as g,o as m,a as u};

@@ -13,7 +13,10 @@ import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.entity.XianyuCookie;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuCookieMapper;
+import com.xianyusmart.security.SensitiveDataCodec;
 import com.xianyusmart.service.CookieRefreshService;
+import com.xianyusmart.service.AccountCredentialCoordinator;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.OperationLogService;
 import com.xianyusmart.utils.SessionCookieJar;
 import com.xianyusmart.utils.XianyuSignUtils;
@@ -61,7 +64,11 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private final Map<Long, Object> refreshLocks = new ConcurrentHashMap<>();
+    @Autowired
+    private AccountCredentialCoordinator credentialCoordinator;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
 
     private static final long BROWSER_REFRESH_COOLDOWN_MS = 30 * 60 * 1000L;
     private final Map<Long, Long> lastBrowserRefreshTime = new ConcurrentHashMap<>();
@@ -73,7 +80,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
      * 获取账号级别的锁对象
      */
     private Object getRefreshLock(Long accountId) {
-        return refreshLocks.computeIfAbsent(accountId, k -> new Object());
+        return credentialCoordinator.lockFor(accountId);
     }
 
     @Override
@@ -164,7 +171,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
             Request request = new Request.Builder()
                     .url(HAS_LOGIN_URL)
-                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("User-Agent", accountBrowserProfileService.userAgentForAccount(accountId))
                     .header("Accept", "application/json, text/plain, */*")
                     .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
                     .header("Referer", "https://passport.goofish.com/")
@@ -183,7 +190,8 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                 }
 
                 String responseBody = response.body().string();
-                log.debug("【账号{}】hasLogin响应: {}", accountId, responseBody);
+                log.debug("【账号{}】hasLogin响应长度: {}", accountId,
+                        responseBody == null ? 0 : responseBody.length());
 
                 // 检测风控（参考Python实现）
                 boolean isRiskControl = responseBody != null && (
@@ -192,7 +200,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     responseBody.contains("FAIL_SYS_RGV587_ERROR"));
 
                 if (isRiskControl) {
-                    log.error("【账号{}】❌ hasLogin触发风控: {}", accountId, responseBody);
+                    log.error("【账号{}】❌ hasLogin触发风控", accountId);
                     log.error("【账号{}】系统目前无法自动解决，请进入闲鱼网页版-点击消息-过滑块-复制最新的Cookie", accountId);
                     
                     // 标记为失效（风控）
@@ -251,17 +259,15 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                         cookieMapper.update(null,
                                 new LambdaUpdateWrapper<XianyuCookie>()
                                         .eq(XianyuCookie::getXianyuAccountId, accountId)
-                                        .set(XianyuCookie::getCookieText, newCookieStr)
+                                        .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(newCookieStr))
                                         .set(XianyuCookie::getCookieStatus, 1)
                                         .set(XianyuCookie::getUpdatedTime, updatedTime)
-                                        .set(mh5tkUpdated && newMh5tk != null, XianyuCookie::getMH5Tk, newMh5tk)
+                                        .set(mh5tkUpdated && newMh5tk != null, XianyuCookie::getMH5Tk,
+                                                SensitiveDataCodec.encrypt(newMh5tk))
                         );
 
                         if (mh5tkUpdated) {
-                            log.info("【账号{}】✅ _m_h5_tk已从hasLogin响应中更新: {} -> {}",
-                                    accountId,
-                                    oldMh5tk != null ? oldMh5tk.substring(0, Math.min(20, oldMh5tk.length())) + "..." : "null",
-                                    newMh5tk.substring(0, Math.min(20, newMh5tk.length())) + "...");
+                            log.info("【账号{}】✅ _m_h5_tk已从hasLogin响应中更新", accountId);
                         }
                         log.info("【账号{}】✅ Cookie已通过SessionCookieJar自动更新到数据库", accountId);
                     } else {
@@ -460,7 +466,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
         lastBrowserRefreshTime.put(accountId, System.currentTimeMillis());
 
-        try (BrowserContext context = playwrightManager.createContext()) {
+        try (BrowserContext context = playwrightManager.createContext(accountId)) {
             List<Cookie> browserCookies = buildBrowserCookies(existingCookies);
             context.addCookies(browserCookies);
 
@@ -477,6 +483,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     "https://www.taobao.com"
             ));
             String refreshedCookieText = buildCookieText(refreshedCookies);
+            playwrightManager.persistStorageState(accountId, context);
             if (refreshedCookieText.isBlank()) {
                 log.warn("【账号{}】浏览器兜底刷新未获取到新的Cookie", accountId);
                 markAccountAsCookieRefreshAbnormal(accountId, "浏览器兜底刷新失败：浏览器未返回Cookie");
@@ -497,9 +504,10 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
             cookieMapper.update(null,
                     new LambdaUpdateWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
-                            .set(XianyuCookie::getCookieText, refreshedCookieText)
+                            .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(refreshedCookieText))
                             .set(XianyuCookie::getCookieStatus, 1)
-                            .set(newMh5Tk != null && !newMh5Tk.isBlank(), XianyuCookie::getMH5Tk, newMh5Tk)
+                            .set(newMh5Tk != null && !newMh5Tk.isBlank(), XianyuCookie::getMH5Tk,
+                                    SensitiveDataCodec.encrypt(newMh5Tk))
             );
 
             log.info("【账号{}】浏览器兜底刷新Cookie成功，Cookie长度: {}", accountId, refreshedCookieText.length());

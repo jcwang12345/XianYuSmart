@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { generateQRCode, getQRCodeStatus, getQRCodeCookies } from '@/api/qrlogin'
-import { addAccount } from '@/api/account'
+import { generateQRCode, getQRCodeStatus } from '@/api/qrlogin'
 import { showSuccess, showError } from '@/utils'
 import type { QRLoginSession } from '@/types'
 
@@ -27,6 +26,7 @@ const sessionId = ref('')
 const status = ref<QRLoginSession['status']>('pending')
 const statusText = ref('正在生成二维码...')
 let pollTimer: number | null = null
+let pollRequestPending = false
 
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
@@ -51,13 +51,17 @@ const generateQR = async () => {
     }
   } catch (error: any) {
     console.error('生成二维码失败:', error)
+    status.value = 'error'
+    statusText.value = error?.message || '生成二维码失败，请重试'
+    showError(statusText.value)
   }
 }
 
 const startPolling = () => {
   if (!sessionId.value) return
   pollTimer = window.setInterval(async () => {
-    if (!sessionId.value) return
+    if (!sessionId.value || pollRequestPending) return
+    pollRequestPending = true
     try {
       const response = await getQRCodeStatus(sessionId.value)
       if (response.code === 0 || response.code === 200) {
@@ -73,16 +77,26 @@ const startPolling = () => {
             break
           case 'confirmed':
             statusText.value = '登录成功！正在获取信息...'
+            stopPolling()
             await handleLoginSuccess()
             break
           case 'expired':
             statusText.value = '二维码已过期'
             stopPolling()
             break
+          case 'error':
+          case 'cancelled':
+          case 'verification_required':
+            statusText.value = data?.message || '登录失败，请重试'
+            showError(statusText.value)
+            stopPolling()
+            break
         }
       }
     } catch (error) {
       console.error('检查登录状态失败:', error)
+    } finally {
+      pollRequestPending = false
     }
   }, 2000)
 }
@@ -95,49 +109,10 @@ const stopPolling = () => {
 }
 
 const handleLoginSuccess = async () => {
-  try {
-    // 1. 获取Cookie
-    const cookieRes = await getQRCodeCookies(sessionId.value)
-    if (cookieRes.code !== 0 && cookieRes.code !== 200) {
-      showError(cookieRes.msg || '获取Cookie失败')
-      handleClose()
-      return
-    }
-
-    // 2. 直接使用返回的Cookie字符串和UNB
-    const cookieText = cookieRes.data?.cookies || ''
-    const unb = cookieRes.data?.unb || ''
-
-    if (!cookieText) {
-      showError('Cookie为空，请重试')
-      handleClose()
-      return
-    }
-
-    // 3. 添加账号
-    const accountNote = `账号_${unb || Date.now()}`
-    const addRes = await addAccount({
-      accountNote,
-      unb,
-      cookie: cookieText
-    } as any)
-
-    // 4. 处理结果
-    if (addRes.code === 0 || addRes.code === 200) {
-      showSuccess('账号添加成功')
-      emit('success')
-    } else {
-      showError(addRes.msg || '添加账号失败')
-    }
-
-    // 5. 关闭弹窗（无论成功失败都关闭）
-    handleClose()
-
-  } catch (error: any) {
-    console.error('处理登录失败:', error)
-    showError(error.message || '处理登录失败')
-    handleClose()
-  }
+  // 后端已在确认扫码时原子化保存账号；Cookie 不再经过浏览器。
+  showSuccess('账号添加成功')
+  emit('success')
+  handleClose()
 }
 
 const handleClose = () => {

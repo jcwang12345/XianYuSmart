@@ -14,6 +14,7 @@ import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.ScreenshotType;
 import com.microsoft.playwright.options.WaitUntilState;
 import com.xianyusmart.service.CaptchaSolveService;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.utils.XianyuSignUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -43,6 +44,12 @@ import java.util.function.Consumer;
 @Component
 public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
 
+    private final AccountBrowserProfileService accountBrowserProfileService;
+
+    public PlaywrightCaptchaBrowserRunner(AccountBrowserProfileService accountBrowserProfileService) {
+        this.accountBrowserProfileService = accountBrowserProfileService;
+    }
+
     private static final long TASK_TIMEOUT_MS = TimeUnit.MINUTES.toMillis(5);
     private static final int MAX_AUTO_ATTEMPTS = 5;
     private static final int VIEWPORT_WIDTH = 1365;
@@ -52,9 +59,6 @@ public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
     private static final String COOKIE_EXPIRED_MESSAGE =
             "Cookie Session已过期，请重新扫码登录后再连接";
     private final Map<Long, BrowserProcessSession> activeBrowserSessions = new ConcurrentHashMap<>();
-    private static final String USER_AGENT_TEMPLATE =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    + "(KHTML, like Gecko) Chrome/%s.0.0.0 Safari/537.36";
     private static final List<String> COOKIE_URLS = List.of(
             "https://www.goofish.com/im",
             "https://passport.goofish.com",
@@ -141,226 +145,6 @@ public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
               return true;
             }
             """;
-    private static final String FINGERPRINT_SCRIPT = """
-            (() => {
-              try {
-              try {
-                delete Object.getPrototypeOf(navigator).webdriver;
-                Object.defineProperty(navigator, 'webdriver', {
-                  configurable: true,
-                  get: () => false
-                });
-                Object.defineProperty(Navigator.prototype, 'webdriver', {
-                  configurable: true,
-                  get: () => false
-                });
-              } catch (ignored) {
-              }
-              try {
-                Object.defineProperty(Navigator.prototype, 'platform', {
-                  configurable: true,
-                  get: () => 'Win32'
-                });
-                Object.defineProperty(navigator, 'platform', {
-                  configurable: true,
-                  get: () => 'Win32'
-                });
-                Object.defineProperty(navigator, 'vendor', {
-                  configurable: true,
-                  get: () => 'Google Inc.'
-                });
-                Object.defineProperty(navigator, 'appVersion', {
-                  configurable: true,
-                  get: () => navigator.userAgent.startsWith('Mozilla/')
-                    ? navigator.userAgent.substring(8) : navigator.userAgent
-                });
-                const chromeVersion = (navigator.userAgent.split('Chrome/')[1] || '146.0.0.0')
-                  .split(' ')[0];
-                const majorVersion = chromeVersion.split('.')[0];
-                const userAgentData = {
-                  brands: [
-                    { brand: 'Google Chrome', version: majorVersion },
-                    { brand: 'Chromium', version: majorVersion },
-                    { brand: 'Not.A/Brand', version: '8' }
-                  ],
-                  mobile: false,
-                  platform: 'Windows',
-                  getHighEntropyValues: () => Promise.resolve({
-                    architecture: 'x86',
-                    bitness: '64',
-                    brands: userAgentData.brands,
-                    fullVersionList: userAgentData.brands,
-                    mobile: false,
-                    model: '',
-                    platform: 'Windows',
-                    platformVersion: '15.0.0',
-                    uaFullVersion: chromeVersion,
-                    wow64: false
-                  }),
-                  toJSON: () => ({
-                    brands: userAgentData.brands,
-                    mobile: false,
-                    platform: 'Windows'
-                  })
-                };
-                Object.defineProperty(navigator, 'userAgentData', {
-                  configurable: true,
-                  get: () => userAgentData
-                });
-              } catch (ignored) {
-              }
-              if (!window.chrome) {
-                window.chrome = {};
-              }
-              if (!window.chrome.runtime) {
-                window.chrome.runtime = {
-                  OnInstalledReason: {
-                    INSTALL: 'install',
-                    UPDATE: 'update',
-                    CHROME_UPDATE: 'chrome_update',
-                    SHARED_MODULE_UPDATE: 'shared_module_update'
-                  },
-                  OnRestartRequiredReason: {
-                    APP_UPDATE: 'app_update',
-                    OS_UPDATE: 'os_update',
-                    PERIODIC: 'periodic'
-                  },
-                  PlatformArch: {
-                    ARM: 'arm',
-                    X86_32: 'x86-32',
-                    X86_64: 'x86-64'
-                  },
-                  PlatformOs: {
-                    MAC: 'mac',
-                    WIN: 'win',
-                    ANDROID: 'android',
-                    CROS: 'cros',
-                    LINUX: 'linux',
-                    OPENBSD: 'openbsd'
-                  }
-                };
-              }
-              if (!window.chrome.csi) {
-                window.chrome.csi = () => ({
-                  startE: Date.now(),
-                  onloadT: Date.now(),
-                  pageT: 0,
-                  tran: 15
-                });
-              }
-              if (!window.chrome.loadTimes) {
-                window.chrome.loadTimes = () => ({
-                  commitLoadTime: Date.now() / 1000 - 5,
-                  connectionInfo: 'h2',
-                  finishDocumentLoadTime: Date.now() / 1000 - 3,
-                  finishLoadTime: Date.now() / 1000 - 2,
-                  firstPaintAfterLoadTime: 0,
-                  firstPaintTime: Date.now() / 1000 - 4,
-                  navigationType: 'Other',
-                  npnNegotiatedProtocol: 'h2',
-                  requestTime: Date.now() / 1000 - 6,
-                  startLoadTime: Date.now() / 1000 - 6,
-                  wasAlternateProtocolAvailable: false,
-                  wasFetchedViaSpdy: true,
-                  wasNpnNegotiated: true
-                });
-              }
-              const fakePlugin = (name, filename, description) => {
-                const plugin = { name, filename, description, length: 1 };
-                plugin[0] = {
-                  type: 'application/pdf',
-                  suffixes: 'pdf',
-                  description: 'Portable Document Format'
-                };
-                plugin.item = index => plugin[index] || null;
-                plugin.namedItem = value => plugin[0] && plugin[0].name === value
-                  ? plugin[0] : null;
-                return plugin;
-              };
-              const plugins = [
-                fakePlugin('PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'),
-                fakePlugin('Chrome PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'),
-                fakePlugin('Chromium PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'),
-                fakePlugin('Microsoft Edge PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format'),
-                fakePlugin('WebKit built-in PDF', 'internal-pdf-viewer', 'Portable Document Format')
-              ];
-              plugins.item = index => plugins[index] || null;
-              plugins.namedItem = name => plugins.find(plugin => plugin.name === name) || null;
-              plugins.refresh = () => {};
-              Object.defineProperty(navigator, 'plugins', {
-                configurable: true,
-                get: () => plugins
-              });
-              Object.defineProperty(navigator, 'languages', {
-                configurable: true,
-                get: () => ['zh-CN', 'zh', 'en-US', 'en']
-              });
-              Object.defineProperty(navigator, 'hardwareConcurrency', {
-                configurable: true,
-                get: () => 8
-              });
-              Object.defineProperty(navigator, 'deviceMemory', {
-                configurable: true,
-                get: () => 8
-              });
-              if (window.Notification && navigator.permissions && navigator.permissions.query) {
-                const originalQuery = navigator.permissions.query.bind(navigator.permissions);
-                navigator.permissions.query = parameters => parameters
-                  && parameters.name === 'notifications'
-                  ? Promise.resolve({ state: Notification.permission, onchange: null })
-                  : originalQuery(parameters);
-              }
-              const patchWebGL = prototype => {
-                if (!prototype || !prototype.getParameter) {
-                  return;
-                }
-                const originalGetParameter = prototype.getParameter;
-                prototype.getParameter = function(parameter) {
-                  if (parameter === 0x9245) {
-                    return 'Google Inc. (NVIDIA)';
-                  }
-                  if (parameter === 0x9246) {
-                    return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0)';
-                  }
-                  return originalGetParameter.call(this, parameter);
-                };
-              };
-              patchWebGL(window.WebGLRenderingContext && WebGLRenderingContext.prototype);
-              patchWebGL(window.WebGL2RenderingContext && WebGL2RenderingContext.prototype);
-              try {
-                const originalToDataUrl = HTMLCanvasElement.prototype.toDataURL;
-                HTMLCanvasElement.prototype.toDataURL = function(...args) {
-                  const context = this.getContext('2d');
-                  if (context && this.width > 0 && this.height > 0) {
-                    try {
-                      const image = context.getImageData(0, 0, this.width, this.height);
-                      for (let index = 0; index < image.data.length; index += 4) {
-                        if (Math.random() < 0.03) {
-                          image.data[index] = (image.data[index]
-                            + (Math.random() < 0.5 ? -1 : 1)) & 0xff;
-                        }
-                      }
-                      context.putImageData(image, 0, 0);
-                    } catch (ignored) {
-                    }
-                  }
-                  return originalToDataUrl.apply(this, args);
-                };
-              } catch (ignored) {
-              }
-              try {
-                delete window.__playwright__binding__;
-                delete window.__pwInitScripts;
-                delete window.__webdriver_script_fn;
-                Object.keys(window)
-                  .filter(key => key.startsWith('cdc_'))
-                  .forEach(key => delete window[key]);
-              } catch (ignored) {
-              }
-              } catch (ignored) {
-              }
-            })();
-            """;
     private static final String SLIDER_HEURISTIC_SCRIPT = """
             () => {
               const containers = [];
@@ -443,14 +227,8 @@ public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
             Browser browser = browserType.launch(browserLaunchOptions(browserType, headless));
             failureStage = "创建浏览器上下文";
             BrowserContext context = browser.newContext(
-                     new Browser.NewContextOptions()
-                             .setUserAgent(browserUserAgent(browser.version()))
-                             .setLocale("zh-CN")
-                             .setTimezoneId("Asia/Shanghai")
-                             .setViewportSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT));
+                    accountBrowserProfileService.contextOptions(accountId, browser.version()));
             context.setDefaultTimeout(10_000);
-            // 自动和人工模式使用同一浏览器指纹，避免有头模式暴露自动化特征。
-            applyFingerprint(context);
             failureStage = "加载账号Cookie";
             context.addCookies(buildBrowserCookies(cookieText));
 
@@ -483,6 +261,7 @@ public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
                 activePages.get(activePages.size() - 1).waitForTimeout(800);
             }
             String refreshedCookie = buildCookieText(context.cookies(COOKIE_URLS), cookieText);
+            accountBrowserProfileService.persistStorageState(accountId, context);
             if (refreshedCookie.isBlank()) {
                 return new RunResult(Outcome.FAILED, null, "验证完成但浏览器未返回Cookie");
             }
@@ -583,18 +362,6 @@ public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
                         "--disable-dev-shm-usage",
                         "--no-first-run",
                         "--no-default-browser-check"));
-    }
-
-    private static String browserUserAgent(String browserVersion) {
-        String majorVersion = browserVersion == null ? "" : browserVersion.split("\\.", 2)[0];
-        if (!majorVersion.matches("\\d+")) {
-            majorVersion = "146";
-        }
-        return USER_AGENT_TEMPLATE.formatted(majorVersion);
-    }
-
-    void applyFingerprint(BrowserContext context) {
-        context.addInitScript(FINGERPRINT_SCRIPT);
     }
 
     SliderTarget findSlider(Page page) {

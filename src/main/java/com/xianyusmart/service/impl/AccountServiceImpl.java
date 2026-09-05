@@ -15,11 +15,14 @@ import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.mapper.XianyuGoodsAutoReplyRecordMapper;
 import com.xianyusmart.mapper.XianyuOperationLogMapper;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AccountBrowserProfileService;
+import com.xianyusmart.service.AccountCredentialCoordinator;
 import com.xianyusmart.service.RiskControlService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.interceptor.TransactionAspectSupport;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -64,6 +67,12 @@ public class AccountServiceImpl implements AccountService {
 
     @Autowired
     private RiskControlService riskControlService;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
+
+    @Autowired
+    private AccountCredentialCoordinator accountCredentialCoordinator;
     
     private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     
@@ -113,8 +122,7 @@ public class AccountServiceImpl implements AccountService {
     @Transactional(rollbackFor = Exception.class)
     public Long saveAccountAndCookie(String accountNote, String unb, String cookieText, String mH5Tk) {
         try {
-            log.info("开始保存账号和Cookie: accountNote={}, unb={}, 包含m_h5_tk={}", 
-                    accountNote, unb, mH5Tk != null);
+            log.info("开始保存账号和Cookie: accountNote={}, 包含m_h5_tk={}", accountNote, mH5Tk != null);
 
             // 1. 检查账号是否已存在（根据UNB）
             LambdaQueryWrapper<XianyuAccount> accountQuery = new LambdaQueryWrapper<>();
@@ -143,41 +151,45 @@ public class AccountServiceImpl implements AccountService {
                 log.info("创建新账号成功: accountId={}", accountId);
             }
 
-            // 2. 保存或更新Cookie
-            LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
-            cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
-            XianyuCookie existingCookie = cookieMapper.selectOne(cookieQuery);
+            synchronized (accountCredentialCoordinator.lockFor(accountId)) {
+                // 2. 保存或更新Cookie。同账号的扫码、续期和令牌刷新共用一把锁，
+                // 避免旧凭证覆盖刚完成的登录结果。
+                LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
+                cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
+                XianyuCookie existingCookie = cookieMapper.selectOne(cookieQuery);
 
-            if (existingCookie != null) {
-                // Cookie已存在，更新
-                existingCookie.setCookieText(cookieText);
-                existingCookie.setMH5Tk(mH5Tk);
-                existingCookie.setCookieStatus(1); // 有效状态
-                existingCookie.setExpireTime(getFutureTimeString(30)); // 30天后过期
-                existingCookie.setUpdatedTime(getCurrentTimeString());
-                cookieMapper.updateById(existingCookie);
-                log.info("更新Cookie成功: cookieId={}, m_h5_tk={}", 
-                        existingCookie.getId(), mH5Tk != null ? "已保存" : "未提供");
-            } else {
-                // 创建新Cookie
-                XianyuCookie cookie = new XianyuCookie();
-                cookie.setXianyuAccountId(accountId);
-                cookie.setCookieText(cookieText);
-                cookie.setMH5Tk(mH5Tk);
-                cookie.setCookieStatus(1);
-                cookie.setExpireTime(getFutureTimeString(30));
-                cookie.setCreatedTime(getCurrentTimeString());
-                cookie.setUpdatedTime(getCurrentTimeString());
-                cookieMapper.insert(cookie);
-                log.info("创建新Cookie成功: cookieId={}, m_h5_tk={}", 
-                        cookie.getId(), mH5Tk != null ? "已保存" : "未提供");
+                if (existingCookie != null) {
+                    existingCookie.setCookieText(cookieText);
+                    existingCookie.setMH5Tk(mH5Tk);
+                    existingCookie.setCookieStatus(1);
+                    existingCookie.setExpireTime(getFutureTimeString(30));
+                    existingCookie.setUpdatedTime(getCurrentTimeString());
+                    cookieMapper.updateById(existingCookie);
+                    log.info("更新Cookie成功: cookieId={}, m_h5_tk={}",
+                            existingCookie.getId(), mH5Tk != null ? "已保存" : "未提供");
+                } else {
+                    XianyuCookie cookie = new XianyuCookie();
+                    cookie.setXianyuAccountId(accountId);
+                    cookie.setCookieText(cookieText);
+                    cookie.setMH5Tk(mH5Tk);
+                    cookie.setCookieStatus(1);
+                    cookie.setExpireTime(getFutureTimeString(30));
+                    cookie.setCreatedTime(getCurrentTimeString());
+                    cookie.setUpdatedTime(getCurrentTimeString());
+                    cookieMapper.insert(cookie);
+                    log.info("创建新Cookie成功: cookieId={}, m_h5_tk={}",
+                            cookie.getId(), mH5Tk != null ? "已保存" : "未提供");
+                }
+
+                // 档案绑定账号而不是租户；重复保存同一账号不会生成新档案。
+                accountBrowserProfileService.getOrCreate(accountId);
             }
 
             log.info("保存账号和Cookie完成: accountId={}, accountNote={}", accountId, accountNote);
             return accountId;
 
         } catch (Exception e) {
-            log.error("保存账号和Cookie失败: accountNote={}, unb={}", accountNote, unb, e);
+            log.error("保存账号和Cookie失败: accountNote={}", accountNote, e);
             throw new RuntimeException("保存账号和Cookie失败: " + e.getMessage(), e);
         }
     }
@@ -218,7 +230,7 @@ public class AccountServiceImpl implements AccountService {
             XianyuAccount account = accountMapper.selectOne(accountQuery);
 
             if (account == null) {
-                log.warn("未找到账号: unb={}", unb);
+                log.warn("未找到指定UNB的账号");
                 return null;
             }
 
@@ -235,11 +247,11 @@ public class AccountServiceImpl implements AccountService {
                 return null;
             }
 
-            log.info("获取Cookie成功: unb={}, accountId={}", unb, account.getId());
+            log.info("根据UNB获取Cookie成功: accountId={}", account.getId());
             return cookie.getCookieText();
 
         } catch (Exception e) {
-            log.error("获取Cookie失败: unb={}", unb, e);
+            log.error("根据UNB获取Cookie失败", e);
             return null;
         }
     }
@@ -283,36 +295,36 @@ public class AccountServiceImpl implements AccountService {
     @Transactional(rollbackFor = Exception.class)
     public boolean updateCookie(Long accountId, String cookieText) {
         try {
-            log.info("更新Cookie: accountId={}", accountId);
+            synchronized (accountCredentialCoordinator.lockFor(accountId)) {
+                log.info("更新Cookie: accountId={}", accountId);
 
-            // 查询现有Cookie
-            LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
-            cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
-            XianyuCookie cookie = cookieMapper.selectOne(cookieQuery);
+                LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
+                cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
+                XianyuCookie cookie = cookieMapper.selectOne(cookieQuery);
 
-            if (cookie != null) {
-                // 更新现有Cookie
-                cookie.setCookieText(cookieText);
-                cookie.setCookieStatus(1);
-                cookie.setExpireTime(getFutureTimeString(30));
-                cookie.setUpdatedTime(getCurrentTimeString());
-                cookieMapper.updateById(cookie);
-            } else {
-                // 创建新Cookie
-                cookie = new XianyuCookie();
-                cookie.setXianyuAccountId(accountId);
-                cookie.setCookieText(cookieText);
-                cookie.setCookieStatus(1);
-                cookie.setExpireTime(getFutureTimeString(30));
-                cookie.setCreatedTime(getCurrentTimeString());
-                cookie.setUpdatedTime(getCurrentTimeString());
-                cookieMapper.insert(cookie);
+                if (cookie != null) {
+                    cookie.setCookieText(cookieText);
+                    cookie.setCookieStatus(1);
+                    cookie.setExpireTime(getFutureTimeString(30));
+                    cookie.setUpdatedTime(getCurrentTimeString());
+                    cookieMapper.updateById(cookie);
+                } else {
+                    cookie = new XianyuCookie();
+                    cookie.setXianyuAccountId(accountId);
+                    cookie.setCookieText(cookieText);
+                    cookie.setCookieStatus(1);
+                    cookie.setExpireTime(getFutureTimeString(30));
+                    cookie.setCreatedTime(getCurrentTimeString());
+                    cookie.setUpdatedTime(getCurrentTimeString());
+                    cookieMapper.insert(cookie);
+                }
             }
 
             log.info("更新Cookie成功: accountId={}", accountId);
             return true;
 
         } catch (Exception e) {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             log.error("更新Cookie失败: accountId={}", accountId, e);
             return false;
         }
@@ -378,7 +390,7 @@ public class AccountServiceImpl implements AccountService {
     @Override
     public Long getAccountIdByUnb(String unb) {
         try {
-            log.info("根据UNB获取账号ID: unb={}", unb);
+            log.info("根据UNB获取账号ID");
 
             // 查询账号
             LambdaQueryWrapper<XianyuAccount> accountQuery = new LambdaQueryWrapper<>();
@@ -386,15 +398,15 @@ public class AccountServiceImpl implements AccountService {
             XianyuAccount account = accountMapper.selectOne(accountQuery);
 
             if (account == null) {
-                log.warn("未找到账号: unb={}", unb);
+                log.warn("未找到指定UNB的账号");
                 return null;
             }
 
-            log.info("获取账号ID成功: unb={}, accountId={}", unb, account.getId());
+            log.info("根据UNB获取账号ID成功: accountId={}", account.getId());
             return account.getId();
 
         } catch (Exception e) {
-            log.error("获取账号ID失败: unb={}", unb, e);
+            log.error("根据UNB获取账号ID失败", e);
             return null;
         }
     }
@@ -409,44 +421,43 @@ public class AccountServiceImpl implements AccountService {
     @Transactional(rollbackFor = Exception.class)
     public boolean updateCookieStatus(Long accountId, Integer cookieStatus, boolean sendNotify) {
         try {
-            log.info("更新Cookie状态: accountId={}, cookieStatus={}, sendNotify={}", accountId, cookieStatus, sendNotify);
+            synchronized (accountCredentialCoordinator.lockFor(accountId)) {
+                log.info("更新Cookie状态: accountId={}, cookieStatus={}, sendNotify={}", accountId, cookieStatus, sendNotify);
 
-            // 查询Cookie记录
-            LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
-            cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
-            XianyuCookie cookie = cookieMapper.selectOne(cookieQuery);
+                LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
+                cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
+                XianyuCookie cookie = cookieMapper.selectOne(cookieQuery);
 
-            if (cookie == null) {
-                log.warn("未找到Cookie记录: accountId={}", accountId);
-                return false;
-            }
-
-            Integer oldStatus = cookie.getCookieStatus();
-            
-            // 更新Cookie状态
-            cookie.setCookieStatus(cookieStatus);
-            cookie.setUpdatedTime(getCurrentTimeString());
-            cookieMapper.updateById(cookie);
-
-            log.info("更新Cookie状态成功: accountId={}, cookieStatus={}", accountId, cookieStatus);
-            
-            // 只有在明确指定发送通知时才发送邮件（即确认无法自动续期后）
-            if (sendNotify && Objects.equals(cookieStatus, 2) && !Objects.equals(oldStatus, 2)) {
-                try {
-                    XianyuAccount account = accountMapper.selectById(accountId);
-                    String accountNote = account != null ? account.getAccountNote() : null;
-                    log.info("【账号{}】Cookie已确认无法自动续期，触发Cookie过期通知流程", accountId);
-                    emailNotifyService.sendCookieExpireNotifyEmail(accountId, accountNote);
-                } catch (Exception e) {
-                    log.error("【账号{}】发送Cookie过期邮件通知失败", accountId, e);
+                if (cookie == null) {
+                    log.warn("未找到Cookie记录: accountId={}", accountId);
+                    return false;
                 }
-            } else if (Objects.equals(cookieStatus, 2) && !Objects.equals(oldStatus, 2)) {
-                log.info("【账号{}】Cookie被标记为过期，但未指定发送通知（可能系统将尝试自动续期）", accountId);
+
+                Integer oldStatus = cookie.getCookieStatus();
+                cookie.setCookieStatus(cookieStatus);
+                cookie.setUpdatedTime(getCurrentTimeString());
+                cookieMapper.updateById(cookie);
+
+                log.info("更新Cookie状态成功: accountId={}, cookieStatus={}", accountId, cookieStatus);
+
+                if (sendNotify && Objects.equals(cookieStatus, 2) && !Objects.equals(oldStatus, 2)) {
+                    try {
+                        XianyuAccount account = accountMapper.selectById(accountId);
+                        String accountNote = account != null ? account.getAccountNote() : null;
+                        log.info("【账号{}】Cookie已确认无法自动续期，触发Cookie过期通知流程", accountId);
+                        emailNotifyService.sendCookieExpireNotifyEmail(accountId, accountNote);
+                    } catch (Exception e) {
+                        log.error("【账号{}】发送Cookie过期邮件通知失败", accountId, e);
+                    }
+                } else if (Objects.equals(cookieStatus, 2) && !Objects.equals(oldStatus, 2)) {
+                    log.info("【账号{}】Cookie被标记为过期，但未指定发送通知（可能系统将尝试自动续期）", accountId);
+                }
             }
             
             return true;
 
         } catch (Exception e) {
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             log.error("更新Cookie状态失败: accountId={}, cookieStatus={}", accountId, cookieStatus, e);
             return false;
         }
@@ -510,57 +521,57 @@ public class AccountServiceImpl implements AccountService {
     @Transactional(rollbackFor = Exception.class)
     public boolean updateAccountCookie(Long accountId, String unb, String cookieText) {
         try {
-            log.info("更新账号Cookie: accountId={}, unb={}", accountId, unb);
+            synchronized (accountCredentialCoordinator.lockFor(accountId)) {
+                log.info("更新账号Cookie: accountId={}", accountId);
 
-            // 1. 更新账号的UNB
-            XianyuAccount account = accountMapper.selectById(accountId);
-            if (account == null) {
-                log.warn("账号不存在: accountId={}", accountId);
-                return false;
-            }
+                XianyuAccount account = accountMapper.selectById(accountId);
+                if (account == null) {
+                    log.warn("账号不存在: accountId={}", accountId);
+                    return false;
+                }
             
-            account.setUnb(unb);
-            account.setUpdatedTime(getCurrentTimeString());
-            accountMapper.updateById(account);
-            log.info("更新账号UNB成功: accountId={}, unb={}", accountId, unb);
+                account.setUnb(unb);
+                account.setUpdatedTime(getCurrentTimeString());
+                accountMapper.updateById(account);
+                log.info("更新账号UNB成功: accountId={}", accountId);
 
             // 2. 提取_m_h5_tk
-            String mH5Tk = extractMH5TkFromCookie(cookieText);
+                String mH5Tk = extractMH5TkFromCookie(cookieText);
 
             // 3. 查询现有Cookie
-            LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
-            cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
-            XianyuCookie cookie = cookieMapper.selectOne(cookieQuery);
+                LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
+                cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
+                XianyuCookie cookie = cookieMapper.selectOne(cookieQuery);
 
-            if (cookie != null) {
-                // 更新现有Cookie
-                cookie.setCookieText(cookieText);
-                cookie.setMH5Tk(mH5Tk);
-                cookie.setCookieStatus(1);
-                cookie.setExpireTime(getFutureTimeString(30));
-                cookie.setUpdatedTime(getCurrentTimeString());
-                cookieMapper.updateById(cookie);
-                log.info("更新Cookie成功: accountId={}", accountId);
-            } else {
-                // 创建新Cookie
-                cookie = new XianyuCookie();
-                cookie.setXianyuAccountId(accountId);
-                cookie.setCookieText(cookieText);
-                cookie.setMH5Tk(mH5Tk);
-                cookie.setCookieStatus(1);
-                cookie.setExpireTime(getFutureTimeString(30));
-                cookie.setCreatedTime(getCurrentTimeString());
-                cookie.setUpdatedTime(getCurrentTimeString());
-                cookieMapper.insert(cookie);
-                log.info("创建Cookie成功: accountId={}", accountId);
+                if (cookie != null) {
+                    cookie.setCookieText(cookieText);
+                    cookie.setMH5Tk(mH5Tk);
+                    cookie.setCookieStatus(1);
+                    cookie.setExpireTime(getFutureTimeString(30));
+                    cookie.setUpdatedTime(getCurrentTimeString());
+                    cookieMapper.updateById(cookie);
+                    log.info("更新Cookie成功: accountId={}", accountId);
+                } else {
+                    cookie = new XianyuCookie();
+                    cookie.setXianyuAccountId(accountId);
+                    cookie.setCookieText(cookieText);
+                    cookie.setMH5Tk(mH5Tk);
+                    cookie.setCookieStatus(1);
+                    cookie.setExpireTime(getFutureTimeString(30));
+                    cookie.setCreatedTime(getCurrentTimeString());
+                    cookie.setUpdatedTime(getCurrentTimeString());
+                    cookieMapper.insert(cookie);
+                    log.info("创建Cookie成功: accountId={}", accountId);
+                }
+
+                // 完整凭证保存成功后解除熔断，普通 Set-Cookie 合并不会走此入口。
+                riskControlService.clearCircuit(accountId);
             }
-
-            // 完整凭证保存成功后解除熔断，普通 Set-Cookie 合并不会走此入口。
-            riskControlService.clearCircuit(accountId);
             return true;
 
         } catch (Exception e) {
-            log.error("更新账号Cookie失败: accountId={}, unb={}", accountId, unb, e);
+            TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
+            log.error("更新账号Cookie失败: accountId={}", accountId, e);
             return false;
         }
     }
@@ -568,7 +579,7 @@ public class AccountServiceImpl implements AccountService {
     @Override
     public String getOrGenerateDeviceId(Long accountId, String unb) {
         try {
-            log.info("获取或生成设备ID: accountId={}, unb={}", accountId, unb);
+            log.info("获取或生成设备ID: accountId={}", accountId);
             
             // 1. 查询账号
             XianyuAccount account = accountMapper.selectById(accountId);
@@ -580,24 +591,24 @@ public class AccountServiceImpl implements AccountService {
             // 2. 检查是否已有设备ID
             String existingDeviceId = account.getDeviceId();
             if (existingDeviceId != null && !existingDeviceId.isEmpty()) {
-                log.info("使用已有设备ID: accountId={}, deviceId={}", accountId, existingDeviceId);
+                log.debug("使用已有设备ID: accountId={}", accountId);
                 return existingDeviceId;
             }
             
             // 3. 生成新的设备ID
             String newDeviceId = com.xianyusmart.utils.XianyuDeviceUtils.generateDeviceId(unb);
-            log.info("生成新设备ID: accountId={}, unb={}, deviceId={}", accountId, unb, newDeviceId);
+            log.info("生成新设备ID: accountId={}", accountId);
             
             // 4. 保存到数据库
             account.setDeviceId(newDeviceId);
             account.setUpdatedTime(getCurrentTimeString());
             accountMapper.updateById(account);
-            log.info("设备ID已保存到数据库: accountId={}, deviceId={}", accountId, newDeviceId);
+            log.info("设备ID已保存到数据库: accountId={}", accountId);
             
             return newDeviceId;
             
         } catch (Exception e) {
-            log.error("获取或生成设备ID失败: accountId={}, unb={}", accountId, unb, e);
+            log.error("获取或生成设备ID失败: accountId={}", accountId, e);
             return null;
         }
     }
@@ -605,7 +616,7 @@ public class AccountServiceImpl implements AccountService {
     @Override
     public boolean updateDeviceId(Long accountId, String deviceId) {
         try {
-            log.info("更新设备ID: accountId={}, deviceId={}", accountId, deviceId);
+            log.info("更新设备ID: accountId={}", accountId);
             
             // 查询账号
             XianyuAccount account = accountMapper.selectById(accountId);
@@ -619,11 +630,11 @@ public class AccountServiceImpl implements AccountService {
             account.setUpdatedTime(getCurrentTimeString());
             accountMapper.updateById(account);
             
-            log.info("设备ID更新成功: accountId={}, deviceId={}", accountId, deviceId);
+            log.info("设备ID更新成功: accountId={}", accountId);
             return true;
             
         } catch (Exception e) {
-            log.error("更新设备ID失败: accountId={}, deviceId={}", accountId, deviceId, e);
+            log.error("更新设备ID失败: accountId={}", accountId, e);
             return false;
         }
     }
@@ -640,7 +651,7 @@ public class AccountServiceImpl implements AccountService {
             
             // UNB就是闲鱼用户ID
             String unb = account.getUnb();
-            log.debug("获取闲鱼用户ID: accountId={}, unb={}", accountId, unb);
+            log.debug("获取闲鱼用户ID成功: accountId={}", accountId);
             return unb;
             
         } catch (Exception e) {
