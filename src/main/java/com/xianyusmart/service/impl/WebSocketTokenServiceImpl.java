@@ -184,6 +184,10 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      * @return accessToken
      */
     private String getAccessTokenWithRetry(Long accountId, int retryCount) {
+        return getAccessTokenWithRetry(accountId, retryCount, 0);
+    }
+
+    private String getAccessTokenWithRetry(Long accountId, int retryCount, int refreshAttempt) {
         try {
             // 0. 检查是否正在等待验证
             if (pendingCaptchaAccounts.containsKey(accountId)) {
@@ -300,7 +304,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             try (Response httpResponse = httpClient.newCall(requestBuilder.build()).execute()) {
                 if (!httpResponse.isSuccessful()) {
                     log.error("【账号{}】获取accessToken失败：HTTP {}", accountId, httpResponse.code());
-                    return handleTokenFailure(accountId, retryCount, null, "HTTP " + httpResponse.code());
+                    return handleTokenFailure(accountId, retryCount, refreshAttempt,
+                            null, "HTTP " + httpResponse.code());
                 }
 
                 String responseBody = httpResponse.body() != null ? httpResponse.body().string() : "";
@@ -326,7 +331,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
                 if (responseBody == null || responseBody.isEmpty()) {
                     log.error("【账号{}】获取accessToken失败：响应为空", accountId);
-                    return handleTokenFailure(accountId, retryCount, null, "响应为空");
+                    return handleTokenFailure(accountId, retryCount, refreshAttempt, null, "响应为空");
                 }
 
                 // 11. 解析响应
@@ -410,7 +415,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 log.error("【账号{}】获取accessToken失败，响应长度: {}", accountId, responseBody.length());
 
                 // Token获取失败，进入失败处理流程
-                return handleTokenFailure(accountId, retryCount, responseBody, "Token API调用失败");
+                return handleTokenFailure(accountId, retryCount, refreshAttempt,
+                        responseBody, "Token API调用失败");
             }
 
         } catch (CaptchaRequiredException e) {
@@ -459,7 +465,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      * 3. retry_count >= 2时，调用hasLogin刷新Cookie，成功后重置retry_count重新获取token
      * 4. 检测风控（RGV587_ERROR或"被挤爆啦"），提示用户手动处理
      */
-    private String handleTokenFailure(Long accountId, int retryCount, String response, String reason) {
+    private String handleTokenFailure(Long accountId, int retryCount, int refreshAttempt,
+                                      String response, String reason) {
 
         // 检测风控（参考Python实现）
         boolean isRiskControl = response != null && (
@@ -518,7 +525,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 null, null, "Session过期", null);
 
             // 直接尝试通过hasLogin刷新，而不是抛出异常
-            return refreshTokenViaHasLogin(accountId, 0);
+            return refreshTokenViaHasLogin(accountId, refreshAttempt);
         }
 
         if (retryCount < MAX_TOKEN_RETRY_COUNT) {
@@ -532,11 +539,11 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 Thread.currentThread().interrupt();
             }
 
-            return getAccessTokenWithRetry(accountId, retryCount + 1);
+            return getAccessTokenWithRetry(accountId, retryCount + 1, refreshAttempt);
         }
 
         log.warn("【账号{}】Token获取重试已达上限，尝试通过hasLogin刷新Cookie...", accountId);
-        return refreshTokenViaHasLogin(accountId, 0);
+        return refreshTokenViaHasLogin(accountId, refreshAttempt);
     }
 
     /**
@@ -550,8 +557,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      *     else:
      *         sys.exit(1)  # Cookie彻底失效
      */
-    private String refreshTokenViaHasLogin(Long accountId, int hasLoginRetryCount) {
-        if (hasLoginRetryCount >= MAX_COOKIE_RETRY_COUNT) {
+    private String refreshTokenViaHasLogin(Long accountId, int refreshAttempt) {
+        if (refreshAttempt >= MAX_COOKIE_RETRY_COUNT) {
             log.error("【账号{}】hasLogin刷新重试次数已达上限，Cookie已彻底过期，无法自动续期", accountId);
             // 确认无法自动续期后，才标记为过期并触发邮件通知
             updateCookieStatus(accountId, 2, true);
@@ -570,7 +577,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
         }
 
         log.info("【账号{}】开始通过hasLogin刷新Cookie... (重试次数: {}/{})",
-                accountId, hasLoginRetryCount, MAX_COOKIE_RETRY_COUNT);
+                accountId, refreshAttempt, MAX_COOKIE_RETRY_COUNT);
 
         try {
             // 调用hasLogin刷新Cookie（参考Python的hasLogin方法）
@@ -594,8 +601,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     String newMh5tk = newCookies.get("_m_h5_tk");
                     log.info("【账号{}】hasLogin后已取得最新Cookie，长度: {}，_m_h5_tk={}",
                             accountId, newCookieStr.length(), newMh5tk == null ? "缺失" : "可用");
-                    // 重置retryCount为0，重新开始获取token流程
-                    return getAccessTokenWithRetry(accountId, 0);
+                    // Token重试次数可以归零，但刷新总次数必须继续累计，避免Session过期时无限递归。
+                    return getAccessTokenWithRetry(accountId, 0, refreshAttempt + 1);
                 } else {
                     log.error("【账号{}】hasLogin后获取刷新后的Cookie失败", accountId);
                 }
@@ -612,7 +619,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
         }
 
         // hasLogin失败，重试
-        return refreshTokenViaHasLogin(accountId, hasLoginRetryCount + 1);
+        return refreshTokenViaHasLogin(accountId, refreshAttempt + 1);
     }
 
     /**

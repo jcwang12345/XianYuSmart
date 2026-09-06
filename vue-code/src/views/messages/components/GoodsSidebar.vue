@@ -3,6 +3,7 @@ import type { GoodsItemWithConfig } from '@/api/goods'
 import IconImage from '@/components/icons/IconImage.vue'
 import IconEmpty from '@/components/icons/IconEmpty.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import { getGoodsStatusText } from '@/utils'
 
 interface Props {
   goodsList: GoodsItemWithConfig[]
@@ -59,7 +60,13 @@ const handleImgError = (e: Event) => {
         </div>
         <div class="sidebar__info">
           <div class="sidebar__name">{{ goods.item.title }}</div>
-          <div class="sidebar__id">{{ goods.item.xyGoodId }}</div>
+          <div class="sidebar__meta">
+            <span class="sidebar__id">{{ goods.item.xyGoodId }}</span>
+            <span
+              class="sidebar__status"
+              :class="`sidebar__status--${getGoodsStatusText(goods.item.status).type}`"
+            >{{ getGoodsStatusText(goods.item.status).text }}</span>
+          </div>
         </div>
       </div>
 
@@ -214,6 +221,27 @@ const handleImgError = (e: Event) => {
   color: var(--c-text-3);
   font-family: 'SF Mono', 'Menlo', monospace;
 }
+
+.sidebar__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sidebar__status {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  color: var(--c-text-3);
+  background: rgba(120, 120, 128, 0.1);
+}
+
+.sidebar__status--success { color: #248a3d; background: rgba(52, 199, 89, 0.1); }
+.sidebar__status--warning { color: #b25000; background: rgba(255, 149, 0, 0.12); }
+.sidebar__status--danger { color: #d70015; background: rgba(255, 59, 48, 0.1); }
 
 .sidebar__loading {
   display: flex;

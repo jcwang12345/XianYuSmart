@@ -87,6 +87,7 @@ export interface SyncProgressResponse {
 export function getGoodsList(data: {
   xianyuAccountId: number;
   onlyOnSale?: boolean;
+  status?: number;
   pageNum?: number;
   pageSize?: number;
 }) {

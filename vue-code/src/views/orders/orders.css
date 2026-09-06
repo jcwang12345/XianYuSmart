@@ -571,6 +571,22 @@
   background: rgba(255, 149, 0, 0.1);
 }
 
+.orders__goods-status--reviewing {
+  color: var(--d-warning);
+  background: rgba(255, 149, 0, 0.1);
+}
+
+.orders__goods-status--deleted,
+.orders__goods-status--platform-off-shelf {
+  color: var(--d-danger);
+  background: rgba(255, 59, 48, 0.1);
+}
+
+.orders__goods-status--unknown {
+  color: var(--d-text-tertiary);
+  background: rgba(255,255,255,0.38);
+}
+
 .orders__goods-empty {
   display: flex;
   flex-direction: column;

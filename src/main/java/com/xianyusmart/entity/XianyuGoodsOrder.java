@@ -101,4 +101,9 @@ public class XianyuGoodsOrder {
     private String lastErrorCode;
 
     private String lastErrorMessage;
+
+    /**
+     * 新订单通知是否已被领取发送。数据库原子更新保证重连消息重放时最多通知一次。
+     */
+    private Integer orderCreatedNotified;
 }

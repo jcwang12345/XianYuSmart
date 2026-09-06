@@ -24,6 +24,11 @@ public class DashboardStatsRespDTO {
      * 在售商品数
      */
     private Integer sellingItemCount;
+
+    /**
+     * 审核中商品数
+     */
+    private Integer reviewingItemCount;
     
     /**
      * 已下架商品数
@@ -34,6 +39,16 @@ public class DashboardStatsRespDTO {
      * 已售出商品数
      */
     private Integer soldItemCount;
+
+    /**
+     * 已删除商品数
+     */
+    private Integer deletedItemCount;
+
+    /**
+     * 平台返回但系统尚未识别的商品状态数
+     */
+    private Integer unknownItemCount;
 
     private BigDecimal todayRevenue;
 

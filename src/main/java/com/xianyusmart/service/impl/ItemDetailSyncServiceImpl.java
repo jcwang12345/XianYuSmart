@@ -7,6 +7,7 @@ import com.xianyusmart.controller.dto.SyncProgressRespDTO;
 import com.xianyusmart.entity.XianyuGoodsSku;
 import com.xianyusmart.entity.XianyuGoodsSkuProperty;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.GoodsInfoService;
 import com.xianyusmart.service.GoodsSkuService;
 import com.xianyusmart.service.GoodsSkuPropertyService;
@@ -28,6 +29,9 @@ public class ItemDetailSyncServiceImpl implements ItemDetailSyncService {
 
     @Autowired
     private AccountService accountService;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
 
     @Autowired
     private GoodsInfoService goodsInfoService;
@@ -151,7 +155,8 @@ public class ItemDetailSyncServiceImpl implements ItemDetailSyncService {
             String response = XianyuApiUtils.callApi(
                 "mtop.taobao.idle.pc.detail",
                 dataMap,
-                cookieStr
+                cookieStr,
+                accountBrowserProfileService.headersForAccount(accountId)
             );
 
             if (response == null) {

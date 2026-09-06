@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { getGoodsStatusText, formatPrice } from '@/utils'
+import {
+  canToggleGoodsListingStatus,
+  getGoodsStatusText,
+  isGoodsOnSale,
+  formatPrice
+} from '@/utils'
 import type { GoodsItemWithConfig } from '@/api/goods'
 
 import IconEmpty from '@/components/icons/IconEmpty.vue'
@@ -55,6 +60,7 @@ const getStatusColor = (status: number) => {
   switch (info.type) {
     case 'success': return '#30D158'
     case 'warning': return '#FF9F0A'
+    case 'danger': return '#FF453A'
     case 'info': return 'rgba(28,28,30,.55)'
     default: return '#0A84FF'
   }
@@ -65,6 +71,7 @@ const getStatusBg = (status: number) => {
   switch (info.type) {
     case 'success': return 'rgba(48,209,88,.2)'
     case 'warning': return 'rgba(255,159,10,.18)'
+    case 'danger': return 'rgba(255,69,58,.14)'
     case 'info': return 'rgba(120,120,128,.12)'
     default: return 'rgba(10,132,255,.15)'
   }
@@ -151,11 +158,14 @@ const handleImgError = (e: Event) => {
         </button>
         <button
           class="goods-card__action goods-card__action--config"
+          :disabled="!isGoodsOnSale(item.item.status) && item.xianyuAutoPolishOn !== 1"
+          :title="!isGoodsOnSale(item.item.status) ? '仅在售商品可以开启自动擦亮' : ''"
           @click.stop="emit('toggleAutoPolish', item, item.xianyuAutoPolishOn !== 1)"
         >
           <span>{{ item.xianyuAutoPolishOn === 1 ? '关擦亮' : '开擦亮' }}</span>
         </button>
         <button
+          v-if="canToggleGoodsListingStatus(item.item.status)"
           class="goods-card__action goods-card__action--config"
           @click.stop="emit('toggleListingStatus', item)"
         >
@@ -257,7 +267,13 @@ const handleImgError = (e: Event) => {
             </button>
           </td>
           <td class="table__td table__td--switch">
-            <button class="toggle-btn" :class="{ 'toggle-btn--on': item.xianyuAutoPolishOn === 1 }" @click="emit('toggleAutoPolish', item, item.xianyuAutoPolishOn !== 1)">
+            <button
+              class="toggle-btn"
+              :class="{ 'toggle-btn--on': item.xianyuAutoPolishOn === 1 }"
+              :disabled="!isGoodsOnSale(item.item.status) && item.xianyuAutoPolishOn !== 1"
+              :title="!isGoodsOnSale(item.item.status) ? '仅在售商品可以开启自动擦亮' : ''"
+              @click="emit('toggleAutoPolish', item, item.xianyuAutoPolishOn !== 1)"
+            >
               <span class="toggle-btn__track"><span class="toggle-btn__thumb"></span></span>
             </button>
           </td>
@@ -278,7 +294,7 @@ const handleImgError = (e: Event) => {
               <IconSparkle />
               <span>同步</span>
             </button>
-            <button class="table__action table__action--detail" @click="emit('toggleListingStatus', item)">
+            <button v-if="canToggleGoodsListingStatus(item.item.status)" class="table__action table__action--detail" @click="emit('toggleListingStatus', item)">
               <span>{{ item.item.status === 0 ? '下架' : '上架' }}</span>
             </button>
             <button class="table__action table__action--delete" @click="emit('delete', item.item.xyGoodId, item.item.title)">

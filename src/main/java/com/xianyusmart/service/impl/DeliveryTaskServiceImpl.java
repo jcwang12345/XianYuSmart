@@ -54,6 +54,11 @@ public class DeliveryTaskServiceImpl implements DeliveryTaskService {
     }
 
     @Override
+    public boolean claimOrderCreatedNotification(Long taskId) {
+        return taskId != null && orderMapper.claimOrderCreatedNotification(taskId) == 1;
+    }
+
+    @Override
     @Transactional
     public List<XianyuGoodsOrder> claimDueTasks(String workerId, int limit) {
         int batchSize = Math.max(1, Math.min(limit, 100));

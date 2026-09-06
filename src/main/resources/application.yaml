@@ -18,6 +18,10 @@ app:
     dispatch-delay-ms: ${DELIVERY_DISPATCH_DELAY_MS:1000}
     lease-seconds: ${DELIVERY_LEASE_SECONDS:120}
     max-attempts: ${DELIVERY_MAX_ATTEMPTS:3}
+  notification:
+    dispatch-delay-ms: ${NOTIFICATION_DISPATCH_DELAY_MS:2000}
+    lease-seconds: ${NOTIFICATION_LEASE_SECONDS:60}
+    max-attempts: ${NOTIFICATION_MAX_ATTEMPTS:5}
   risk-guard:
     state-file: ${RISK_GUARD_STATE_FILE:data/platform-risk-guard.json}
   security:

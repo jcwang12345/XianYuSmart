@@ -9,20 +9,24 @@ import com.xianyusmart.controller.dto.NotificationChannelReqDTO;
 import com.xianyusmart.controller.dto.NotificationChannelRespDTO;
 import com.xianyusmart.entity.XianyuNotificationChannel;
 import com.xianyusmart.entity.XianyuNotificationLog;
+import com.xianyusmart.entity.XianyuNotificationOutbox;
 import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuNotificationChannelMapper;
 import com.xianyusmart.mapper.XianyuNotificationLogMapper;
+import com.xianyusmart.mapper.XianyuNotificationOutboxMapper;
 import com.xianyusmart.service.notification.PinnedHttpsClient;
 import com.xianyusmart.service.notification.NotificationTemplateRenderer;
 import com.xianyusmart.service.notification.WebhookSecurity;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.scheduling.annotation.Async;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
@@ -55,17 +59,27 @@ public class NotificationCenterService {
 
     private final XianyuNotificationChannelMapper channelMapper;
     private final XianyuNotificationLogMapper logMapper;
+    private final XianyuNotificationOutboxMapper outboxMapper;
     private final XianyuAccountMapper accountMapper;
     private final ObjectMapper objectMapper;
     private final PinnedHttpsClient httpsClient;
+    private final String workerId = "notification-" + UUID.randomUUID().toString().substring(0, 8);
+
+    @Value("${app.notification.max-attempts:5}")
+    private int maxAttempts;
+
+    @Value("${app.notification.lease-seconds:60}")
+    private int leaseSeconds;
 
     public NotificationCenterService(XianyuNotificationChannelMapper channelMapper,
                                      XianyuNotificationLogMapper logMapper,
+                                     XianyuNotificationOutboxMapper outboxMapper,
                                      XianyuAccountMapper accountMapper,
                                      PinnedHttpsClient httpsClient,
                                      ObjectMapper objectMapper) {
         this.channelMapper = channelMapper;
         this.logMapper = logMapper;
+        this.outboxMapper = outboxMapper;
         this.accountMapper = accountMapper;
         this.httpsClient = httpsClient;
         this.objectMapper = objectMapper;
@@ -133,7 +147,6 @@ public class NotificationCenterService {
         return logMapper.selectRecent(Math.max(1, Math.min(limit == null ? 50 : limit, 200)));
     }
 
-    @Async("notificationExecutor")
     public void dispatch(String eventType, Long accountId, String title, String content,
                          Map<String, Object> data) {
         if (!EVENT_TYPES.contains(eventType)) {
@@ -151,9 +164,10 @@ public class NotificationCenterService {
                     continue;
                 }
                 try {
-                    send(channel, eventType, accountId, title, content, data == null ? Map.of() : data);
+                    enqueue(channel, eventType, accountId, title, content,
+                            data == null ? Map.of() : data);
                 } catch (Exception e) {
-                    log.warn("通知发送失败: channelId={}, eventType={}, reason={}",
+                    log.warn("通知入队失败: channelId={}, eventType={}, reason={}",
                             channel.getId(), eventType, e.getMessage());
                 }
             }
@@ -161,6 +175,59 @@ public class NotificationCenterService {
             if (tenantResolved) {
                 TenantContext.clear();
             }
+        }
+    }
+
+    @Scheduled(fixedDelayString = "${app.notification.dispatch-delay-ms:2000}", initialDelay = 5000)
+    public void dispatchOutbox() {
+        List<XianyuNotificationOutbox> due = outboxMapper.selectDue(50);
+        for (XianyuNotificationOutbox task : due) {
+            if (outboxMapper.claim(task.getId(), workerId, leaseSeconds) != 1) {
+                continue;
+            }
+            deliverOutbox(task);
+        }
+    }
+
+    private void enqueue(XianyuNotificationChannel channel, String eventType, Long accountId,
+                         String title, String content, Map<String, Object> data) {
+        String eventId = UUID.randomUUID().toString();
+        XianyuNotificationOutbox task = new XianyuNotificationOutbox();
+        task.setTenantId(channel.getTenantId() == null ? TenantContext.get() : channel.getTenantId());
+        task.setChannelId(channel.getId());
+        task.setEventType(eventType);
+        task.setXianyuAccountId(accountId);
+        task.setDedupeKey(notificationDedupeKey(eventType, accountId, data, eventId));
+        task.setEventId(eventId);
+        task.setTitle(limit(title, 200));
+        task.setContent(content == null ? "" : content);
+        task.setDataJson(writeData(data));
+        outboxMapper.insert(task);
+    }
+
+    private void deliverOutbox(XianyuNotificationOutbox task) {
+        try {
+            XianyuNotificationChannel channel = channelMapper.selectById(task.getChannelId());
+            if (channel == null || !Integer.valueOf(1).equals(channel.getEnabled())) {
+                throw new IllegalStateException("通知渠道不存在或已停用");
+            }
+            Map<String, Object> data = new LinkedHashMap<>(readData(task.getDataJson()));
+            data.put("_eventId", task.getEventId());
+            send(channel, task.getEventType(), task.getXianyuAccountId(),
+                    task.getTitle(), task.getContent(), data);
+            if (outboxMapper.markSent(task.getId(), workerId) != 1) {
+                log.warn("通知任务完成状态更新冲突: outboxId={}", task.getId());
+            }
+        } catch (Exception e) {
+            int attempts = (task.getAttemptCount() == null ? 0 : task.getAttemptCount()) + 1;
+            boolean exhausted = attempts >= maxAttempts;
+            LocalDateTime retryAt = exhausted ? null
+                    : LocalDateTime.now().plusSeconds(Math.min(300L, 5L << Math.min(attempts, 6)));
+            String message = limit(e.getMessage() == null ? "通知发送失败" : e.getMessage(), 500);
+            outboxMapper.retryOrFail(task.getId(), workerId,
+                    exhausted ? "FAILED" : "RETRY_WAIT", retryAt, message);
+            log.warn("通知任务{}: outboxId={}, eventType={}, attempt={}, reason={}",
+                    exhausted ? "失败" : "等待重试", task.getId(), task.getEventType(), attempts, message);
         }
     }
 
@@ -353,13 +420,17 @@ public class NotificationCenterService {
                 payload.put("disable_web_page_preview", true);
             }
             default -> {
-                payload.put("eventId", UUID.randomUUID().toString());
+                Object persistedEventId = data.get("_eventId");
+                payload.put("eventId", persistedEventId == null
+                        ? UUID.randomUUID().toString() : persistedEventId.toString());
                 payload.put("eventType", eventType);
                 payload.put("occurredAt", Instant.now().toString());
                 payload.put("accountId", accountId);
                 payload.put("title", title);
                 payload.put("content", content);
-                payload.put("data", data);
+                Map<String, Object> publicData = new LinkedHashMap<>(data);
+                publicData.remove("_eventId");
+                payload.put("data", publicData);
             }
         }
         String body = objectMapper.writeValueAsString(payload);
@@ -432,6 +503,36 @@ public class NotificationCenterService {
             legacy.put("secret", channel.getSigningSecret());
         }
         return legacy;
+    }
+
+    private String notificationDedupeKey(String eventType, Long accountId,
+                                         Map<String, Object> data, String eventId) {
+        if ("ORDER_CREATED".equals(eventType) || "DELIVERY_SUCCESS".equals(eventType)) {
+            Object orderId = data.get("orderId");
+            if (orderId != null && !orderId.toString().isBlank()) {
+                return "account:" + accountId + ":order:" + orderId;
+            }
+        }
+        return "event:" + eventId;
+    }
+
+    private String writeData(Map<String, Object> data) {
+        try {
+            return objectMapper.writeValueAsString(data == null ? Map.of() : data);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("通知事件数据格式无效", e);
+        }
+    }
+
+    private Map<String, Object> readData(String dataJson) {
+        if (dataJson == null || dataJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(dataJson, new TypeReference<>() {});
+        } catch (Exception e) {
+            throw new IllegalStateException("通知事件数据解析失败", e);
+        }
     }
 
     private String writeConfig(Map<String, String> config) {

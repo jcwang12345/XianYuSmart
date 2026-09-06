@@ -3,6 +3,7 @@ package com.xianyusmart.service.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.xianyusmart.common.ResultObject;
+import com.xianyusmart.constants.GoodsStatus;
 import com.xianyusmart.controller.dto.*;
 import com.xianyusmart.entity.XianyuGoodsInfo;
 import com.xianyusmart.entity.XianyuGoodsSku;
@@ -56,6 +57,9 @@ public class ItemServiceImpl implements ItemService {
     @Autowired
     private com.xianyusmart.service.RatingContentService ratingContentService;
 
+    @Autowired
+    private com.xianyusmart.service.AccountBrowserProfileService accountBrowserProfileService;
+
     /**
      * 获取指定页的商品信息（内部方法）
      */
@@ -70,6 +74,7 @@ public class ItemServiceImpl implements ItemService {
                 return ResultObject.failed("未找到账号Cookie");
             }
             log.info("Cookie获取成功，长度: {}", cookiesStr.length());
+            Long accountId = getAccountIdFromCookieId(reqDTO.getCookieId());
 
             // 检查Cookie中是否包含必需的token
             Map<String, String> cookies = XianyuSignUtils.parseCookies(cookiesStr);
@@ -96,7 +101,8 @@ public class ItemServiceImpl implements ItemService {
                 dataMap,
                 cookiesStr,
                 "a21ybx.im.0.0",
-                "a21ybx.collection.menu.1.272b5141NafCNK"
+                "a21ybx.collection.menu.1.272b5141NafCNK",
+                accountBrowserProfileService.headersForAccount(accountId)
             );
             
             if (response == null) {
@@ -122,8 +128,6 @@ public class ItemServiceImpl implements ItemService {
                 // 保存商品信息到数据库
                 if (respDTO.getItems() != null && !respDTO.getItems().isEmpty()) {
                     try {
-                        // 获取账号ID
-                        Long accountId = getAccountIdFromCookieId(reqDTO.getCookieId());
                         int savedCount = goodsInfoService.batchSaveOrUpdateGoodsInfo(respDTO.getItems(), accountId);
                         log.info("商品信息已保存到数据库: 成功数量={}, accountId={}", savedCount, accountId);
                     } catch (Exception e) {
@@ -294,8 +298,9 @@ public class ItemServiceImpl implements ItemService {
     @Override
     public ResultObject<ItemListFromDbRespDTO> getItemsFromDb(ItemListFromDbReqDTO reqDTO) {
         try {
-            log.info("从数据库获取商品列表: onlyOnSale={}, xianyuAccountId={}, pageNum={}, pageSize={}", 
-                    reqDTO.getOnlyOnSale(), reqDTO.getXianyuAccountId(), reqDTO.getPageNum(), reqDTO.getPageSize());
+            log.info("从数据库获取商品列表: onlyOnSale={}, status={}, xianyuAccountId={}, pageNum={}, pageSize={}",
+                    reqDTO.getOnlyOnSale(), reqDTO.getStatus(), reqDTO.getXianyuAccountId(),
+                    reqDTO.getPageNum(), reqDTO.getPageSize());
             
             // 获取分页参数
             int pageSize = reqDTO.getPageSize() != null ? reqDTO.getPageSize() : 20;
@@ -306,12 +311,16 @@ public class ItemServiceImpl implements ItemService {
                 pageNum = 1;
             }
             
-            boolean onlyOnSale = reqDTO.getOnlyOnSale() == null || reqDTO.getOnlyOnSale();
+            Integer requestedStatus = reqDTO.getStatus();
+            boolean onlyOnSale = requestedStatus == null && Boolean.TRUE.equals(reqDTO.getOnlyOnSale());
             
             // 统计总数
             int totalCount;
-            if (onlyOnSale) {
-                totalCount = goodsInfoService.countByStatusAndAccountId(0, reqDTO.getXianyuAccountId());
+            if (requestedStatus != null) {
+                totalCount = goodsInfoService.countByStatusAndAccountId(requestedStatus, reqDTO.getXianyuAccountId());
+            } else if (onlyOnSale) {
+                totalCount = goodsInfoService.countByStatusAndAccountId(
+                        GoodsStatus.ON_SALE.getCode(), reqDTO.getXianyuAccountId());
             } else {
                 totalCount = goodsInfoService.countByAccountId(reqDTO.getXianyuAccountId());
             }
@@ -331,8 +340,12 @@ public class ItemServiceImpl implements ItemService {
             
             // 获取当前页的商品列表
             List<XianyuGoodsInfo> pagedItems;
-            if (onlyOnSale) {
-                pagedItems = goodsInfoService.listByStatusAndAccountId(0, reqDTO.getXianyuAccountId(), pageNum, pageSize);
+            if (requestedStatus != null) {
+                pagedItems = goodsInfoService.listByStatusAndAccountId(
+                        requestedStatus, reqDTO.getXianyuAccountId(), pageNum, pageSize);
+            } else if (onlyOnSale) {
+                pagedItems = goodsInfoService.listByStatusAndAccountId(
+                        GoodsStatus.ON_SALE.getCode(), reqDTO.getXianyuAccountId(), pageNum, pageSize);
             } else {
                 pagedItems = goodsInfoService.listByAccountId(reqDTO.getXianyuAccountId(), pageNum, pageSize);
             }
@@ -633,7 +646,8 @@ public class ItemServiceImpl implements ItemService {
             String response = XianyuApiUtils.callApi(
                 "mtop.taobao.idle.pc.detail",
                 dataMap,
-                cookiesStr
+                cookiesStr,
+                accountBrowserProfileService.headersForAccount(accountId)
             );
             
             if (response == null) {
@@ -1023,7 +1037,8 @@ public class ItemServiceImpl implements ItemService {
         LambdaQueryWrapper<XianyuGoodsInfo> goodsQuery = new LambdaQueryWrapper<>();
         goodsQuery.eq(XianyuGoodsInfo::getXianyuAccountId, reqDTO.getXianyuAccountId())
                 .in(XianyuGoodsInfo::getXyGoodId, goodsIds);
-        Set<String> ownedGoodsIds = goodsInfoMapper.selectList(goodsQuery).stream()
+        List<XianyuGoodsInfo> ownedGoods = goodsInfoMapper.selectList(goodsQuery);
+        Set<String> ownedGoodsIds = ownedGoods.stream()
                 .map(XianyuGoodsInfo::getXyGoodId)
                 .collect(java.util.stream.Collectors.toSet());
         if (ownedGoodsIds.size() != goodsIds.size()) {
@@ -1038,6 +1053,11 @@ public class ItemServiceImpl implements ItemService {
                 && reqDTO.getXianyuAutoRateOn() != com.xianyusmart.entity.XianyuGoodsConfig.AUTO_RATE_ALWAYS
                 && reqDTO.getXianyuAutoRateOn() != com.xianyusmart.entity.XianyuGoodsConfig.AUTO_RATE_AFTER_BUYER) {
             return ResultObject.failed("自动评价模式仅支持关闭、始终评价或买家评价后评价");
+        }
+        if (Integer.valueOf(1).equals(reqDTO.getXianyuAutoPolishOn())) {
+            if (ownedGoods.stream().anyMatch(goods -> !GoodsStatus.isOnSale(goods.getStatus()))) {
+                return ResultObject.failed("只有真正处于在售状态的商品才能开启自动擦亮");
+            }
         }
 
         String rateContent = null;

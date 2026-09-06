@@ -18,6 +18,7 @@ export interface Account {
   runtimeProfileType?: 'DESKTOP_WEB'
   runtimePlatform?: 'LINUX' | 'MACOS' | 'WINDOWS'
   runtimeViewport?: string
+  runtimeBrowserVersion?: string
   browserStateReady?: boolean
 }
 

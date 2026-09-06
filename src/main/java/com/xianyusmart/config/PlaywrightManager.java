@@ -79,16 +79,12 @@ public class PlaywrightManager {
         lock.lock();
         try {
             ensureBrowserReady();
-            Browser.NewContextOptions contextOptions =
-                    accountBrowserProfileService.contextOptions(accountId, browser.version());
-            return browser.newContext(contextOptions);
+            return accountBrowserProfileService.createContext(browser, accountId);
         } catch (Exception e) {
             log.error("创建BrowserContext失败，尝试重建浏览器实例", e);
             try {
                 rebuild();
-                Browser.NewContextOptions contextOptions =
-                        accountBrowserProfileService.contextOptions(accountId, browser.version());
-                return browser.newContext(contextOptions);
+                return accountBrowserProfileService.createContext(browser, accountId);
             } catch (Exception ex) {
                 log.error("重建浏览器后仍然失败", ex);
                 throw new RuntimeException("Playwright浏览器不可用", ex);

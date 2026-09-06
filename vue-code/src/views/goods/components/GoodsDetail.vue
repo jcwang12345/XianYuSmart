@@ -89,6 +89,7 @@ const getStatusColor = (status: number) => {
   switch (info.type) {
     case 'success': return '#30D158'
     case 'warning': return '#FF9F0A'
+    case 'danger': return '#FF453A'
     case 'info': return 'rgba(28,28,30,.55)'
     default: return '#0A84FF'
   }
@@ -99,6 +100,7 @@ const getStatusBg = (status: number) => {
   switch (info.type) {
     case 'success': return 'rgba(48,209,88,.2)'
     case 'warning': return 'rgba(255,159,10,.18)'
+    case 'danger': return 'rgba(255,69,58,.14)'
     case 'info': return 'rgba(120,120,128,.12)'
     default: return 'rgba(10,132,255,.15)'
   }

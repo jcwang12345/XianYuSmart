@@ -333,6 +333,10 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
     @Override
     public boolean refreshWebSocketToken(Long accountId) {
         try {
+            if (!hasUsableCookie(accountId)) {
+                log.debug("【账号{}】Cookie非有效状态，跳过WebSocket token刷新", accountId);
+                return false;
+            }
             log.info("【账号{}】开始刷新WebSocket token...", accountId);
             
             // 调用WebSocketTokenService重新获取token
@@ -362,7 +366,8 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
             );
-            if (cookie == null) {
+            if (cookie == null || !Integer.valueOf(1).equals(cookie.getCookieStatus())
+                    || cookie.getCookieText() == null || cookie.getCookieText().isBlank()) {
                 return false;
             }
             
@@ -415,7 +420,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
         try {
             log.info("🔄 开始定期Cookie保活 + Token刷新检查...");
 
-            List<XianyuAccount> accounts = accountMapper.selectList(null);
+            List<XianyuAccount> accounts = accountMapper.selectReconnectableAccounts();
             int keepAliveSuccessCount = 0;
             int tokenRefreshSuccessCount = 0;
             int failCount = 0;
@@ -498,7 +503,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
             // 与Python完全一致：每分钟检查一次，判断是否需要刷新（1小时）
             log.debug("🔄 检查WebSocket token是否需要刷新...");
 
-            List<XianyuAccount> accounts = accountMapper.selectList(null);
+            List<XianyuAccount> accounts = accountMapper.selectReconnectableAccounts();
 
             for (XianyuAccount account : accounts) {
                 if (account.getStatus() == 1) { // 只刷新正常状态的账号
@@ -523,6 +528,17 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
         } catch (Exception e) {
             log.error("定时检查WebSocket token失败", e);
         }
+    }
+
+    private boolean hasUsableCookie(Long accountId) {
+        XianyuCookie cookie = cookieMapper.selectOne(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<XianyuCookie>()
+                        .eq(XianyuCookie::getXianyuAccountId, accountId)
+        );
+        return cookie != null
+                && Integer.valueOf(1).equals(cookie.getCookieStatus())
+                && cookie.getCookieText() != null
+                && !cookie.getCookieText().isBlank();
     }
     
     /**

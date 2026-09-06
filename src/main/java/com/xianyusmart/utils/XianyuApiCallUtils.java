@@ -1,6 +1,7 @@
 package com.xianyusmart.utils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.RiskControlService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +27,9 @@ public class XianyuApiCallUtils {
 
     @Autowired
     private RiskControlService riskControlService;
+
+    @Autowired
+    private AccountBrowserProfileService accountBrowserProfileService;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -107,8 +111,13 @@ public class XianyuApiCallUtils {
                 return ApiCallResult.guardBlocked(guard);
             }
 
+            Map<String, String> requestHeaders = new HashMap<>(
+                    accountBrowserProfileService.headersForAccount(accountId));
+            if (extraHeaders != null && !extraHeaders.isEmpty()) {
+                requestHeaders.putAll(extraHeaders);
+            }
             XianyuApiUtils.ApiCallResultWithHeaders result = XianyuApiUtils.callApiWithHeaders(
-                    apiName, apiPathVersion, dataMap, cookiesStr, null, null, extraHeaders, extraQueryParams);
+                    apiName, apiPathVersion, dataMap, cookiesStr, null, null, requestHeaders, extraQueryParams);
 
             String response = result.getBody();
             if (response == null || response.isEmpty()) {

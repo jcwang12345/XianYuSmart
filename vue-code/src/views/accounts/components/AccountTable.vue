@@ -56,6 +56,13 @@ const getStatusBg = (status: number) => {
     default: return 'rgba(0, 122, 255, 0.1)'
   }
 }
+
+const getPlatformText = (platform?: Account['runtimePlatform']) => {
+  if (platform === 'MACOS') return 'macOS'
+  if (platform === 'WINDOWS') return 'Windows'
+  if (platform === 'LINUX') return 'Linux'
+  return '初始化中'
+}
 </script>
 
 <template>
@@ -94,8 +101,11 @@ const getStatusBg = (status: number) => {
         <div class="account-card__row">
           <span class="account-card__label">运行档案</span>
           <span class="account-card__value">
-            桌面 Web · {{ account.runtimeViewport || '初始化中' }} ·
-            {{ account.browserStateReady ? '状态已保存' : '状态待建立' }}
+            桌面 Web · {{ getPlatformText(account.runtimePlatform) }} ·
+            {{ account.runtimeViewport || '初始化中' }}<br>
+            Chrome {{ account.runtimeBrowserVersion || '-' }} ·
+            {{ account.browserStateReady ? '状态已保存' : '状态待建立' }} ·
+            {{ account.runtimeProfileKey?.slice(0, 8) || '-' }}
           </span>
         </div>
         <div class="account-card__row">
@@ -161,7 +171,10 @@ const getStatusBg = (status: number) => {
             </span>
           </td>
           <td class="table__td">
-            <div>桌面 Web · {{ account.runtimePlatform || '-' }}</div>
+            <div>
+              桌面 Web · {{ getPlatformText(account.runtimePlatform) }} ·
+              Chrome {{ account.runtimeBrowserVersion || '-' }}
+            </div>
             <div class="profile-meta">
               {{ account.runtimeViewport || '初始化中' }} ·
               {{ account.browserStateReady ? '状态已保存' : '状态待建立' }} ·

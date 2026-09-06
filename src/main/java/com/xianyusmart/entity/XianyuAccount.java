@@ -76,5 +76,7 @@ public class XianyuAccount {
     @TableField(exist = false)
     private String runtimeViewport;
     @TableField(exist = false)
+    private String runtimeBrowserVersion;
+    @TableField(exist = false)
     private Boolean browserStateReady;
 }

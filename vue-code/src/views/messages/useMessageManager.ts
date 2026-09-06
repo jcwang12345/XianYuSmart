@@ -171,6 +171,7 @@ export function useMessageManager() {
     try {
       const params: any = {
         xianyuAccountId: selectedAccountId.value,
+        onlyOnSale: false,
         pageNum: goodsCurrentPage.value,
         pageSize: 20
       }

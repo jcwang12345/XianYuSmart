@@ -12,7 +12,7 @@ const todoCount = computed(() =>
 
 const setupSteps = computed(() => [
   { title: '连接闲鱼账号', description: '扫码登录或更新 Cookie，确认连接状态正常。', path: '/connection', action: '管理连接', completed: stats.accountCount > 0 },
-  { title: '同步并配置商品', description: '同步在售商品，在商品管理统一配置评价与擦亮规则。', path: '/goods', action: '配置商品', completed: stats.itemCount > 0 },
+  { title: '同步并配置商品', description: '同步全部商品状态，在商品管理统一配置评价与擦亮规则。', path: '/goods', action: '配置商品', completed: stats.itemCount > 0 },
   { title: '准备卡密库存', description: '创建卡密仓库并补充库存，再关联自动发货规则。', path: '/kami-config', action: '管理库存', completed: stats.availableKamiCount > 0 },
   { title: '处理订单与评价', description: '在订单页查看履约结果、双方评价并处理待评价订单。', path: '/orders', action: '进入订单', completed: stats.todayDeliveryCount > 0 }
 ])
@@ -140,8 +140,11 @@ onUnmounted(() => {
         <dl class="overview-list">
           <div><dt>闲鱼账号</dt><dd>{{ stats.accountCount }}</dd></div>
           <div><dt>今日自动回复</dt><dd>{{ stats.todayReplyCount }}</dd></div>
+          <div><dt>审核中商品</dt><dd>{{ stats.reviewingItemCount }}</dd></div>
           <div><dt>已下架商品</dt><dd>{{ stats.offShelfItemCount }}</dd></div>
           <div><dt>已售出商品</dt><dd>{{ stats.soldItemCount }}</dd></div>
+          <div><dt>已删除商品</dt><dd>{{ stats.deletedItemCount }}</dd></div>
+          <div v-if="stats.unknownItemCount > 0"><dt>其他商品状态</dt><dd>{{ stats.unknownItemCount }}</dd></div>
         </dl>
       </section>
 

@@ -226,8 +226,7 @@ public class PlaywrightCaptchaBrowserRunner implements CaptchaBrowserRunner {
             failureStage = "启动浏览器";
             Browser browser = browserType.launch(browserLaunchOptions(browserType, headless));
             failureStage = "创建浏览器上下文";
-            BrowserContext context = browser.newContext(
-                    accountBrowserProfileService.contextOptions(accountId, browser.version()));
+            BrowserContext context = accountBrowserProfileService.createContext(browser, accountId);
             context.setDefaultTimeout(10_000);
             failureStage = "加载账号Cookie";
             context.addCookies(buildBrowserCookies(cookieText));

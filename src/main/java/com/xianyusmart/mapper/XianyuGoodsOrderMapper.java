@@ -20,8 +20,11 @@ public interface XianyuGoodsOrderMapper {
               (SELECT COUNT(*) FROM xianyu_account) AS account_count,
               (SELECT COUNT(*) FROM xianyu_goods) AS item_count,
               (SELECT COUNT(*) FROM xianyu_goods WHERE status = 0) AS selling_item_count,
-              (SELECT COUNT(*) FROM xianyu_goods WHERE status = 1) AS off_shelf_item_count,
+              (SELECT COUNT(*) FROM xianyu_goods WHERE status = -9) AS reviewing_item_count,
+              (SELECT COUNT(*) FROM xianyu_goods WHERE status IN (1, -98)) AS off_shelf_item_count,
               (SELECT COUNT(*) FROM xianyu_goods WHERE status = 2) AS sold_item_count,
+              (SELECT COUNT(*) FROM xianyu_goods WHERE status = -1) AS deleted_item_count,
+              (SELECT COUNT(*) FROM xianyu_goods WHERE status IS NULL OR status NOT IN (-98, -9, -1, 0, 1, 2)) AS unknown_item_count,
               (SELECT COALESCE(SUM(CAST(total_price AS DECIMAL(12, 2))), 0)
                  FROM xianyu_goods_order WHERE state = 1 AND create_time >= CURRENT_DATE) AS today_revenue,
               (SELECT COUNT(*) FROM xianyu_goods_order
@@ -158,6 +161,11 @@ public interface XianyuGoodsOrderMapper {
 
     @Select("SELECT * FROM xianyu_goods_order WHERE id = #{id}")
     XianyuGoodsOrder selectById(@Param("id") Long id);
+
+    @Update("UPDATE xianyu_goods_order SET order_created_notified = 1 " +
+            "WHERE id = #{id} AND order_created_notified = 0 AND state <> 1 " +
+            "AND delivery_status NOT IN ('COMPLETED', 'SKIPPED')")
+    int claimOrderCreatedNotification(@Param("id") Long id);
 
     @Select("SELECT * FROM xianyu_goods_order WHERE " +
             "((delivery_status IN ('PENDING', 'RETRY_WAIT') AND (next_retry_time IS NULL OR next_retry_time <= NOW(3))) " +

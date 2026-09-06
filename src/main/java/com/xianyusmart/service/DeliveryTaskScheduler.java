@@ -69,7 +69,8 @@ public class DeliveryTaskScheduler {
 
     @Scheduled(fixedDelay = 25000, initialDelay = 60000)
     public void discoverOrdersFromApi() {
-        List<XianyuAccount> accounts = accountMapper.selectList(null);
+        // 仅轮询Cookie有效的正常账号；过期账号会在更新Cookie后由恢复任务重新接入。
+        List<XianyuAccount> accounts = accountMapper.selectReconnectableAccounts();
         if (accounts == null) {
             return;
         }

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.entity.XianyuGoodsInfo;
+import com.xianyusmart.constants.GoodsStatus;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.controller.dto.ItemDTO;
 import com.xianyusmart.service.GoodsInfoService;
@@ -130,7 +131,7 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
         goodsInfo.setDetailInfo(detailInfo);
         goodsInfo.setDetailUrl(detailUrl);
         goodsInfo.setSoldPrice(soldPrice);
-        goodsInfo.setStatus(0);
+        goodsInfo.setStatus(GoodsStatus.ON_SALE.getCode());
         goodsInfo.setUpdatedTime(getCurrentTimeString());
 
         // 发布结果使用独立事务原子落库，失败时保留远端商品ID供人工恢复。
@@ -400,13 +401,13 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
         try {
             LambdaQueryWrapper<XianyuGoodsInfo> queryWrapper = new LambdaQueryWrapper<>();
             queryWrapper.eq(XianyuGoodsInfo::getXianyuAccountId, xianyuAccountId);
-            queryWrapper.in(XianyuGoodsInfo::getStatus, 0, 1);
+            queryWrapper.in(XianyuGoodsInfo::getStatus, GoodsStatus.remoteActiveCodes());
             List<XianyuGoodsInfo> localItems = goodsInfoMapper.selectList(queryWrapper);
 
             int markedCount = 0;
             for (XianyuGoodsInfo localItem : localItems) {
                 if (!remoteItemIds.contains(localItem.getXyGoodId())) {
-                    localItem.setStatus(-1);
+                    localItem.setStatus(GoodsStatus.DELETED.getCode());
                     localItem.setUpdatedTime(getCurrentTimeString());
                     goodsInfoMapper.updateById(localItem);
                     markedCount++;

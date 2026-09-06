@@ -36,7 +36,7 @@ public class XianyuApiUtils {
     public static Map<String, String> buildStandardHeaders(String cookiesStr) {
         Map<String, String> headers = new HashMap<>();
         headers.put("Cookie", cookiesStr);
-        headers.put("User-Agent", AccountBrowserProfileService.defaultDesktopUserAgent());
+        headers.putAll(AccountBrowserProfileService.desktopHeaders("WINDOWS", null));
         headers.put("Accept", "application/json");
         headers.put("Accept-Language", "zh-CN,zh;q=0.9");
         headers.put("Cache-Control", "no-cache");
@@ -46,13 +46,6 @@ public class XianyuApiUtils {
         headers.put("Sec-Fetch-Dest", "empty");
         headers.put("Sec-Fetch-Mode", "cors");
         headers.put("Sec-Fetch-Site", "same-site");
-        headers.put("Sec-Ch-Ua", "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"146\", \"Chromium\";v=\"146\"");
-        headers.put("Sec-Ch-Ua-Mobile", "?0");
-        headers.put("Sec-Ch-Ua-Platform", "\"" + switch (AccountBrowserProfileService.runtimePlatform()) {
-            case "MACOS" -> "macOS";
-            case "WINDOWS" -> "Windows";
-            default -> "Linux";
-        } + "\"");
         return headers;
     }
     
@@ -113,6 +106,11 @@ public class XianyuApiUtils {
      */
     public static String callApi(String apiName, Map<String, Object> dataMap, String cookiesStr,
                                   String spmCnt, String spmPre) {
+        return callApi(apiName, dataMap, cookiesStr, spmCnt, spmPre, Map.of());
+    }
+
+    public static String callApi(String apiName, Map<String, Object> dataMap, String cookiesStr,
+                                  String spmCnt, String spmPre, Map<String, String> profileHeaders) {
         try {
             // 1. 解析Cookie获取token
             Map<String, String> cookies = XianyuSignUtils.parseCookies(cookiesStr);
@@ -145,6 +143,7 @@ public class XianyuApiUtils {
 
             // 8. 构建请求头
             Map<String, String> headers = buildStandardHeaders(cookiesStr);
+            headers.putAll(profileHeaders);
 
             // 9. 构建请求体
             Map<String, String> body = new HashMap<>();
@@ -296,6 +295,11 @@ public class XianyuApiUtils {
      */
     public static String callApi(String apiName, Map<String, Object> dataMap, String cookiesStr) {
         return callApi(apiName, dataMap, cookiesStr, null, null);
+    }
+
+    public static String callApi(String apiName, Map<String, Object> dataMap, String cookiesStr,
+                                 Map<String, String> profileHeaders) {
+        return callApi(apiName, dataMap, cookiesStr, null, null, profileHeaders);
     }
     
     /**

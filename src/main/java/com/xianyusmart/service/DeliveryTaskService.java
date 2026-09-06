@@ -10,6 +10,8 @@ public interface DeliveryTaskService {
 
     XianyuGoodsOrder discover(XianyuGoodsOrder order, DeliveryChannel channel);
 
+    boolean claimOrderCreatedNotification(Long taskId);
+
     List<XianyuGoodsOrder> claimDueTasks(String workerId, int limit);
 
     void complete(Long taskId);

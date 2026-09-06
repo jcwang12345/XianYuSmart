@@ -11,7 +11,7 @@ import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronLeft from '@/components/icons/IconChevronLeft.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import { getGoodsList, type GoodsItemWithConfig } from '@/api/goods'
-import { showError } from '@/utils'
+import { GOODS_STATUS_OPTIONS, showError } from '@/utils'
 import { parseRatingContents, serializeRatingContents } from '@/utils/rating-content'
 
 import GoodsTable from './components/GoodsTable.vue'
@@ -327,9 +327,9 @@ const HeaderSelectors = defineComponent({
           }
         }, [
           h('option', { value: '' }, '全部状态'),
-          h('option', { value: '0' }, '在售'),
-          h('option', { value: '1' }, '已下架'),
-          h('option', { value: '2' }, '已售出')
+          ...GOODS_STATUS_OPTIONS.map(status =>
+            h('option', { value: status.value.toString() }, status.label)
+          )
         ]),
         h(IconChevronDown, { class: 'header-select-icon' })
       ]),
@@ -407,9 +407,9 @@ const getPageButtons = () => {
               @change="handleStatusFilter"
             >
               <option value="">全部状态</option>
-              <option value="0">在售</option>
-              <option value="1">已下架</option>
-              <option value="2">已售出</option>
+              <option v-for="status in GOODS_STATUS_OPTIONS" :key="status.value" :value="String(status.value)">
+                {{ status.label }}
+              </option>
             </select>
             <span class="goods__select-icon">
               <IconChevronDown />

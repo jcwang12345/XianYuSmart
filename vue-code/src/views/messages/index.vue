@@ -13,6 +13,7 @@ import IconImage from '@/components/icons/IconImage.vue'
 
 import GoodsSidebar from './components/GoodsSidebar.vue'
 import MessageList from './components/MessageList.vue'
+import { getGoodsStatusText } from '@/utils'
 
 const {
   loading,
@@ -242,7 +243,7 @@ const checkScreenSize = () => {
                 :key="goods.item.id"
                 class="messages__sidebar-icon-item"
                 :class="{ 'messages__sidebar-icon-item--active': goodsIdFilter === goods.item.xyGoodId }"
-                :title="goods.item.title"
+                :title="`${goods.item.title} · ${getGoodsStatusText(goods.item.status).text}`"
                 @click="selectGoods(goods.item.xyGoodId, goods)"
               >
                 <img
@@ -386,7 +387,13 @@ const checkScreenSize = () => {
             </div>
             <div class="mobile-goods__info">
               <div class="mobile-goods__name">{{ goods.item.title }}</div>
-              <div class="mobile-goods__id">{{ goods.item.xyGoodId }}</div>
+              <div class="mobile-goods__meta">
+                <span class="mobile-goods__id">{{ goods.item.xyGoodId }}</span>
+                <span
+                  class="mobile-goods__status"
+                  :class="`mobile-goods__status--${getGoodsStatusText(goods.item.status).type}`"
+                >{{ getGoodsStatusText(goods.item.status).text }}</span>
+              </div>
             </div>
           </div>
 
@@ -584,6 +591,27 @@ const checkScreenSize = () => {
   color: #86868b;
   font-family: 'SF Mono', 'Menlo', monospace;
 }
+
+.mobile-goods__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mobile-goods__status {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  color: #86868b;
+  background: rgba(120, 120, 128, 0.1);
+}
+
+.mobile-goods__status--success { color: #248a3d; background: rgba(52, 199, 89, 0.1); }
+.mobile-goods__status--warning { color: #b25000; background: rgba(255, 149, 0, 0.12); }
+.mobile-goods__status--danger { color: #d70015; background: rgba(255, 59, 48, 0.1); }
 
 .mobile-goods__loading {
   display: flex;

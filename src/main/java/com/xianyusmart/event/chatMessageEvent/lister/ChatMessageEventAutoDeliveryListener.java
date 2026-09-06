@@ -121,6 +121,11 @@ public class ChatMessageEventAutoDeliveryListener {
             if (recordId == null) {
                 return;
             }
+            if (!deliveryTaskService.claimOrderCreatedNotification(recordId)) {
+                log.info("【账号{}】订单待发货通知已发送，跳过重放事件: recordId={}, orderId={}, pnmId={}",
+                        accountId, recordId, message.getOrderId(), message.getPnmId());
+                return;
+            }
             if (blockReason != null) {
                 log.warn("【账号{}】{}，订单已进入人工复核: orderId={}", accountId, blockReason, message.getOrderId());
             }

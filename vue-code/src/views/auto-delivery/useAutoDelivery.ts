@@ -21,7 +21,7 @@ import {
   type ConfirmShipmentReq,
   type TriggerAutoDeliveryReq
 } from '@/api/auto-delivery-record'
-import { showSuccess, showError, showInfo } from '@/utils'
+import { getGoodsStatusClass, getGoodsStatusText, showSuccess, showError, showInfo } from '@/utils'
 import { getConnectionStatus } from '@/api/websocket'
 import { toast } from '@/utils/toast'
 import {
@@ -83,7 +83,7 @@ export function useAutoDelivery() {
   const goodsTotal = ref(0)
   const goodsLoading = ref(false)
   const goodsListRef = ref<HTMLElement | null>(null)
-  const onlyOnSale = ref(true)
+  const onlyOnSale = ref(false)
 
   const detailDialogVisible = ref(false)
   const selectedGoodsId = ref<string>('')
@@ -270,13 +270,11 @@ export function useAutoDelivery() {
   const formatPrice = (price: string) => { return price ? `¥${price}` : '-' }
 
   const getStatusText = (status: number) => {
-    const map: Record<number, string> = { 0: '在售', 1: '已下架', 2: '已售出' }
-    return map[status] || '未知'
+    return getGoodsStatusText(status).text
   }
 
   const getStatusClass = (status: number) => {
-    const map: Record<number, string> = { 0: 'on-sale', 1: 'off-shelf', 2: 'sold' }
-    return map[status] || 'off-shelf'
+    return getGoodsStatusClass(status)
   }
 
   const getRecordStatusText = (state: number) => {

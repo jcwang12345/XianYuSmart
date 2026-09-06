@@ -30,6 +30,7 @@ public class MybatisPlusConfig {
             "xianyu_keyword_reply_rule", "xianyu_keyword_reply_content", "xianyu_goods_sku",
             "xianyu_goods_sku_property", "xianyu_human_intervention_record",
             "xianyu_buyer_profile", "xianyu_notification_channel", "xianyu_notification_log",
+            "xianyu_notification_outbox",
             "xianyu_kami_external_request",
             "merchant_resource", "merchant_task", "merchant_distribution", "merchant_short_link",
             "xianyu_device_profile"

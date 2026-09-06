@@ -2,7 +2,7 @@
 import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import { getGoodsDetail, updateAutoDeliveryStatus, updateAutoReplyStatus, deleteItem } from '@/api/goods';
-import { showSuccess, showError, showConfirm } from '@/utils';
+import { getGoodsStatusText, showSuccess, showError, showConfirm } from '@/utils';
 import type { GoodsItemWithConfig } from '@/api/goods';
 
 interface Props {
@@ -173,23 +173,12 @@ const handleDelete = async () => {
 
 // 获取状态标签类型
 const getStatusType = (status: number) => {
-  const statusMap: Record<number, string> = {
-    0: 'success',
-    1: 'info',
-    2: 'warning'
-  };
-  return statusMap[status] || 'info';
+  return getGoodsStatusText(status).type;
 };
 
 // 获取状态文本
 const getStatusText = (status: number) => {
-  const statusMap: Record<number, string> = {
-    0: '在售',
-    1: '已下架',
-    2: '已售出',
-    '-1': '已删除'
-  };
-  return statusMap[status] || '未知';
+  return getGoodsStatusText(status).text;
 };
 
 // 格式化价格
@@ -270,7 +259,7 @@ onBeforeUnmount(() => {
 
                 <div class="price-section">
                   <span class="price">{{ formatPrice(goodsDetail.item.soldPrice) }}</span>
-                  <span class="tag" :class="getStatusType(goodsDetail.item.status) === 'success' ? 'tag--success' : getStatusType(goodsDetail.item.status) === 'warning' ? 'tag--warning' : 'tag--info'">
+                  <span class="tag" :class="`tag--${getStatusType(goodsDetail.item.status)}`">
                     {{ getStatusText(goodsDetail.item.status) }}
                   </span>
                 </div>
@@ -644,6 +633,7 @@ onBeforeUnmount(() => {
 .tag--success { background: rgba(48,209,88,0.12); color: #30D158; }
 .tag--warning { background: rgba(255,159,10,0.12); color: #FF9F0A; }
 .tag--info { background: rgba(120,120,128,0.12); color: rgba(28,28,30,.55); }
+.tag--danger { background: rgba(255,69,58,0.12); color: #FF453A; }
 .tag--danger { background: rgba(255,69,58,0.12); color: #FF453A; }
 .native-image { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
 .native-empty { display: flex; align-items: center; justify-content: center; color: rgba(28,28,30,.55); font-size: 13px; padding: 20px; }

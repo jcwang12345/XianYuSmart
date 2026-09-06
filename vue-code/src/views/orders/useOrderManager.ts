@@ -29,7 +29,7 @@ export function useOrderManager() {
   const goodsLoading = ref(false)
   const goodsListRef = ref<HTMLElement | null>(null)
   const goodsCurrentPage = ref(1)
-  const onlyOnSale = ref(true)
+  const onlyOnSale = ref(false)
   const selectedGoodsId = ref<string | null>(null)
   const selectedDeliveryStatus = ref(parseDeliveryStatuses(route.query.deliveryStatus).join(','))
 

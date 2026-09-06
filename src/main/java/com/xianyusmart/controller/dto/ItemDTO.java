@@ -31,7 +31,7 @@ public class ItemDTO {
     private Long categoryId;
     
     /**
-     * 商品状态（0=在售）
+     * 商品状态（-98=平台下架，-9=审核中，-1=已删除，0=在售，1=已下架，2=已售出；其他值原样保留）
      */
     private Integer itemStatus;
     

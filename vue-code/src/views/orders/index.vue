@@ -15,7 +15,7 @@ import IconPackage from '@/components/icons/IconPackage.vue'
 
 import OrderTable from './components/OrderTable.vue'
 import { rateOrder, type OrderRateItem } from '@/api/order'
-import { showError, showSuccess } from '@/utils'
+import { getGoodsStatusClass, getGoodsStatusText, showError, showSuccess } from '@/utils'
 import { parseRatingContents } from '@/utils/rating-content'
 
 const goodsPanelCollapsed = ref(true)
@@ -356,9 +356,9 @@ const executeConfirmShipment = async () => {
                   <span class="orders__goods-price">¥{{ goods.item.soldPrice }}</span>
                   <span
                     class="orders__goods-status"
-                    :class="`orders__goods-status--${goods.item.status === 0 ? 'on-sale' : goods.item.status === 1 ? 'off-shelf' : 'sold'}`"
+                    :class="`orders__goods-status--${getGoodsStatusClass(goods.item.status)}`"
                   >
-                    {{ goods.item.status === 0 ? '在售' : goods.item.status === 1 ? '已下架' : goods.item.status === -1 ? '已删除' : '已售出' }}
+                    {{ getGoodsStatusText(goods.item.status).text }}
                   </span>
                 </div>
               </div>

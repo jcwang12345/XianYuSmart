@@ -5,7 +5,7 @@ import { getGoodsList, updateAutoReplyStatus, getAutoReplyConfig, updateAutoRepl
 import { chatWithAI, chatTestWithAI, putNewDataToRAG, queryRAGData, deleteRAGData, saveFixedMaterial, getFixedMaterial, syncDetailToFixedMaterial } from '@/api/ai'
 import type { RAGDataItem } from '@/api/ai'
 import type { AutoReplyRecord } from '@/api/goods'
-import { showSuccess, showError, showInfo } from '@/utils'
+import { getGoodsStatusClass, getGoodsStatusText, showSuccess, showError, showInfo } from '@/utils'
 import { toast } from '@/utils/toast'
 import type { Account } from '@/types'
 import type { GoodsItemWithConfig } from '@/api/goods'
@@ -41,7 +41,7 @@ export function useAutoReply() {
   const goodsTotal = ref(0)
   const goodsLoading = ref(false)
   const goodsListRef = ref<HTMLElement | null>(null)
-  const onlyOnSale = ref(true)
+  const onlyOnSale = ref(false)
 
   // Goods detail dialog
   const detailDialogVisible = ref(false)
@@ -126,14 +126,12 @@ export function useAutoReply() {
 
   // Get status text
   const getStatusText = (status: number) => {
-    const map: Record<number, string> = { 0: '在售', 1: '已下架', 2: '已售出' }
-    return map[status] || '未知'
+    return getGoodsStatusText(status).text
   }
 
   // Get status class
   const getStatusClass = (status: number) => {
-    const map: Record<number, string> = { 0: 'on-sale', 1: 'off-shelf', 2: 'sold' }
-    return map[status] || 'off-shelf'
+    return getGoodsStatusClass(status)
   }
 
   // Load accounts

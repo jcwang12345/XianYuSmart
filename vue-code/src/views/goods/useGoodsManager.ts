@@ -14,7 +14,13 @@ import {
   checkSyncing
 } from '@/api/goods'
 import { showSuccess, showError, showInfo, showConfirm } from '@/utils'
-import { getGoodsStatusText, formatPrice, formatTime } from '@/utils'
+import {
+  canToggleGoodsListingStatus,
+  getGoodsStatusText,
+  isGoodsOnSale,
+  formatPrice,
+  formatTime
+} from '@/utils'
 import type { Account } from '@/types'
 import type { GoodsItemWithConfig, SyncProgressResponse } from '@/api/goods'
 import type { GoodsEditForm } from './goods-edit'
@@ -123,8 +129,9 @@ export function useGoodsManager() {
 
     loading.value = true
     try {
-      const params: any = {
+      const params: Parameters<typeof getGoodsList>[0] = {
         xianyuAccountId: selectedAccountId.value,
+        onlyOnSale: false,
         pageNum: currentPage.value,
         pageSize: pageSize.value
       }
@@ -267,6 +274,10 @@ export function useGoodsManager() {
   }
 
   const toggleAutoPolish = (item: GoodsItemWithConfig, value: boolean) => {
+    if (value && !isGoodsOnSale(item.item.status)) {
+      showInfo('只有真正处于在售状态的商品才能开启自动擦亮')
+      return Promise.resolve(false)
+    }
     return updateAutoPolish(item, value ? 1 : 0)
   }
 
@@ -351,6 +362,10 @@ export function useGoodsManager() {
 
   const toggleListingStatus = async (item: GoodsItemWithConfig) => {
     if (!selectedAccountId.value) return
+    if (!canToggleGoodsListingStatus(item.item.status)) {
+      showInfo(`${getGoodsStatusText(item.item.status).text}商品不能直接切换上下架`)
+      return
+    }
     const onSale = item.item.status !== 0
     try {
       await changeListingStatus({

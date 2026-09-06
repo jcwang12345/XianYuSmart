@@ -4,8 +4,11 @@ export interface DashboardStats {
   accountCount: number
   itemCount: number
   sellingItemCount: number
+  reviewingItemCount: number
   offShelfItemCount: number
   soldItemCount: number
+  deletedItemCount: number
+  unknownItemCount: number
   todayRevenue: number
   todayDeliveryCount: number
   todayReplyCount: number

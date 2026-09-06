@@ -14,7 +14,10 @@ class AccountBrowserProfileServiceTest {
         assertEquals("DESKTOP_WEB", result.getProfileType());
         assertNotNull(result.getProfileKey());
         assertEquals(36, result.getProfileKey().length());
-        assertTrue(result.getViewportWidth() >= 1365);
+        assertEquals("WINDOWS", result.getPlatform());
+        assertEquals("149.0.7827.55", result.getBrowserVersion());
+        assertEquals(1536, result.getViewportWidth());
+        assertEquals(864, result.getViewportHeight());
         assertEquals("zh-CN", result.getLocale());
         assertEquals("Asia/Shanghai", result.getTimezoneId());
     }
@@ -23,9 +26,27 @@ class AccountBrowserProfileServiceTest {
     void viewportAndDesktopUaAreStable() {
         assertArrayEquals(AccountBrowserProfileService.viewportFor("stable-key"),
                 AccountBrowserProfileService.viewportFor("stable-key"));
-        String ua = AccountBrowserProfileService.userAgent("LINUX", "146.0.12.3");
-        assertTrue(ua.contains("X11; Linux x86_64"));
+        assertArrayEquals(new int[]{1365, 768}, AccountBrowserProfileService.viewportForAccount(1L));
+        assertArrayEquals(new int[]{1440, 900}, AccountBrowserProfileService.viewportForAccount(2L));
+        String ua = AccountBrowserProfileService.userAgent("WINDOWS", "146.0.12.3");
+        assertTrue(ua.contains("Windows NT 10.0"));
         assertTrue(ua.contains("Chrome/146.0.12.3"));
         assertFalse(ua.contains("Mobile"));
+        assertFalse(ua.contains("Linux"));
+    }
+
+    @Test
+    void assignsMatchingDesktopHeadersPerAccount() {
+        assertEquals("WINDOWS", AccountBrowserProfileService.platformForAccount(1L));
+        assertEquals("MACOS", AccountBrowserProfileService.platformForAccount(2L));
+        assertEquals("\"Windows\"", AccountBrowserProfileService.desktopHeaders("WINDOWS", null)
+                .get("Sec-Ch-Ua-Platform"));
+        assertEquals("\"macOS\"", AccountBrowserProfileService.desktopHeaders("MACOS", null)
+                .get("Sec-Ch-Ua-Platform"));
+        assertTrue(AccountBrowserProfileService.userAgent("MACOS", null).contains("Macintosh"));
+        assertTrue(AccountBrowserProfileService.userAgent("WINDOWS", null)
+                .contains("Chrome/149.0.7827.55"));
+        assertFalse(AccountBrowserProfileService.userAgentOverride("MACOS", null).toString()
+                .contains("Linux"));
     }
 }

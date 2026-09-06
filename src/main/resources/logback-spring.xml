@@ -3,9 +3,6 @@
     <!-- 定义日志文件的存储地址 -->
     <property name="LOG_HOME" value="./logs" />
     
-    <!-- 获取当前日期 -->
-    <timestamp key="byDate" datePattern="yyyy-MM-dd"/>
-    
     <!-- 控制台输出 -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
@@ -21,16 +18,14 @@
             <onMatch>ACCEPT</onMatch>
             <onMismatch>DENY</onMismatch>
         </filter>
-        <!-- 按日期创建文件夹 -->
-        <file>${LOG_HOME}/${byDate}/info.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
-            <fileNamePattern>${LOG_HOME}/${byDate}/info.%i.log</fileNamePattern>
-            <minIndex>1</minIndex>
-            <maxIndex>10</maxIndex>
-        </rollingPolicy>
-        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+        <file>${LOG_HOME}/info.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/archive/info.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
             <maxFileSize>20MB</maxFileSize>
-        </triggeringPolicy>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n</pattern>
             <charset>UTF-8</charset>
@@ -44,16 +39,14 @@
             <onMatch>ACCEPT</onMatch>
             <onMismatch>DENY</onMismatch>
         </filter>
-        <!-- 按日期创建文件夹 -->
-        <file>${LOG_HOME}/${byDate}/error.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
-            <fileNamePattern>${LOG_HOME}/${byDate}/error.%i.log</fileNamePattern>
-            <minIndex>1</minIndex>
-            <maxIndex>10</maxIndex>
-        </rollingPolicy>
-        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+        <file>${LOG_HOME}/error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/archive/error.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
             <maxFileSize>20MB</maxFileSize>
-        </triggeringPolicy>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>100MB</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n</pattern>
             <charset>UTF-8</charset>
@@ -62,16 +55,14 @@
     
     <!-- ALL日志文件（包含所有级别的日志） -->
     <appender name="ALL_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <!-- 按日期创建文件夹 -->
-        <file>${LOG_HOME}/${byDate}/all.log</file>
-        <rollingPolicy class="ch.qos.logback.core.rolling.FixedWindowRollingPolicy">
-            <fileNamePattern>${LOG_HOME}/${byDate}/all.%i.log</fileNamePattern>
-            <minIndex>1</minIndex>
-            <maxIndex>10</maxIndex>
-        </rollingPolicy>
-        <triggeringPolicy class="ch.qos.logback.core.rolling.SizeBasedTriggeringPolicy">
+        <file>${LOG_HOME}/all.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_HOME}/archive/all.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
             <maxFileSize>20MB</maxFileSize>
-        </triggeringPolicy>
+            <maxHistory>7</maxHistory>
+            <totalSizeCap>300MB</totalSizeCap>
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+        </rollingPolicy>
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n</pattern>
             <charset>UTF-8</charset>

@@ -50,7 +50,9 @@ public interface XianyuGoodsConfigMapper {
     @Select("SELECT * FROM xianyu_goods_config WHERE xianyu_auto_rate_on IN (1, 2) ORDER BY xianyu_account_id, id")
     java.util.List<XianyuGoodsConfig> selectAutoRateEnabled();
 
-    @Select("SELECT * FROM xianyu_goods_config WHERE xianyu_auto_polish_on = 1 ORDER BY xianyu_account_id, id")
+    @Select("SELECT c.* FROM xianyu_goods_config c " +
+            "INNER JOIN xianyu_goods g ON g.xianyu_account_id = c.xianyu_account_id AND g.xy_good_id = c.xy_goods_id " +
+            "WHERE c.xianyu_auto_polish_on = 1 AND g.status = 0 ORDER BY c.xianyu_account_id, c.id")
     java.util.List<XianyuGoodsConfig> selectAutoPolishEnabled();
 
     @Update("UPDATE xianyu_goods_config SET last_polish_time = #{polishTime} WHERE id = #{id} AND xianyu_auto_polish_on = 1")

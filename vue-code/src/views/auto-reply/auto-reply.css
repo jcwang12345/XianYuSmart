@@ -514,6 +514,22 @@
   background: rgba(255, 149, 0, 0.1);
 }
 
+.ar__goods-status--reviewing {
+  color: var(--d-warning);
+  background: rgba(255, 149, 0, 0.1);
+}
+
+.ar__goods-status--deleted,
+.ar__goods-status--platform-off-shelf {
+  color: var(--d-danger);
+  background: rgba(255, 59, 48, 0.1);
+}
+
+.ar__goods-status--unknown {
+  color: var(--d-text-tertiary);
+  background: rgba(255,255,255,0.38);
+}
+
 .ar__goods-auto-badge {
   display: inline-flex;
   align-items: center;
