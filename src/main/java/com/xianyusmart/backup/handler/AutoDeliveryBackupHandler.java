@@ -10,6 +10,7 @@ import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuFixedDeliveryTemplateMapper;
 import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
 import com.xianyusmart.mapper.XianyuKamiConfigMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import com.xianyusmart.service.BuyerMessageService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +33,9 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
 
     @Autowired
     private XianyuKamiConfigMapper kamiConfigMapper;
+
+    @Autowired
+    private SharedAccountLinkMapper sharedAccountLinkMapper;
 
     @Override
     public String getModuleKey() {
@@ -82,6 +86,8 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
             if (account == null) continue;
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("unb", account.getUnb());
+            map.put("accountUnbs", sharedAccountLinkMapper.selectFixedTemplateAccounts(template.getId()).stream()
+                    .map(accountMapper::selectById).filter(Objects::nonNull).map(XianyuAccount::getUnb).toList());
             map.put("templateName", template.getTemplateName());
             map.put("deliveryContent", template.getDeliveryContent());
             map.put("messageTemplate", template.getMessageTemplate());
@@ -200,7 +206,7 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
                 targetId = Long.valueOf(key);
             }
             XianyuKamiConfig kamiConfig = kamiConfigMapper.selectById(targetId);
-            if (kamiConfig == null || !accountId.equals(kamiConfig.getXianyuAccountId())) {
+            if (kamiConfig == null || !sharedAccountLinkMapper.selectKamiConfigAccounts(targetId).contains(accountId)) {
                 throw new IllegalArgumentException("卡密仓库不存在或与商品账号不一致");
             }
             resolvedIds.add(String.valueOf(targetId));
@@ -245,6 +251,12 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
             String name = (String) map.get("templateName");
             Long accountId = unbToAccountId.get((String) map.get("unb"));
             if (accountId == null || name == null) continue;
+            @SuppressWarnings("unchecked")
+            List<String> accountUnbs = map.get("accountUnbs") instanceof List<?> values
+                    ? values.stream().map(String::valueOf).toList() : List.of((String) map.get("unb"));
+            List<Long> accountIds = accountUnbs.stream().map(unbToAccountId::get)
+                    .filter(Objects::nonNull).distinct().toList();
+            if (accountIds.isEmpty()) accountIds = List.of(accountId);
             XianyuFixedDeliveryTemplate template =
                     fixedTemplateMapper.findByAccountIdAndName(accountId, name);
             if (template == null) {
@@ -255,11 +267,17 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
             template.setDeliveryContent((String) map.get("deliveryContent"));
             template.setMessageTemplate((String) map.get("messageTemplate"));
             if (template.getId() == null) {
+                template.setTenantId(accountMapper.selectById(accountId).getTenantId());
                 fixedTemplateMapper.insert(template);
             } else {
                 fixedTemplateMapper.updateById(template);
             }
-            result.put(accountId + ":" + name, template.getId());
+            sharedAccountLinkMapper.deleteFixedTemplateAccounts(template.getId());
+            sharedAccountLinkMapper.insertFixedTemplateAccounts(
+                    template.getId(), accountMapper.selectById(accountId).getTenantId(), accountIds);
+            for (Long linkedAccountId : accountIds) {
+                result.put(linkedAccountId + ":" + name, template.getId());
+            }
         }
         return result;
     }

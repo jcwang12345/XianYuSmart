@@ -48,6 +48,7 @@ export interface MerchantResource {
   name: string
   status: number
   xianyuAccountId?: number
+  xianyuAccountIds?: number[]
   xyGoodsId?: string
   stock: number
   amount: number
@@ -132,8 +133,8 @@ export function cancelTask(id: number) {
   return request<void>({ url: `/merchant/tasks/${id}/cancel`, method: 'POST' })
 }
 
-export function batchPublish(resourceIds: number[], xianyuAccountId?: number) {
-  return request<MerchantTask[]>({ url: '/merchant/tasks/batch-publish', method: 'POST', data: { resourceIds, xianyuAccountId } })
+export function batchPublish(resourceIds: number[], xianyuAccountIds?: number[]) {
+  return request<MerchantTask[]>({ url: '/merchant/tasks/batch-publish', method: 'POST', data: { resourceIds, xianyuAccountIds } })
 }
 
 export function getDistributions(params: { status?: number; settlementStatus?: number; limit?: number } = {}) {

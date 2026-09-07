@@ -13,7 +13,12 @@ public class XianyuKamiConfig {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    @JsonIgnore
+    private Long tenantId;
+
     private Long xianyuAccountId;
+
+    private String sharingMode;
 
     private String aliasName;
 

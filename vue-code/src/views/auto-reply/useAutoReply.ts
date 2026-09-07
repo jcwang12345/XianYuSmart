@@ -9,7 +9,7 @@ import { getGoodsStatusClass, getGoodsStatusText, showSuccess, showError, showIn
 import { toast } from '@/utils/toast'
 import type { Account } from '@/types'
 import type { GoodsItemWithConfig } from '@/api/goods'
-import { getKeywordReplyRules, addKeywordRule, deleteKeywordRule, updateKeyword, addKeywordContent, deleteKeywordContent, updateKeywordContent, updateKeywordRuleMatchMode, ensureFallbackRule } from '@/api/keywordReply'
+import { getKeywordReplyRules, addKeywordRule, deleteKeywordRule, updateKeyword, addKeywordContent, deleteKeywordContent, updateKeywordContent, updateKeywordRuleMatchMode, updateKeywordRuleAccounts, ensureFallbackRule } from '@/api/keywordReply'
 import type { KeywordReplyRule, KeywordReplyContent } from '@/api/keywordReply'
 
 // 聊天消息类型
@@ -361,6 +361,7 @@ export function useAutoReply() {
   const editKeywordDialogVisible = ref(false)
   const editKeywordId = ref<number | null>(null)
   const editKeywordName = ref('')
+  const editKeywordAccountIds = ref<number[]>([])
 
   const selectedKeywordRule = computed(() => {
     if (!selectedKeywordRuleId.value) return null
@@ -631,16 +632,22 @@ export function useAutoReply() {
   const handleOpenEditKeyword = (rule: KeywordReplyRule) => {
     editKeywordId.value = rule.id as number
     editKeywordName.value = rule.keyword
+    editKeywordAccountIds.value = rule.xianyuAccountIds?.length ? [...rule.xianyuAccountIds] : [Number(rule.xianyuAccountId)]
     editKeywordDialogVisible.value = true
   }
 
   const handleSaveEditKeyword = async () => {
-    if (!editKeywordId.value || !editKeywordName.value.trim()) return
+    if (!editKeywordId.value || !editKeywordName.value.trim() || !editKeywordAccountIds.value.length) return
     try {
-      await updateKeyword({ ruleId: editKeywordId.value, keyword: editKeywordName.value.trim() })
+      await Promise.all([
+        updateKeyword({ ruleId: editKeywordId.value, keyword: editKeywordName.value.trim() }),
+        updateKeywordRuleAccounts({ ruleId: editKeywordId.value, xianyuAccountIds: editKeywordAccountIds.value })
+      ])
       const rule = keywordRules.value.find(r => r.id === editKeywordId.value)
       if (rule) {
         rule.keyword = editKeywordName.value.trim()
+        rule.xianyuAccountIds = [...editKeywordAccountIds.value]
+        rule.sharingScope = editKeywordAccountIds.value.length > 1 ? 'ACCOUNT' : 'GOODS'
       }
       editKeywordDialogVisible.value = false
       showSuccess('关键词修改成功')
@@ -1364,6 +1371,7 @@ export function useAutoReply() {
     editKeywordDialogVisible,
     editKeywordId,
     editKeywordName,
+    editKeywordAccountIds,
     handleOpenEditKeyword,
     handleSaveEditKeyword,
     handleDeleteFromEditDialog

@@ -34,7 +34,7 @@ const resources = ref<MerchantResource[]>([])
 const tasks = ref<MerchantTask[]>([])
 const distributions = ref<MerchantDistribution[]>([])
 const selectedIds = ref<number[]>([])
-const publishAccountId = ref<number>()
+const publishAccountIds = ref<number[]>([])
 const showEditor = ref(false)
 const overviewCounts = reactive<Record<string, number>>({})
 const overviewTaskCount = ref(0)
@@ -46,7 +46,7 @@ const kamiLoading = ref(false)
 
 const form = reactive<any>({})
 const formDefaults = () => ({
-  id: undefined, resourceType: activeType.value, name: '', status: 1, xianyuAccountId: undefined,
+  id: undefined, resourceType: activeType.value, name: '', status: 1, xianyuAccountId: undefined, xianyuAccountIds: [] as number[],
   xyGoodsId: '', stock: 0, amount: 0, scheduledTime: '', description: '', images: '', videos: '', sourceUrl: '',
   commissionAmount: 0, province: '', city: '', detail: '', keyword: '', minAmount: 0,
   maxAmount: 999999, minStock: 0, intervalMinutes: 1440, materialId: undefined, kamiConfigId: undefined,
@@ -157,6 +157,7 @@ const openCreate = () => {
 
 const openEdit = (resource: MerchantResource) => {
   Object.assign(form, formDefaults(), resource, resource.data || {}, {
+    xianyuAccountIds: resource.xianyuAccountIds?.length ? [...resource.xianyuAccountIds] : (resource.xianyuAccountId ? [resource.xianyuAccountId] : []),
     images: Array.isArray(resource.data?.images) ? resource.data.images.join('\n') : resource.data?.images || '',
     videos: Array.isArray(resource.data?.videos) ? resource.data.videos.join('\n') : resource.data?.videos || ''
   })
@@ -167,6 +168,10 @@ const openEdit = (resource: MerchantResource) => {
 watch(() => form.xianyuAccountId, () => {
   if (showEditor.value && form.resourceType === 'MATERIAL') void loadKamiConfigs()
 })
+
+watch(() => form.xianyuAccountIds, (ids: number[]) => {
+  if (form.resourceType === 'MATERIAL') form.xianyuAccountId = ids?.[0]
+}, { deep: true })
 
 const buildData = () => {
   const images = String(form.images || '').split(/\n|,/).map((item: string) => item.trim()).filter(Boolean)
@@ -197,6 +202,7 @@ const resourceVideos = computed<string[]>({
 const submitForm = async () => {
   if (saving.value) return
   if (!String(form.name || '').trim()) return showError('请输入名称')
+  if (form.resourceType === 'MATERIAL' && !form.xianyuAccountIds?.length) return showError('素材至少需要关联一个发布账号')
   if (form.resourceType === 'ADDRESS' && (!form.province || !form.city || !form.detail)) return showError('请完整填写省份、城市和详细地址')
   if (form.resourceType === 'SUPPLY' && !form.sourceUrl && !form.xyGoodsId) return showError('来源地址和闲鱼商品 ID 至少填写一项')
   if (form.resourceType === 'SELECTION_RULE' && (!form.xianyuAccountId || !form.keyword)) return showError('选品规则需要关联账号并填写关键词')
@@ -210,6 +216,7 @@ const submitForm = async () => {
     await saveResource({
       id: form.id, resourceType: form.resourceType, name: form.name.trim(), status: Number(form.status),
       xianyuAccountId: form.xianyuAccountId ? Number(form.xianyuAccountId) : undefined,
+      xianyuAccountIds: form.resourceType === 'MATERIAL' ? form.xianyuAccountIds.map(Number) : undefined,
       xyGoodsId: form.xyGoodsId || undefined, stock: Number(form.stock || 0), amount: Number(form.amount || 0),
       scheduledTime: form.scheduledTime || undefined, data: buildData()
     } as any)
@@ -245,6 +252,11 @@ const runResource = async (resource: MerchantResource) => {
     }
   }
   await runWithAction(`run:${resource.id}`, async () => {
+    if (resource.resourceType === 'MATERIAL') {
+      const tasks = (await batchPublish([resource.id])).data || []
+      showSuccess(`已按关联账号创建 ${tasks.length} 个发布任务`)
+      return
+    }
     const task = (await executeResource(resource.id)).data
     if (task?.status === -1) {
       showError(task.errorMessage || '任务执行失败，请到任务记录查看原因')
@@ -278,8 +290,8 @@ const compensate = async (resource: MerchantResource) => {
 const publishSelected = async () => {
   if (!selectedIds.value.length) return showError('请先选择素材')
   await runWithAction('batch-publish', async () => {
-    await batchPublish(selectedIds.value, publishAccountId.value)
-    showSuccess(`已创建 ${selectedIds.value.length} 个发布任务`)
+    const tasks = (await batchPublish(selectedIds.value, publishAccountIds.value.length ? publishAccountIds.value : undefined)).data || []
+    showSuccess(`已创建 ${tasks.length} 个账号发布任务`)
     selectedIds.value = []
   })
 }
@@ -370,7 +382,7 @@ onMounted(async () => {
         <div class="card-toolbar">
           <div><strong>{{ currentType.label }}</strong><span>{{ resources.length }} 条</span></div>
           <div v-if="activeType === 'MATERIAL'" class="batch-actions">
-            <select v-model="publishAccountId"><option :value="undefined">使用素材关联账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select>
+            <select v-model="publishAccountIds" multiple title="不选择时使用各素材关联账号"><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select>
             <button class="secondary-btn" :disabled="!selectedIds.length || !!pendingAction" @click="publishSelected">{{ isActioning('batch-publish') ? '创建中...' : '批量发布' }}</button>
           </div>
         </div>
@@ -381,7 +393,7 @@ onMounted(async () => {
             <tr v-for="resource in resources" :key="resource.id">
               <td v-if="activeType === 'MATERIAL'" class="check-col"><input v-model="selectedIds" type="checkbox" :value="resource.id"></td>
               <td><strong>{{ resource.name }}</strong><small>{{ resourceSummary(resource) }}</small></td>
-              <td>{{ accountName(resource.xianyuAccountId) }}</td>
+              <td>{{ (resource.xianyuAccountIds?.length ? resource.xianyuAccountIds : [resource.xianyuAccountId]).filter(Boolean).map(id => accountName(id)).join('、') || '-' }}</td>
               <td><span v-if="resource.xyGoodsId">{{ resource.xyGoodsId }}</span><span v-else>库存 {{ resource.stock }}</span></td>
               <td><span class="status" :class="{ enabled: resource.status === 1 }">{{ statusText(resource.status) }}</span></td>
               <td>{{ formatTime(resource.scheduledTime) }}</td>
@@ -421,7 +433,8 @@ onMounted(async () => {
         <div class="form-grid">
           <label class="wide"><span>名称</span><input v-model="form.name" required maxlength="200" placeholder="输入便于识别的名称"><small class="form-hint">{{ form.name.length }} / 200</small></label>
           <label><span>状态</span><select v-model="form.status"><option :value="1">启用</option><option :value="0">停用</option></select></label>
-          <label><span>关联账号</span><select v-model="form.xianyuAccountId"><option :value="undefined">不关联</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select></label>
+          <label v-if="form.resourceType !== 'MATERIAL'"><span>关联账号</span><select v-model="form.xianyuAccountId"><option :value="undefined">不关联</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select></label>
+          <label v-else class="wide"><span>发布账号（可多选）</span><select v-model="form.xianyuAccountIds" multiple :size="Math.min(accounts.length, 5)"><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select><small class="form-hint">同一份素材统一维护；发布时为每个账号创建独立任务和结果。</small></label>
           <template v-if="['MATERIAL','SUPPLY'].includes(form.resourceType)">
             <label><span>库存</span><input v-model.number="form.stock" type="number" min="0"></label><label><span>价格</span><input v-model.number="form.amount" type="number" min="0" step="0.01"></label>
             <label class="wide"><span>详情描述</span><textarea v-model="form.description" rows="4" placeholder="商品卖点与交付说明"></textarea></label>

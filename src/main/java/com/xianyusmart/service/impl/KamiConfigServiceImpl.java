@@ -14,6 +14,7 @@ import com.xianyusmart.mapper.XianyuKamiConfigMapper;
 import com.xianyusmart.mapper.XianyuKamiExternalRequestMapper;
 import com.xianyusmart.mapper.XianyuKamiItemMapper;
 import com.xianyusmart.mapper.XianyuKamiUsageRecordMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import com.xianyusmart.service.EmailNotifyService;
 import com.xianyusmart.service.ExternalKamiProvisionService;
 import com.xianyusmart.service.KamiConfigService;
@@ -55,6 +56,9 @@ public class KamiConfigServiceImpl implements KamiConfigService {
     private XianyuKamiUsageRecordMapper kamiUsageRecordMapper;
 
     @Autowired
+    private SharedAccountLinkMapper sharedAccountLinkMapper;
+
+    @Autowired
     private EmailNotifyService emailNotifyService;
 
     @Autowired
@@ -78,6 +82,19 @@ public class KamiConfigServiceImpl implements KamiConfigService {
     public ResultObject<KamiConfigRespDTO> createOrUpdateConfig(KamiConfigReqDTO reqDTO) {
         try {
             validateSourceConfig(reqDTO);
+            List<Long> accountIds = normalizeAccountIds(reqDTO.getXianyuAccountIds(), reqDTO.getXianyuAccountId());
+            if (accountIds.isEmpty()) {
+                return ResultObject.failed("至少选择一个适用账号");
+            }
+            for (Long accountId : accountIds) {
+                if (xianyuAccountMapper.selectById(accountId) == null) {
+                    return ResultObject.failed("闲鱼账号不存在或无权访问");
+                }
+            }
+            String sharingMode = "SHARED".equalsIgnoreCase(reqDTO.getSharingMode()) ? "SHARED" : "PRIVATE";
+            if ("PRIVATE".equals(sharingMode)) {
+                accountIds = List.of(accountIds.get(0));
+            }
             XianyuKamiConfig config;
             if (reqDTO.getId() != null) {
                 config = kamiConfigMapper.lockById(reqDTO.getId());
@@ -88,16 +105,14 @@ public class KamiConfigServiceImpl implements KamiConfigService {
                     return ResultObject.failed("存在预占库存或待核对供货请求，暂不能修改供货来源");
                 }
             } else {
-                // 创建前按租户校验账号归属，避免配置挂载到其他租户账号。
-                if (reqDTO.getXianyuAccountId() == null
-                        || xianyuAccountMapper.selectById(reqDTO.getXianyuAccountId()) == null) {
-                    return ResultObject.failed("闲鱼账号不存在或无权访问");
-                }
                 config = new XianyuKamiConfig();
-                config.setXianyuAccountId(reqDTO.getXianyuAccountId());
+                config.setXianyuAccountId(accountIds.get(0));
+                config.setTenantId(xianyuAccountMapper.selectById(accountIds.get(0)).getTenantId());
                 config.setTotalCount(0);
                 config.setUsedCount(0);
             }
+            config.setSharingMode(sharingMode);
+            config.setXianyuAccountId(accountIds.get(0));
             if (reqDTO.getAliasName() != null) {
                 config.setAliasName(reqDTO.getAliasName());
             }
@@ -128,6 +143,7 @@ public class KamiConfigServiceImpl implements KamiConfigService {
             } else {
                 kamiConfigMapper.insert(config);
             }
+            replaceAccounts(config.getId(), config.getTenantId(), accountIds);
             return ResultObject.success(toConfigRespDTO(config));
         } catch (Exception e) {
             log.error("创建/更新卡密配置失败", e);
@@ -507,6 +523,8 @@ public class KamiConfigServiceImpl implements KamiConfigService {
         KamiConfigRespDTO dto = new KamiConfigRespDTO();
         dto.setId(config.getId());
         dto.setXianyuAccountId(config.getXianyuAccountId());
+        dto.setXianyuAccountIds(sharedAccountLinkMapper.selectKamiConfigAccounts(config.getId()));
+        dto.setSharingMode(config.getSharingMode() == null ? "PRIVATE" : config.getSharingMode());
         dto.setAliasName(config.getAliasName());
         dto.setSourceType(config.getSourceType());
         dto.setExternalApiUrl(config.getExternalApiUrl());
@@ -526,6 +544,18 @@ public class KamiConfigServiceImpl implements KamiConfigService {
         dto.setCreateTime(config.getCreateTime());
         dto.setUpdateTime(config.getUpdateTime());
         return dto;
+    }
+
+    private List<Long> normalizeAccountIds(List<Long> accountIds, Long legacyAccountId) {
+        List<Long> normalized = accountIds == null ? new ArrayList<>()
+                : accountIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (normalized.isEmpty() && legacyAccountId != null) return List.of(legacyAccountId);
+        return normalized;
+    }
+
+    private void replaceAccounts(Long configId, Long tenantId, List<Long> accountIds) {
+        sharedAccountLinkMapper.deleteKamiConfigAccounts(configId);
+        sharedAccountLinkMapper.insertKamiConfigAccounts(configId, tenantId, accountIds);
     }
 
     private KamiItemRespDTO toItemRespDTO(XianyuKamiItem item) {

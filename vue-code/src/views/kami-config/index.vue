@@ -39,6 +39,8 @@ const showCreateDialog = ref(false)
 const editingConfigId = ref<number>()
 const createForm = ref({
   aliasName: '',
+  sharingMode: 'PRIVATE' as 'PRIVATE' | 'SHARED',
+  xianyuAccountIds: [] as number[],
   sourceType: 'LOCAL' as 'LOCAL' | 'API',
   externalApiUrl: '',
   externalApiHeaders: '{}',
@@ -127,6 +129,8 @@ const resetConfigForm = () => {
   editingConfigId.value = undefined
   createForm.value = {
     aliasName: '',
+    sharingMode: 'PRIVATE',
+    xianyuAccountIds: selectedAccountId.value ? [selectedAccountId.value] : [],
     sourceType: 'LOCAL',
     externalApiUrl: '',
     externalApiHeaders: '{}',
@@ -147,6 +151,8 @@ const openSourceConfigDialog = () => {
   editingConfigId.value = config.id
   createForm.value = {
     aliasName: config.aliasName || '',
+    sharingMode: config.sharingMode || 'PRIVATE',
+    xianyuAccountIds: config.xianyuAccountIds?.length ? [...config.xianyuAccountIds] : [config.xianyuAccountId],
     sourceType: config.sourceType || 'LOCAL',
     externalApiUrl: config.externalApiUrl || '',
     externalApiHeaders: '',
@@ -234,11 +240,19 @@ const handleCreate = async () => {
     toast.warning('请先选择账号')
     return
   }
+  if (createForm.value.sharingMode === 'SHARED' && createForm.value.xianyuAccountIds.length < 2) {
+    toast.warning('共享库存池请至少选择两个账号')
+    return
+  }
   createLoading.value = true
   try {
     const res = await saveKamiConfig({
       id: editingConfigId.value,
       xianyuAccountId: selectedAccountId.value,
+      xianyuAccountIds: createForm.value.sharingMode === 'SHARED'
+        ? createForm.value.xianyuAccountIds
+        : [selectedAccountId.value],
+      sharingMode: createForm.value.sharingMode,
       aliasName: createForm.value.aliasName || '未命名',
       sourceType: createForm.value.sourceType,
       externalApiUrl: createForm.value.sourceType === 'API' ? createForm.value.externalApiUrl : undefined,
@@ -738,6 +752,24 @@ onUnmounted(() => {
                 <label class="form-label">别名</label>
                 <input v-model="createForm.aliasName" class="form-input" placeholder="请输入别名" maxlength="50" />
                 <small class="form-hint">{{ createForm.aliasName.length }} / 50</small>
+              </div>
+              <div class="form-row">
+                <label class="form-label">库存使用方式</label>
+                <div class="form-radio-group">
+                  <label class="form-radio" :class="{ 'is-active': createForm.sharingMode === 'PRIVATE' }">
+                    <input v-model="createForm.sharingMode" type="radio" value="PRIVATE" />私有库存
+                  </label>
+                  <label class="form-radio" :class="{ 'is-active': createForm.sharingMode === 'SHARED' }">
+                    <input v-model="createForm.sharingMode" type="radio" value="SHARED" />共享库存池
+                  </label>
+                </div>
+                <span class="form-suffix">私有库存仅当前账号使用；共享库存池由所选账号原子消费，同一张卡密不会重复发放。</span>
+              </div>
+              <div v-if="createForm.sharingMode === 'SHARED'" class="form-row">
+                <label class="form-label">共享账号（可多选）</label>
+                <select v-model="createForm.xianyuAccountIds" class="form-input" multiple :size="Math.min(accounts.length, 5)">
+                  <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
+                </select>
               </div>
               <div class="form-row">
                 <label class="form-label">卡密来源</label>

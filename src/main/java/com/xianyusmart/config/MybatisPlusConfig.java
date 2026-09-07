@@ -33,6 +33,8 @@ public class MybatisPlusConfig {
             "xianyu_notification_outbox",
             "xianyu_kami_external_request",
             "merchant_resource", "merchant_task", "merchant_distribution", "merchant_short_link",
+            "merchant_resource_account", "xianyu_keyword_reply_rule_account",
+            "xianyu_fixed_delivery_template_account", "xianyu_kami_config_account",
             "xianyu_device_profile"
     );
 

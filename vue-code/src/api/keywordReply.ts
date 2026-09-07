@@ -10,6 +10,8 @@ export interface KeywordReplyContent {
 export interface KeywordReplyRule {
   id: string | number;
   xianyuAccountId: string | number;
+  xianyuAccountIds: number[];
+  sharingScope: 'GOODS' | 'ACCOUNT';
   xyGoodsId: string;
   keyword: string;
   matchMode: number;
@@ -35,6 +37,10 @@ export function updateKeyword(data: { ruleId: string | number; keyword: string }
 
 export function updateKeywordRuleMatchMode(data: { ruleId: string | number; matchMode: number }) {
   return request({ url: '/keyword-reply/updateMatchMode', method: 'POST', data });
+}
+
+export function updateKeywordRuleAccounts(data: { ruleId: string | number; xianyuAccountIds: number[] }) {
+  return request({ url: '/keyword-reply/updateAccounts', method: 'POST', data });
 }
 
 export function ensureFallbackRule(data: { xianyuAccountId: number; xyGoodsId: string }) {

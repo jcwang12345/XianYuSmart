@@ -10,6 +10,8 @@ public interface KeywordReplyService {
 
     KeywordReplyRuleBO addRule(Long accountId, String xyGoodsId, String keyword);
 
+    void updateAccounts(Long ruleId, List<Long> accountIds);
+
     void deleteRule(Long ruleId);
 
     void updateKeyword(Long ruleId, String keyword);

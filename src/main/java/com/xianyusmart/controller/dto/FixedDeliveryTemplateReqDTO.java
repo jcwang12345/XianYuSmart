@@ -1,7 +1,8 @@
 package com.xianyusmart.controller.dto;
 
-import jakarta.validation.constraints.NotNull;
 import lombok.Data;
+
+import java.util.List;
 
 /**
  * 固定内容发货模板请求
@@ -11,8 +12,9 @@ public class FixedDeliveryTemplateReqDTO {
 
     private Long id;
 
-    @NotNull(message = "闲鱼账号ID不能为空")
     private Long xianyuAccountId;
+
+    private List<Long> xianyuAccountIds;
 
     private String templateName;
 

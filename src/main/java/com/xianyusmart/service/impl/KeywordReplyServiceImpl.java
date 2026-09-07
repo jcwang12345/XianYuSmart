@@ -8,6 +8,8 @@ import com.xianyusmart.entity.bo.KeywordReplyRuleBO;
 import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import com.xianyusmart.mapper.XianyuKeywordReplyContentMapper;
 import com.xianyusmart.mapper.XianyuKeywordReplyRuleMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
+import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.service.KeywordReplyService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,6 +31,12 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
     @Autowired
     private XianyuGoodsConfigMapper goodsConfigMapper;
 
+    @Autowired
+    private SharedAccountLinkMapper sharedAccountLinkMapper;
+
+    @Autowired
+    private XianyuAccountMapper accountMapper;
+
     @Override
     public List<KeywordReplyRuleBO> getRules(Long accountId, String xyGoodsId) {
         List<XianyuKeywordReplyRule> rules = ruleMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
@@ -44,23 +52,30 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
 
     @Override
     public KeywordReplyRuleBO addRule(Long accountId, String xyGoodsId, String keyword) {
+        var account = accountMapper.selectById(accountId);
+        if (account == null) throw new IllegalArgumentException("闲鱼账号不存在或无权访问");
         XianyuKeywordReplyRule existing = ruleMapper.selectByKeyword(accountId, xyGoodsId, keyword);
         if (existing != null) {
             return toRuleBO(existing, Collections.emptyList());
         }
 
         XianyuKeywordReplyRule rule = new XianyuKeywordReplyRule();
+        rule.setTenantId(account.getTenantId());
         rule.setXianyuAccountId(accountId);
         rule.setXyGoodsId(xyGoodsId);
+        rule.setSharingScope("GOODS");
         rule.setKeyword(keyword);
         rule.setMatchMode(1);
         rule.setIsFallback(0);
         ruleMapper.insert(rule);
+        replaceAccounts(rule, List.of(accountId));
 
         KeywordReplyRuleBO bo = new KeywordReplyRuleBO();
         bo.setId(rule.getId());
         bo.setXianyuAccountId(accountId);
         bo.setXyGoodsId(xyGoodsId);
+        bo.setSharingScope("GOODS");
+        bo.setXianyuAccountIds(List.of(accountId));
         bo.setKeyword(keyword);
         bo.setMatchMode(1);
         bo.setIsFallback(0);
@@ -95,7 +110,27 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional
+    public void updateAccounts(Long ruleId, List<Long> accountIds) {
+        XianyuKeywordReplyRule rule = ruleMapper.selectById(ruleId);
+        if (rule == null) throw new RuntimeException("规则不存在: id=" + ruleId);
+        List<Long> normalized = accountIds == null ? List.of() : accountIds.stream()
+                .filter(Objects::nonNull).distinct().toList();
+        if (normalized.isEmpty()) throw new IllegalArgumentException("至少选择一个适用账号");
+        normalized.forEach(accountId -> {
+            if (accountMapper.selectById(accountId) == null) {
+                throw new IllegalArgumentException("闲鱼账号不存在或无权访问");
+            }
+        });
+        rule.setSharingScope(normalized.size() > 1 ? "ACCOUNT" : "GOODS");
+        ruleMapper.updateById(rule);
+        replaceAccounts(rule, normalized);
+    }
+
+    @Override
     public KeywordReplyRuleBO ensureFallbackRule(Long accountId, String xyGoodsId) {
+        var account = accountMapper.selectById(accountId);
+        if (account == null) throw new IllegalArgumentException("闲鱼账号不存在或无权访问");
         XianyuKeywordReplyRule existing = ruleMapper.selectFallback(accountId, xyGoodsId);
         if (existing != null) {
             List<XianyuKeywordReplyContent> contents = contentMapper.selectByRuleId(existing.getId());
@@ -103,17 +138,22 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         }
 
         XianyuKeywordReplyRule rule = new XianyuKeywordReplyRule();
+        rule.setTenantId(account.getTenantId());
         rule.setXianyuAccountId(accountId);
         rule.setXyGoodsId(xyGoodsId);
+        rule.setSharingScope("GOODS");
         rule.setKeyword("__fallback__");
         rule.setMatchMode(1);
         rule.setIsFallback(1);
         ruleMapper.insert(rule);
+        replaceAccounts(rule, List.of(accountId));
 
         KeywordReplyRuleBO bo = new KeywordReplyRuleBO();
         bo.setId(rule.getId());
         bo.setXianyuAccountId(accountId);
         bo.setXyGoodsId(xyGoodsId);
+        bo.setSharingScope("GOODS");
+        bo.setXianyuAccountIds(List.of(accountId));
         bo.setKeyword("__fallback__");
         bo.setMatchMode(1);
         bo.setIsFallback(1);
@@ -214,6 +254,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         bo.setId(rule.getId());
         bo.setXianyuAccountId(rule.getXianyuAccountId());
         bo.setXyGoodsId(rule.getXyGoodsId());
+        bo.setSharingScope(rule.getSharingScope() == null ? "GOODS" : rule.getSharingScope());
+        List<Long> accountIds = sharedAccountLinkMapper.selectKeywordRuleAccounts(rule.getId());
+        bo.setXianyuAccountIds(accountIds == null || accountIds.isEmpty()
+                ? List.of(rule.getXianyuAccountId()) : accountIds);
         bo.setKeyword(rule.getKeyword());
         bo.setMatchMode(rule.getMatchMode());
         bo.setIsFallback(rule.getIsFallback());
@@ -238,5 +282,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
             return Collections.emptyMap();
         }
         return contents.stream().collect(Collectors.groupingBy(XianyuKeywordReplyContent::getRuleId));
+    }
+
+    private void replaceAccounts(XianyuKeywordReplyRule rule, List<Long> accountIds) {
+        sharedAccountLinkMapper.deleteKeywordRuleAccounts(rule.getId());
+        sharedAccountLinkMapper.insertKeywordRuleAccounts(rule.getId(), rule.getTenantId(), accountIds);
     }
 }

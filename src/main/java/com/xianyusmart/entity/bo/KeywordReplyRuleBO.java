@@ -12,7 +12,9 @@ public class KeywordReplyRuleBO {
     private Long id;
     @JsonSerialize(using = ToStringSerializer.class)
     private Long xianyuAccountId;
+    private List<Long> xianyuAccountIds;
     private String xyGoodsId;
+    private String sharingScope;
     private String keyword;
     private Integer matchMode;
     private Integer isFallback;

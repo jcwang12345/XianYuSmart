@@ -3,6 +3,8 @@ import { request } from '@/utils/request';
 export interface KamiConfig {
   id: number;
   xianyuAccountId: number;
+  xianyuAccountIds: number[];
+  sharingMode: 'PRIVATE' | 'SHARED';
   aliasName: string;
   sourceType?: 'LOCAL' | 'API';
   externalApiUrl?: string;
@@ -36,6 +38,8 @@ export interface KamiItem {
 export interface SaveKamiConfigReq {
   id?: number;
   xianyuAccountId: number;
+  xianyuAccountIds?: number[];
+  sharingMode?: 'PRIVATE' | 'SHARED';
   aliasName?: string;
   sourceType?: 'LOCAL' | 'API';
   externalApiUrl?: string;

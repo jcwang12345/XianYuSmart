@@ -38,6 +38,7 @@ build/
 *.db
 *.db-journal
 /logs/
+/backups/
 /.env
 /deploy/nginx/certs/
 /nul

@@ -3,6 +3,7 @@ import { request } from '@/utils/request'
 export interface FixedDeliveryTemplate {
   id: number
   xianyuAccountId: number
+  xianyuAccountIds: number[]
   templateName: string
   deliveryContent: string
   messageTemplate: string
@@ -13,6 +14,7 @@ export interface FixedDeliveryTemplate {
 export interface SaveFixedDeliveryTemplateReq {
   id?: number
   xianyuAccountId: number
+  xianyuAccountIds: number[]
   templateName: string
   deliveryContent: string
   messageTemplate: string

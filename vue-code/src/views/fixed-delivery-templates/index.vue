@@ -20,6 +20,7 @@ const saving = ref(false)
 const dialogVisible = ref(false)
 const form = ref({
   id: undefined as number | undefined,
+  xianyuAccountIds: [] as number[],
   templateName: '',
   deliveryContent: '',
   messageTemplate: '您好，{buyerName}，订单 {orderId} 已发货：\n{deliveryContent}'
@@ -44,6 +45,7 @@ const loadTemplates = async () => {
 const openCreate = () => {
   form.value = {
     id: undefined,
+    xianyuAccountIds: selectedAccountId.value ? [selectedAccountId.value] : [],
     templateName: '',
     deliveryContent: '',
     messageTemplate: '您好，{buyerName}，订单 {orderId} 已发货：\n{deliveryContent}'
@@ -54,6 +56,7 @@ const openCreate = () => {
 const openEdit = (template: FixedDeliveryTemplate) => {
   form.value = {
     id: template.id,
+    xianyuAccountIds: template.xianyuAccountIds?.length ? [...template.xianyuAccountIds] : [template.xianyuAccountId],
     templateName: template.templateName,
     deliveryContent: template.deliveryContent,
     messageTemplate: template.messageTemplate
@@ -67,6 +70,10 @@ const appendVariable = (variable: string) => {
 
 const submit = async () => {
   if (!selectedAccountId.value) return
+  if (!form.value.xianyuAccountIds.length) {
+    showError('请至少选择一个适用账号')
+    return
+  }
   if (!form.value.templateName.trim() || !form.value.deliveryContent.trim()) {
     showError('请填写模板名称和全部发货内容')
     return
@@ -83,7 +90,7 @@ const submit = async () => {
   try {
     const response = await saveFixedDeliveryTemplate({
       ...form.value,
-      xianyuAccountId: selectedAccountId.value
+      xianyuAccountId: form.value.xianyuAccountIds[0]!
     })
     if (response.code !== 200) {
       throw new Error(response.msg || '保存失败')
@@ -157,6 +164,8 @@ onMounted(async () => {
             </div>
           </div>
           <dl>
+            <dt>适用账号</dt>
+            <dd>{{ template.xianyuAccountIds.map(id => accounts.find(account => account.id === id)?.accountNote || accounts.find(account => account.id === id)?.unb || id).join('、') }}</dd>
             <dt>全部发货内容</dt>
             <dd>{{ template.deliveryContent }}</dd>
             <dt>最终发送模板</dt>
@@ -175,6 +184,13 @@ onMounted(async () => {
           </div>
           <button type="button" class="close-btn" @click="dialogVisible = false">×</button>
         </header>
+        <label>
+          <span>适用账号（可多选）</span>
+          <select v-model="form.xianyuAccountIds" multiple :size="Math.min(accounts.length, 5)">
+            <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
+          </select>
+          <small class="template-field-count">共享模板只保存一份，所选账号均可在自动发货中引用</small>
+        </label>
         <label>
           <span>模板名称</span>
           <input v-model="form.templateName" maxlength="100" placeholder="例如：百度网盘资源" />

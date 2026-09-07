@@ -26,6 +26,7 @@ import com.xianyusmart.mapper.MerchantDistributionMapper;
 import com.xianyusmart.mapper.MerchantResourceMapper;
 import com.xianyusmart.mapper.MerchantTaskMapper;
 import com.xianyusmart.mapper.MerchantShortLinkMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuKamiConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
@@ -68,6 +69,7 @@ public class MerchantOperationsService {
     private final XianyuAccountMapper accountMapper;
     private final XianyuKamiConfigMapper kamiConfigMapper;
     private final MerchantShortLinkMapper shortLinkMapper;
+    private final SharedAccountLinkMapper sharedAccountLinkMapper;
     private final XianyuGoodsAutoDeliveryConfigMapper autoDeliveryConfigMapper;
     private final XianyuGoodsOrderMapper goodsOrderMapper;
     private final ItemService itemService;
@@ -87,6 +89,7 @@ public class MerchantOperationsService {
                                      XianyuAccountMapper accountMapper,
                                      XianyuKamiConfigMapper kamiConfigMapper,
                                      MerchantShortLinkMapper shortLinkMapper,
+                                     SharedAccountLinkMapper sharedAccountLinkMapper,
                                      XianyuGoodsAutoDeliveryConfigMapper autoDeliveryConfigMapper,
                                      XianyuGoodsOrderMapper goodsOrderMapper,
                                      ItemService itemService,
@@ -105,6 +108,7 @@ public class MerchantOperationsService {
         this.accountMapper = accountMapper;
         this.kamiConfigMapper = kamiConfigMapper;
         this.shortLinkMapper = shortLinkMapper;
+        this.sharedAccountLinkMapper = sharedAccountLinkMapper;
         this.autoDeliveryConfigMapper = autoDeliveryConfigMapper;
         this.goodsOrderMapper = goodsOrderMapper;
         this.itemService = itemService;
@@ -151,7 +155,8 @@ public class MerchantOperationsService {
         if (request.getName().trim().length() > 512) {
             throw new IllegalArgumentException("资源名称不能超过512个字符");
         }
-        validateOwnedAccount(request.getXianyuAccountId());
+        List<Long> accountIds = normalizeAccountIds(request.getXianyuAccountIds(), request.getXianyuAccountId());
+        accountIds.forEach(this::validateOwnedAccount);
         if ("WORKFLOW".equals(request.getResourceType())) {
             workflowDefinitionService.validateAndSort(request.getData());
         }
@@ -166,7 +171,7 @@ public class MerchantOperationsService {
         resource.setResourceType(request.getResourceType());
         resource.setName(request.getName().trim());
         resource.setStatus(request.getStatus() == null ? 1 : request.getStatus());
-        resource.setXianyuAccountId(request.getXianyuAccountId());
+        resource.setXianyuAccountId(accountIds.isEmpty() ? null : accountIds.get(0));
         resource.setXyGoodsId(blankToNull(request.getXyGoodsId()));
         resource.setStock(request.getStock() == null ? 0 : Math.max(0, request.getStock()));
         resource.setAmount(request.getAmount() == null ? BigDecimal.ZERO : request.getAmount().max(BigDecimal.ZERO));
@@ -181,6 +186,7 @@ public class MerchantOperationsService {
         } else {
             resourceMapper.updateById(resource);
         }
+        replaceResourceAccounts(resource.getId(), resource.getTenantId(), accountIds);
         return toResponse(resourceMapper.selectById(resource.getId()));
     }
 
@@ -525,6 +531,8 @@ public class MerchantOperationsService {
     public List<MerchantTask> batchPublish(Map<String, Object> request) {
         Long accountId = longValue(request.get("xianyuAccountId"));
         validateOwnedAccount(accountId);
+        List<Long> requestedAccountIds = longList(request.get("xianyuAccountIds"));
+        requestedAccountIds.forEach(this::validateOwnedAccount);
         Object resourceIdsValue = request.get("resourceIds");
         if (!(resourceIdsValue instanceof List<?> resourceIds) || resourceIds.isEmpty()) {
             throw new IllegalArgumentException("请选择待发布素材");
@@ -536,16 +544,19 @@ public class MerchantOperationsService {
             if (resource == null || !"MATERIAL".equals(resource.getResourceType())) {
                 throw new IllegalArgumentException("批量发布包含无效素材");
             }
-            MerchantTaskReqDTO taskRequest = new MerchantTaskReqDTO();
-            taskRequest.setTaskType("PUBLISH");
-            taskRequest.setResourceId(resourceId);
-            Long effectiveAccountId = accountId == null ? resource.getXianyuAccountId() : accountId;
-            if (effectiveAccountId == null) {
+            List<Long> effectiveAccountIds = !requestedAccountIds.isEmpty() ? requestedAccountIds
+                    : accountId != null ? List.of(accountId) : resourceAccountIds(resource);
+            if (effectiveAccountIds.isEmpty()) {
                 throw new IllegalArgumentException("素材未关联发布账号");
             }
-            taskRequest.setXianyuAccountId(effectiveAccountId);
-            taskRequest.setScheduledTime(LocalDateTime.now());
-            tasks.add(createTask(taskRequest));
+            for (Long effectiveAccountId : effectiveAccountIds) {
+                MerchantTaskReqDTO taskRequest = new MerchantTaskReqDTO();
+                taskRequest.setTaskType("PUBLISH");
+                taskRequest.setResourceId(resourceId);
+                taskRequest.setXianyuAccountId(effectiveAccountId);
+                taskRequest.setScheduledTime(LocalDateTime.now());
+                tasks.add(createTask(taskRequest));
+            }
         }
         return tasks;
     }
@@ -923,10 +934,7 @@ public class MerchantOperationsService {
         Map<String, Object> result = platformPublishService.publish(material, accountId, address);
         String itemId = text(result.get("itemId"));
         if (!itemId.isBlank()) {
-            material.setXianyuAccountId(accountId);
-            material.setXyGoodsId(itemId);
-            material.setStatus(2);
-            resourceMapper.updateById(material);
+            // 素材是可复用的共享定义；每个账号的发布结果保存在独立任务中，不能覆盖素材主记录。
             updateDistributionPublished(material.getId(), accountId, itemId);
         }
         return result;
@@ -1014,7 +1022,8 @@ public class MerchantOperationsService {
                 if (resource.getXianyuAccountId() == null || resource.getXyGoodsId() == null) {
                     throw new IllegalArgumentException("卡券补偿需先完成商品发布和账号关联");
                 }
-                if (!resource.getXianyuAccountId().equals(kamiConfig.getXianyuAccountId())) {
+                if (!sharedAccountLinkMapper.selectKamiConfigAccounts(kamiConfigId)
+                        .contains(resource.getXianyuAccountId())) {
                     throw new IllegalArgumentException("卡券仓库与商品账号不一致");
                 }
                 XianyuGoodsAutoDeliveryConfig deliveryConfig = autoDeliveryConfigMapper.findByAccountIdAndGoodsIdNoSku(
@@ -1194,6 +1203,7 @@ public class MerchantOperationsService {
         response.setName(resource.getName());
         response.setStatus(resource.getStatus());
         response.setXianyuAccountId(resource.getXianyuAccountId());
+        response.setXianyuAccountIds(resourceAccountIds(resource));
         response.setXyGoodsId(resource.getXyGoodsId());
         response.setStock(resource.getStock());
         response.setAmount(resource.getAmount());
@@ -1203,6 +1213,37 @@ public class MerchantOperationsService {
         response.setCreatedTime(resource.getCreatedTime());
         response.setUpdatedTime(resource.getUpdatedTime());
         return response;
+    }
+
+    private void replaceResourceAccounts(Long resourceId, Long tenantId, List<Long> accountIds) {
+        sharedAccountLinkMapper.deleteResourceAccounts(resourceId);
+        if (!accountIds.isEmpty()) {
+            sharedAccountLinkMapper.insertResourceAccounts(resourceId, tenantId, accountIds);
+        }
+    }
+
+    private List<Long> resourceAccountIds(MerchantResource resource) {
+        List<Long> accountIds = sharedAccountLinkMapper.selectResourceAccounts(resource.getId());
+        if (accountIds == null || accountIds.isEmpty()) {
+            return resource.getXianyuAccountId() == null ? List.of() : List.of(resource.getXianyuAccountId());
+        }
+        return accountIds;
+    }
+
+    private List<Long> normalizeAccountIds(List<Long> accountIds, Long legacyAccountId) {
+        List<Long> normalized = accountIds == null ? new ArrayList<>() : accountIds.stream()
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        if (normalized.isEmpty() && legacyAccountId != null) {
+            return List.of(legacyAccountId);
+        }
+        return normalized;
+    }
+
+    private List<Long> longList(Object value) {
+        if (!(value instanceof List<?> values)) {
+            return List.of();
+        }
+        return values.stream().map(this::longValue).filter(java.util.Objects::nonNull).distinct().toList();
     }
 
     private Map<String, Object> normalizeMap(Map<?, ?> source) {

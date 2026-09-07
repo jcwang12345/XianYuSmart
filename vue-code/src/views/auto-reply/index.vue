@@ -105,7 +105,7 @@ const {
   handleAddKeywordFromDialog, handleAddReplyFromDialog,
   handleUpdateMatchMode,
   fallbackRule, fallbackText, fallbackImageUrls, fallbackExpanded, handleSaveFallbackText,
-  editKeywordDialogVisible, editKeywordId, editKeywordName,
+  editKeywordDialogVisible, editKeywordId, editKeywordName, editKeywordAccountIds,
   handleOpenEditKeyword, handleSaveEditKeyword, handleDeleteFromEditDialog
 } = useAutoReply()
 
@@ -627,11 +627,16 @@ onMounted(() => {
                 <div class="ar__dialog-header">编辑关键词</div>
                 <div class="ar__dialog-body">
                   <input type="text" v-model="editKeywordName" class="ar__dialog-input" placeholder="输入关键词" @keydown.enter="handleSaveEditKeyword" />
+                  <label class="ar__dialog-account-label">适用账号（可多选）</label>
+                  <select v-model="editKeywordAccountIds" class="ar__dialog-input" multiple :size="Math.min(accounts.length, 5)">
+                    <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
+                  </select>
+                  <small>选择多个账号后，该关键词模板会在这些账号已开启关键词回复的商品上共享。</small>
                 </div>
                 <div class="ar__dialog-actions">
                   <button class="ar__dialog-btn ar__dialog-btn--danger" @click="handleDeleteFromEditDialog">删除</button>
                   <button class="ar__dialog-btn ar__dialog-btn--cancel" @click="editKeywordDialogVisible = false">取消</button>
-                  <button class="ar__dialog-btn ar__dialog-btn--confirm" @click="handleSaveEditKeyword" :disabled="!editKeywordName.trim()">保存</button>
+                  <button class="ar__dialog-btn ar__dialog-btn--confirm" @click="handleSaveEditKeyword" :disabled="!editKeywordName.trim() || !editKeywordAccountIds.length">保存</button>
                 </div>
               </div>
             </div>

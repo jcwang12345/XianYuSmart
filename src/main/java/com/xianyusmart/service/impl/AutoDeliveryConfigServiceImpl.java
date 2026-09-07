@@ -9,6 +9,7 @@ import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.mapper.XianyuKamiConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import com.xianyusmart.controller.dto.AutoDeliveryConfigReqDTO;
 import com.xianyusmart.controller.dto.AutoDeliveryConfigRespDTO;
 import com.xianyusmart.controller.dto.AutoDeliveryConfigQueryReqDTO;
@@ -45,6 +46,9 @@ public class AutoDeliveryConfigServiceImpl implements AutoDeliveryConfigService 
 
     @Autowired
     private XianyuKamiConfigMapper kamiConfigMapper;
+
+    @Autowired
+    private SharedAccountLinkMapper sharedAccountLinkMapper;
 
     @Autowired
     private GoodsSkuService goodsSkuService;
@@ -311,7 +315,8 @@ public class AutoDeliveryConfigServiceImpl implements AutoDeliveryConfigService 
             try {
                 XianyuKamiConfig kamiConfig =
                         kamiConfigMapper.selectById(Long.parseLong(configIdText.trim()));
-                if (kamiConfig == null || !accountId.equals(kamiConfig.getXianyuAccountId())) {
+                if (kamiConfig == null
+                        || !sharedAccountLinkMapper.selectKamiConfigAccounts(kamiConfig.getId()).contains(accountId)) {
                     throw new IllegalArgumentException("卡密仓库不存在或不属于当前账号");
                 }
             } catch (NumberFormatException e) {

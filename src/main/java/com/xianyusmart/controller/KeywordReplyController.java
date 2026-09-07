@@ -83,6 +83,23 @@ public class KeywordReplyController {
         }
     }
 
+    @PostMapping("/updateAccounts")
+    public ResultObject<?> updateAccounts(@RequestBody Map<String, Object> params) {
+        try {
+            Long ruleId = Long.valueOf(params.get("ruleId").toString());
+            Object rawIds = params.get("xianyuAccountIds");
+            if (!(rawIds instanceof List<?> values)) {
+                throw new IllegalArgumentException("请选择适用账号");
+            }
+            List<Long> accountIds = values.stream().map(value -> Long.valueOf(value.toString())).toList();
+            keywordReplyService.updateAccounts(ruleId, accountIds);
+            return ResultObject.success(null);
+        } catch (Exception e) {
+            log.error("更新关键词模板适用账号失败", e);
+            return ResultObject.failed("更新适用账号失败: " + e.getMessage());
+        }
+    }
+
     @PostMapping("/ensureFallbackRule")
     public ResultObject<KeywordReplyRuleBO> ensureFallbackRule(@RequestBody Map<String, Object> params) {
         try {

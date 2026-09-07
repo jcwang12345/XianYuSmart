@@ -5,10 +5,13 @@ import com.xianyusmart.controller.dto.FixedDeliveryTemplateReqDTO;
 import com.xianyusmart.entity.XianyuFixedDeliveryTemplate;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuFixedDeliveryTemplateMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Objects;
 
 /**
  * 固定内容模板管理
@@ -19,19 +22,27 @@ public class FixedDeliveryTemplateService {
     private final XianyuFixedDeliveryTemplateMapper templateMapper;
     private final XianyuAccountMapper accountMapper;
     private final BuyerMessageService buyerMessageService;
+    private final SharedAccountLinkMapper sharedAccountLinkMapper;
 
     public FixedDeliveryTemplateService(XianyuFixedDeliveryTemplateMapper templateMapper,
                                         XianyuAccountMapper accountMapper,
-                                        BuyerMessageService buyerMessageService) {
+                                        BuyerMessageService buyerMessageService,
+                                        SharedAccountLinkMapper sharedAccountLinkMapper) {
         this.templateMapper = templateMapper;
         this.accountMapper = accountMapper;
         this.buyerMessageService = buyerMessageService;
+        this.sharedAccountLinkMapper = sharedAccountLinkMapper;
     }
 
     @Transactional
     public ResultObject<XianyuFixedDeliveryTemplate> save(FixedDeliveryTemplateReqDTO request) {
         try {
-            requireOwnedAccount(request.getXianyuAccountId());
+            List<Long> accountIds = normalizeAccountIds(request.getXianyuAccountIds(), request.getXianyuAccountId());
+            if (accountIds.isEmpty()) {
+                throw new IllegalArgumentException("至少选择一个适用账号");
+            }
+            accountIds.forEach(this::requireOwnedAccount);
+            Long primaryAccountId = accountIds.get(0);
             String name = normalizeRequired(request.getTemplateName(), "模板名称", 100);
             String content = normalizeRequired(request.getDeliveryContent(), "全部发货内容", 200);
             String messageTemplate = buyerMessageService.normalizeDeliveryMessageTemplate(
@@ -46,14 +57,16 @@ public class FixedDeliveryTemplateService {
             XianyuFixedDeliveryTemplate template;
             if (request.getId() == null) {
                 template = new XianyuFixedDeliveryTemplate();
-                template.setXianyuAccountId(request.getXianyuAccountId());
+                template.setXianyuAccountId(primaryAccountId);
+                template.setTenantId(accountMapper.selectById(primaryAccountId).getTenantId());
             } else {
-                template = findOwnedTemplate(request.getXianyuAccountId(), request.getId());
+                template = templateMapper.selectById(request.getId());
                 if (template == null) {
                     return ResultObject.failed("固定内容模板不存在");
                 }
             }
             template.setTemplateName(name);
+            template.setXianyuAccountId(primaryAccountId);
             template.setDeliveryContent(content);
             template.setMessageTemplate(messageTemplate);
             if (template.getId() == null) {
@@ -61,6 +74,8 @@ public class FixedDeliveryTemplateService {
             } else {
                 templateMapper.updateById(template);
             }
+            replaceAccounts(template.getId(), template.getTenantId(), accountIds);
+            template.setXianyuAccountIds(accountIds);
             return ResultObject.success(template);
         } catch (Exception e) {
             return ResultObject.failed("保存固定内容模板失败: " + e.getMessage());
@@ -70,7 +85,10 @@ public class FixedDeliveryTemplateService {
     public ResultObject<List<XianyuFixedDeliveryTemplate>> list(Long accountId) {
         try {
             requireOwnedAccount(accountId);
-            return ResultObject.success(templateMapper.findByAccountId(accountId));
+            List<XianyuFixedDeliveryTemplate> templates = templateMapper.findByAccountId(accountId);
+            templates.forEach(template -> template.setXianyuAccountIds(
+                    sharedAccountLinkMapper.selectFixedTemplateAccounts(template.getId())));
+            return ResultObject.success(templates);
         } catch (Exception e) {
             return ResultObject.failed(e.getMessage());
         }
@@ -116,5 +134,17 @@ public class FixedDeliveryTemplateService {
         if (accountId == null || accountMapper.selectById(accountId) == null) {
             throw new IllegalArgumentException("闲鱼账号不存在或无权访问");
         }
+    }
+
+    private List<Long> normalizeAccountIds(List<Long> accountIds, Long legacyAccountId) {
+        List<Long> normalized = accountIds == null ? new ArrayList<>()
+                : accountIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (normalized.isEmpty() && legacyAccountId != null) return List.of(legacyAccountId);
+        return normalized;
+    }
+
+    private void replaceAccounts(Long templateId, Long tenantId, List<Long> accountIds) {
+        sharedAccountLinkMapper.deleteFixedTemplateAccounts(templateId);
+        sharedAccountLinkMapper.insertFixedTemplateAccounts(templateId, tenantId, accountIds);
     }
 }

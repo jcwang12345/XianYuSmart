@@ -11,6 +11,7 @@ import com.xianyusmart.entity.XianyuKamiItem;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuKamiConfigMapper;
 import com.xianyusmart.mapper.XianyuKamiItemMapper;
+import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import com.xianyusmart.service.KamiConfigService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -33,6 +34,9 @@ public class KamiBackupHandler implements DataBackupHandler {
 
     @Autowired
     private KamiConfigService kamiConfigService;
+
+    @Autowired
+    private SharedAccountLinkMapper sharedAccountLinkMapper;
 
     @Override
     public String getModuleKey() {
@@ -57,6 +61,10 @@ public class KamiBackupHandler implements DataBackupHandler {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("sourceId", config.getId());
             map.put("unb", account.getUnb());
+            List<String> accountUnbs = sharedAccountLinkMapper.selectKamiConfigAccounts(config.getId()).stream()
+                    .map(accountMapper::selectById).filter(Objects::nonNull).map(XianyuAccount::getUnb).toList();
+            map.put("accountUnbs", accountUnbs);
+            map.put("sharingMode", config.getSharingMode());
             map.put("aliasName", config.getAliasName());
             map.put("sourceType", config.getSourceType());
             map.put("externalApiUrl", config.getExternalApiUrl());
@@ -129,6 +137,13 @@ public class KamiBackupHandler implements DataBackupHandler {
                     KamiConfigReqDTO request = new KamiConfigReqDTO();
                     request.setId(existing == null ? null : existing.getId());
                     request.setXianyuAccountId(accountId);
+                    @SuppressWarnings("unchecked")
+                    List<String> accountUnbs = map.get("accountUnbs") instanceof List<?> values
+                            ? values.stream().map(String::valueOf).toList() : List.of(unb);
+                    List<Long> accountIds = accountUnbs.stream().map(unbToAccountId::get)
+                            .filter(Objects::nonNull).distinct().toList();
+                    request.setXianyuAccountIds(accountIds.isEmpty() ? List.of(accountId) : accountIds);
+                    request.setSharingMode("SHARED".equals(map.get("sharingMode")) ? "SHARED" : "PRIVATE");
                     request.setAliasName(aliasName);
                     request.setSourceType(map.get("sourceType") == null ? "LOCAL" : (String) map.get("sourceType"));
                     request.setExternalApiUrl((String) map.get("externalApiUrl"));

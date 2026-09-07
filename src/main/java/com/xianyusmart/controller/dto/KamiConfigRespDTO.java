@@ -3,6 +3,7 @@ package com.xianyusmart.controller.dto;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 public class KamiConfigRespDTO {
@@ -10,6 +11,10 @@ public class KamiConfigRespDTO {
     private Long id;
 
     private Long xianyuAccountId;
+
+    private List<Long> xianyuAccountIds;
+
+    private String sharingMode;
 
     private String aliasName;
 

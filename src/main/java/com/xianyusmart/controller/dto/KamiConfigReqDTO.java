@@ -2,15 +2,18 @@ package com.xianyusmart.controller.dto;
 
 import lombok.Data;
 
-import jakarta.validation.constraints.NotNull;
+import java.util.List;
 
 @Data
 public class KamiConfigReqDTO {
 
     private Long id;
 
-    @NotNull(message = "闲鱼账号ID不能为空")
     private Long xianyuAccountId;
+
+    private List<Long> xianyuAccountIds;
+
+    private String sharingMode;
 
     private String aliasName;
 

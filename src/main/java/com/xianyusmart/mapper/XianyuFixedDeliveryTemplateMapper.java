@@ -11,10 +11,14 @@ import java.util.List;
 @Mapper
 public interface XianyuFixedDeliveryTemplateMapper extends BaseMapper<XianyuFixedDeliveryTemplate> {
 
-    @Select("SELECT * FROM xianyu_fixed_delivery_template WHERE xianyu_account_id = #{accountId} ORDER BY update_time DESC")
+    @Select("SELECT DISTINCT template.* FROM xianyu_fixed_delivery_template template " +
+            "JOIN xianyu_fixed_delivery_template_account link ON link.template_id = template.id " +
+            "WHERE link.xianyu_account_id = #{accountId} ORDER BY template.update_time DESC")
     List<XianyuFixedDeliveryTemplate> findByAccountId(@Param("accountId") Long accountId);
 
-    @Select("SELECT * FROM xianyu_fixed_delivery_template WHERE id = #{id} AND xianyu_account_id = #{accountId} LIMIT 1")
+    @Select("SELECT template.* FROM xianyu_fixed_delivery_template template " +
+            "JOIN xianyu_fixed_delivery_template_account link ON link.template_id = template.id " +
+            "WHERE template.id = #{id} AND link.xianyu_account_id = #{accountId} LIMIT 1")
     XianyuFixedDeliveryTemplate findOwnedById(@Param("accountId") Long accountId, @Param("id") Long id);
 
     @Select("SELECT * FROM xianyu_fixed_delivery_template WHERE xianyu_account_id = #{accountId} AND template_name = #{name} LIMIT 1")
