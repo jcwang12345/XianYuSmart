@@ -392,7 +392,7 @@ onMounted(() => {
             <div class="ar__toggle-row">
               <div class="ar__toggle-info">
                 <div class="ar__toggle-label">人工干预</div>
-                <div class="ar__toggle-hint">开启后，若卖家在延时期间已回复买家，则在指定时间内不再自动回复</div>
+                <div class="ar__toggle-hint">开启后，若卖家在延时期间已回复买家，则在指定时间内不再自动回复；关闭后会立即解除该商品已有的人工接管。</div>
               </div>
               <label class="ar__switch">
                 <input

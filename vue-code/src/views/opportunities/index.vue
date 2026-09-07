@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { getAccountList } from '@/api/account'
 import { createPublishPlan, crawlShopOpportunities, generateOpportunityImage, importOpportunities, polishOpportunity, searchOpportunities, type OpportunityCandidate } from '@/api/merchant'
 import PublishAddressFields from '@/components/PublishAddressFields.vue'
+import MediaUploader from '@/components/MediaUploader.vue'
 import type { PublishAddress } from '@/data/publish-address'
 import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
@@ -258,13 +259,7 @@ onMounted(loadAccounts)
         </div>
         <label class="workbench__field">商品标题<input v-model="draft.name" class="workbench__input" maxlength="120"><small>{{ draft.name.length }} / 120</small></label>
         <label class="workbench__field">商品详情<textarea v-model="draft.description" class="workbench__textarea" maxlength="3000"></textarea><small>{{ draft.description.length }} / 3000</small></label>
-        <div class="opportunity__images">
-          <article v-for="(image, index) in draft.images" :key="image">
-            <img :src="image" alt="">
-            <button type="button" @click="draft.images.splice(index, 1)">移除</button>
-          </article>
-          <div v-if="!draft.images.length" class="workbench__empty">暂无商品图，可保留采集图片或使用 AI 生成。</div>
-        </div>
+        <label class="workbench__field">商品图片<MediaUploader v-model="draft.images" :account-id="accountId" :max="9" label="上传商品图" /><small>优先上传到闲鱼；若图床暂不可用会本地暂存，在发布时同步。</small></label>
       </template>
       <template v-else-if="step === 3">
         <h2>配置发布参数</h2>
@@ -274,7 +269,7 @@ onMounted(loadAccounts)
           <label class="workbench__field">素材分类<input v-model="draft.category" class="workbench__input"><small>仅用于站内整理，真实类目由闲鱼发布接口识别。</small></label>
           <label class="workbench__field">交付方式<select v-model="draft.deliveryMethod" class="workbench__select"><option>线上交付</option><option>快递发货</option><option>当面交易</option></select></label>
           <PublishAddressFields v-model="publishAddress" />
-          <label class="workbench__field">图片地址（每行一张）<textarea :value="draft.images.join('\n')" class="workbench__textarea" @input="draft.images = ($event.target as HTMLTextAreaElement).value.split('\n').map(v => v.trim()).filter(Boolean)"></textarea></label>
+          <label class="workbench__field">或粘贴图片地址（每行一张）<textarea :value="draft.images.join('\n')" class="workbench__textarea" placeholder="支持 HTTPS 图片地址或上一步上传" @input="draft.images = ($event.target as HTMLTextAreaElement).value.split('\n').map(v => v.trim()).filter(Boolean)"></textarea></label>
         </div>
       </template>
       <template v-else>

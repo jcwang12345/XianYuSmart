@@ -12,6 +12,7 @@ public interface OrderService {
     String CONSIGN_UNCERTAIN = "虚拟发货结果待确认";
     String CONSIGN_ALREADY_DELIVERED = "订单已存在发货凭证";
     String CONSIGN_DEFERRED = "平台风控冷却中，发货任务已等待恢复";
+    String CONSIGN_PLATFORM_BUSY = "平台繁忙，发货任务将在两小时后重试";
     
     /**
      * 确认发货

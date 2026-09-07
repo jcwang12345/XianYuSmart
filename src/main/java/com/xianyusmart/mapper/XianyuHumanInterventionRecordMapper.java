@@ -21,6 +21,15 @@ public interface XianyuHumanInterventionRecordMapper {
     @Select("SELECT COUNT(*) FROM xianyu_human_intervention_record WHERE end_time > NOW(3)")
     int countActive();
 
+    @Select("SELECT * FROM xianyu_human_intervention_record WHERE xianyu_account_id = #{accountId} " +
+            "AND xy_goods_id = #{xyGoodsId} AND end_time > NOW(3)")
+    List<XianyuHumanInterventionRecord> findActiveByAccountAndGoodsId(@Param("accountId") Long accountId,
+                                                                        @Param("xyGoodsId") String xyGoodsId);
+
+    @Delete("DELETE FROM xianyu_human_intervention_record WHERE xianyu_account_id = #{accountId} " +
+            "AND xy_goods_id = #{xyGoodsId}")
+    int deleteByAccountAndGoodsId(@Param("accountId") Long accountId, @Param("xyGoodsId") String xyGoodsId);
+
     @Delete("DELETE FROM xianyu_human_intervention_record WHERE end_time < NOW(3)")
     int cleanExpired();
 }

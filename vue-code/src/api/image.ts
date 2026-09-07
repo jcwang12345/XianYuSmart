@@ -1,6 +1,27 @@
 import { request } from '@/utils/request';
 import type { ApiResponse } from '@/types';
 
+export interface MediaUploadResult {
+  url: string
+  mediaType: 'IMAGE' | 'VIDEO'
+  storage: 'GOOFISH' | 'LOCAL'
+}
+
+/**
+ * 素材库通用上传：图片有账号时优先进入闲鱼图床，视频始终保存至本机持久化数据卷。
+ */
+export function uploadMedia(file: File, accountId?: number): Promise<ApiResponse<MediaUploadResult>> {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (accountId) formData.append('accountId', String(accountId))
+  return request({
+    url: '/media/upload',
+    method: 'POST',
+    data: formData,
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+}
+
 // 上传图片到闲鱼CDN
 export function uploadImage(accountId: number, file: File): Promise<ApiResponse<string>> {
   const formData = new FormData();

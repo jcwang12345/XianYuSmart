@@ -54,6 +54,11 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
     @Update("UPDATE merchant_task SET status = 0, attempt_count = 0, scheduled_time = NOW(3), next_retry_time = NULL, error_message = NULL WHERE id = #{id}")
     int requeue(@Param("id") Long id);
 
+    /** 只允许取消尚未被执行器领取的任务，避免中断已在执行的平台操作。 */
+    @Update("UPDATE merchant_task SET status = 3, next_retry_time = NULL, " +
+            "error_message = '用户已取消，任务不会再执行' WHERE id = #{id} AND status IN (0, -1)")
+    int cancel(@Param("id") Long id);
+
     @Update("UPDATE merchant_task SET status = 0, attempt_count = GREATEST(attempt_count - 1, 0), " +
             "scheduled_time = #{retryAt}, next_retry_time = NULL, error_message = #{message} WHERE id = #{id}")
     int defer(@Param("id") Long id, @Param("retryAt") LocalDateTime retryAt,

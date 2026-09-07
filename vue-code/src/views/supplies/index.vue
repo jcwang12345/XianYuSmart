@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { getAccountList } from '@/api/account'
 import { convertSupplyToMaterial, deleteResource, executeResource, getResources, saveResource, type MerchantResource } from '@/api/merchant'
+import MediaUploader from '@/components/MediaUploader.vue'
 import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
 import '@/styles/merchant-workbench.css'
@@ -26,6 +27,10 @@ const form = reactive({
 const filtered = computed(() => {
   const value = keyword.value.trim().toLowerCase()
   return value ? supplies.value.filter(item => `${item.name} ${item.xyGoodsId || ''}`.toLowerCase().includes(value)) : supplies.value
+})
+const images = computed<string[]>({
+  get: () => form.imagesText.split('\n').map(value => value.trim()).filter(Boolean),
+  set: value => { form.imagesText = value.join('\n') }
 })
 
 const load = async () => {
@@ -141,7 +146,8 @@ onMounted(load)
           <label class="workbench__field">库存<input v-model.number="form.stock" class="workbench__input" type="number" min="0"></label>
         </div>
         <label class="workbench__field">说明<textarea v-model="form.description" class="workbench__textarea"></textarea></label>
-        <label class="workbench__field">图片地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea"></textarea></label>
+        <label class="workbench__field">商品图片<MediaUploader v-model="images" :account-id="form.xianyuAccountId" :max="9" label="上传图片" /><small>上传优先使用闲鱼图床，失败时保存在本机并在转发布素材后自动同步。</small></label>
+        <label class="workbench__field">或粘贴图片地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea" placeholder="支持 HTTPS 图片地址"></textarea></label>
         <div class="workbench__actions supply-dialog__footer">
           <button type="button" class="workbench__btn" @click="editorOpen = false">取消</button>
           <button class="workbench__btn workbench__btn--primary">保存货源</button>

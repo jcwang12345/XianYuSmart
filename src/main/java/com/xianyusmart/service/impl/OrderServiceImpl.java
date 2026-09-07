@@ -212,6 +212,19 @@ public class OrderServiceImpl implements OrderService {
                     return CONSIGN_ALREADY_DELIVERED;
                 }
 
+                if (isPlatformBusyConsignResult(result)) {
+                    log.warn("【账号{}】商家凭证接口遇到平台繁忙，延迟两小时重试: orderId={}, error={}",
+                            accountId, orderId, errorMsg);
+                    return CONSIGN_PLATFORM_BUSY;
+                }
+
+                if (errorMsg != null && errorMsg.contains("无需邮寄发货")) {
+                    // 鱼小铺/商家工作台与普通账号的“无需物流发货”使用不同接口。
+                    // 普通接口的 picList 必须是 JSON 数组，不能复用商家接口所需的 JSON 字符串。
+                    return consignDummyDeliveryForRegularSeller(
+                            accountId, orderId, limitedText, limitedImages, cookieStr);
+                }
+
                 if (isUncertainConsignResult(result)) {
                     log.warn("【账号{}】发货接口结果不确定，保留本次发货内容等待核对: orderId={}", accountId, orderId);
                     return CONSIGN_UNCERTAIN;
@@ -233,6 +246,58 @@ public class OrderServiceImpl implements OrderService {
             log.error("【账号{}】调用闲鱼新发货API异常: orderId={}", accountId, orderId, e);
             return CONSIGN_UNCERTAIN;
         }
+    }
+
+    private String consignDummyDeliveryForRegularSeller(Long accountId, String orderId,
+                                                         String tradeText, List<String> imageUrls,
+                                                         String cookieStr) {
+        Map<String, Object> regularData = new HashMap<>();
+        regularData.put("orderId", orderId);
+        regularData.put("tradeText", tradeText != null ? tradeText : "");
+        // 公开实现和闲鱼 App 请求均要求这里序列化为数组；传入字符串会出现假成功但不履约。
+        regularData.put("picList", imageUrls.toArray(new String[0]));
+        regularData.put("newUnconsign", true);
+
+        log.info("【账号{}】商家凭证接口不适用，改用普通账号无需物流发货接口: orderId={}",
+                accountId, orderId);
+        XianyuApiCallUtils.ApiCallResult fallback = xianyuApiCallUtils.callApiWithRetry(
+                accountId,
+                "mtop.taobao.idle.logistic.consign.dummy",
+                regularData,
+                cookieStr
+        );
+        if (fallback.isSuccess()) {
+            log.info("【账号{}】✅ 普通账号无需物流发货成功: orderId={}", accountId, orderId);
+            return CONSIGN_SUCCESS;
+        }
+        if (fallback.isGuardBlocked()) {
+            return CONSIGN_DEFERRED;
+        }
+        if (fallback.isTokenExpired()) {
+            return null;
+        }
+        if (fallback.getErrorMessage() != null
+                && fallback.getErrorMessage().contains("ORDER_ALREADY_DELIVERY")) {
+            return CONSIGN_ALREADY_DELIVERED;
+        }
+        if (isPlatformBusyConsignResult(fallback)) {
+            log.warn("【账号{}】普通账号无需物流发货遇到平台繁忙，延迟两小时重试: orderId={}, error={}",
+                    accountId, orderId, fallback.getErrorMessage());
+            return CONSIGN_PLATFORM_BUSY;
+        }
+        if (isUncertainConsignResult(fallback)) {
+            return CONSIGN_UNCERTAIN;
+        }
+        log.error("【账号{}】普通账号无需物流发货失败: orderId={}, error={}",
+                accountId, orderId, fallback.getErrorMessage());
+        return null;
+    }
+
+    private boolean isPlatformBusyConsignResult(XianyuApiCallUtils.ApiCallResult result) {
+        String errorMessage = result.getErrorMessage();
+        return errorMessage != null && (errorMessage.contains("CONDIGN_ACTIVITY_ERROR")
+                || errorMessage.contains("系统挤爆了")
+                || errorMessage.contains("两小时后重试"));
     }
 
     private boolean isUncertainConsignResult(XianyuApiCallUtils.ApiCallResult result) {
@@ -756,7 +821,7 @@ public class OrderServiceImpl implements OrderService {
                 log.info("【账号{}】先提交发货凭证: orderId={}, deliveryMode={}, contentLen={}, imageCount={}",
                         accountId, orderId, deliveryMode, finalDeliveryContent.length(), imageUrls.size());
                 String result = consignDummyDelivery(accountId, orderId, finalDeliveryContent, imageUrls);
-                if (CONSIGN_DEFERRED.equals(result)) {
+                if (CONSIGN_DEFERRED.equals(result) || CONSIGN_PLATFORM_BUSY.equals(result)) {
                     if (cardDelivery) {
                         kamiConfigService.releaseReservation(orderId);
                     }
@@ -766,8 +831,8 @@ public class OrderServiceImpl implements OrderService {
                     }
                     // 平台请求尚未发出，完整订单留在原队列等待熔断结束。
                     deliveryTaskService.deferForRisk(deliveryOrder.getId(),
-                            riskRetryTime(accountId), CONSIGN_DEFERRED);
-                    return CONSIGN_DEFERRED;
+                            consignRetryTime(accountId, result), result);
+                    return result;
                 }
                 if (CONSIGN_UNCERTAIN.equals(result) || CONSIGN_ALREADY_DELIVERED.equals(result)) {
                     String failReason = CONSIGN_UNCERTAIN.equals(result)
@@ -856,5 +921,12 @@ public class OrderServiceImpl implements OrderService {
             retryAt = System.currentTimeMillis() + 60_000L;
         }
         return Instant.ofEpochMilli(retryAt).atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+    }
+
+    private LocalDateTime consignRetryTime(Long accountId, String result) {
+        if (CONSIGN_PLATFORM_BUSY.equals(result)) {
+            return LocalDateTime.now().plusHours(2);
+        }
+        return riskRetryTime(accountId);
     }
 }

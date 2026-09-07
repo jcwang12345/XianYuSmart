@@ -2,11 +2,12 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { getAccountList } from '@/api/account'
 import {
-  batchPublish, compensateResource, convertSupplyToMaterial, deleteResource, executeResource, getDistributions,
+  batchPublish, cancelTask, compensateResource, convertSupplyToMaterial, deleteResource, executeResource, getDistributions,
   getMerchantOverview, getResources, getTasks, requeueTask, saveResource, settleDistribution,
   type MerchantDistribution, type MerchantOverview, type MerchantResource, type MerchantTask, type ResourceType
 } from '@/api/merchant'
 import { getKamiConfigsByAccountId, type KamiConfig } from '@/api/kami-config'
+import MediaUploader from '@/components/MediaUploader.vue'
 import type { Account } from '@/types'
 import { showConfirm, showError, showSuccess } from '@/utils'
 
@@ -46,7 +47,7 @@ const kamiLoading = ref(false)
 const form = reactive<any>({})
 const formDefaults = () => ({
   id: undefined, resourceType: activeType.value, name: '', status: 1, xianyuAccountId: undefined,
-  xyGoodsId: '', stock: 0, amount: 0, scheduledTime: '', description: '', images: '', sourceUrl: '',
+  xyGoodsId: '', stock: 0, amount: 0, scheduledTime: '', description: '', images: '', videos: '', sourceUrl: '',
   commissionAmount: 0, province: '', city: '', detail: '', keyword: '', minAmount: 0,
   maxAmount: 999999, minStock: 0, intervalMinutes: 1440, materialId: undefined, kamiConfigId: undefined,
   targetUrl: '', addressId: undefined, content: '', level: 'INFO'
@@ -57,12 +58,12 @@ const currentType = computed(() => resourceTypes.find(item => item.value === act
 const groups = computed(() => [...new Set(resourceTypes.map(item => item.group))])
 const accountName = (id?: number) => accounts.value.find(item => item.id === id)?.accountNote || accounts.value.find(item => item.id === id)?.unb || '-'
 const statusText = (status: number) => ({ 0: '停用', 1: '启用', 2: '已完成', '-1': '失败' } as Record<string, string>)[String(status)] || '处理中'
-const taskStatusText = (status: number) => ({ 0: '待执行', 1: '执行中', 2: '成功', '-1': '失败' } as Record<string, string>)[String(status)] || '-'
+const taskStatusText = (status: number) => ({ 0: '待执行', 1: '执行中', 2: '成功', 3: '已取消', '-1': '失败' } as Record<string, string>)[String(status)] || '-'
 const formatTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
 const taskName = (type: string) => ({ COLLECT: '采集', SELECT: '选品', PUBLISH: '发布', DELETE: '删除', COMPENSATE: '补偿', REFRESH_PROMOTION: '返佣刷新' } as Record<string, string>)[type] || type
 const actionText = (type: ResourceType) => ({ SUPPLY: '立即采集', SELECTION_RULE: '立即选品', PUBLISH_RULE: '立即发布', DELETE_RULE: '立即删除', PROMOTION_ACCOUNT: '刷新状态', MATERIAL: '立即发布' } as Partial<Record<ResourceType, string>>)[type] || '立即执行'
 const isActioning = (key: string) => pendingAction.value === key
-const taskResultText = (task: MerchantTask) => task.errorMessage || ({ 0: '等待执行', 1: '正在处理', 2: '执行成功', '-1': '执行失败' } as Record<string, string>)[String(task.status)] || '-'
+const taskResultText = (task: MerchantTask) => task.errorMessage || ({ 0: '等待执行', 1: '正在处理', 2: '执行成功', 3: '已取消', '-1': '执行失败' } as Record<string, string>)[String(task.status)] || '-'
 const resourceSummary = (resource: MerchantResource) => {
   if (resource.resourceType === 'ADDRESS') return [resource.data?.province, resource.data?.city, resource.data?.detail].filter(Boolean).join(' ') || '地址信息待完善'
   if (resource.resourceType === 'MATERIAL') return `¥${Number(resource.amount || 0).toFixed(2)} · 库存 ${resource.stock || 0}`
@@ -156,7 +157,8 @@ const openCreate = () => {
 
 const openEdit = (resource: MerchantResource) => {
   Object.assign(form, formDefaults(), resource, resource.data || {}, {
-    images: Array.isArray(resource.data?.images) ? resource.data.images.join('\n') : resource.data?.images || ''
+    images: Array.isArray(resource.data?.images) ? resource.data.images.join('\n') : resource.data?.images || '',
+    videos: Array.isArray(resource.data?.videos) ? resource.data.videos.join('\n') : resource.data?.videos || ''
   })
   showEditor.value = true
   void loadKamiConfigs()
@@ -168,8 +170,10 @@ watch(() => form.xianyuAccountId, () => {
 
 const buildData = () => {
   const images = String(form.images || '').split(/\n|,/).map((item: string) => item.trim()).filter(Boolean)
+  const videos = String(form.videos || '').split(/\n|,/).map((item: string) => item.trim()).filter(Boolean)
   return {
     description: form.description || undefined, images: images.length ? images : undefined,
+    videos: videos.length ? videos : undefined,
     sourceUrl: form.sourceUrl || undefined, commissionAmount: Number(form.commissionAmount || 0),
     province: form.province || undefined, city: form.city || undefined, detail: form.detail || undefined,
     keyword: form.keyword || undefined, minAmount: Number(form.minAmount || 0),
@@ -180,6 +184,15 @@ const buildData = () => {
     content: form.content || undefined, level: form.level || undefined
   }
 }
+
+const resourceImages = computed<string[]>({
+  get: () => String(form.images || '').split(/\n|,/).map((item: string) => item.trim()).filter(Boolean),
+  set: value => { form.images = value.join('\n') }
+})
+const resourceVideos = computed<string[]>({
+  get: () => String(form.videos || '').split(/\n|,/).map((item: string) => item.trim()).filter(Boolean),
+  set: value => { form.videos = value.join('\n') }
+})
 
 const submitForm = async () => {
   if (saving.value) return
@@ -275,6 +288,19 @@ const retryTask = async (task: MerchantTask) => {
   await runWithAction(`retry:${task.id}`, async () => {
     await requeueTask(task.id)
     showSuccess('任务已重新排队')
+    await loadTasks()
+  })
+}
+
+const cancelPendingTask = async (task: MerchantTask) => {
+  try {
+    await showConfirm(`确认取消 #${task.id} 吗？取消后任务不会执行，可在需要时重新创建任务。`, '取消待执行任务')
+  } catch {
+    return
+  }
+  await runWithAction(`cancel:${task.id}`, async () => {
+    await cancelTask(task.id)
+    showSuccess('任务已取消，不会继续执行')
     await loadTasks()
   })
 }
@@ -376,7 +402,7 @@ onMounted(async () => {
     <section v-else-if="activeView === 'tasks'" class="content-card full-card">
       <div class="card-toolbar"><div><strong>任务记录</strong><span>{{ tasks.length }} 条</span></div><button class="secondary-btn" :disabled="loading" @click="loadTasks">{{ loading ? '刷新中...' : '刷新' }}</button></div>
       <div class="table-scroll"><table><thead><tr><th>任务</th><th>资源</th><th>账号</th><th>状态</th><th>执行次数</th><th>计划时间</th><th>结果</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="task in tasks" :key="task.id"><td><strong>{{ taskName(task.taskType) }}</strong><small>#{{ task.id }}</small></td><td>{{ task.resourceId ? `#${task.resourceId}` : '-' }}</td><td>{{ accountName(task.xianyuAccountId) }}</td><td><span class="status" :class="{ enabled: task.status === 2, failed: task.status === -1 }">{{ taskStatusText(task.status) }}</span></td><td>{{ task.attemptCount }}/{{ task.maxAttempts }}</td><td>{{ formatTime(task.scheduledTime) }}</td><td class="result-cell" :title="task.errorMessage || task.resultJson || ''">{{ taskResultText(task) }}</td><td class="actions"><button v-if="task.status === -1" :disabled="!!pendingAction" @click="retryTask(task)">{{ isActioning(`retry:${task.id}`) ? '排队中...' : '重新执行' }}</button></td></tr>
+        <tr v-for="task in tasks" :key="task.id"><td><strong>{{ taskName(task.taskType) }}</strong><small>#{{ task.id }}</small></td><td>{{ task.resourceId ? `#${task.resourceId}` : '-' }}</td><td>{{ accountName(task.xianyuAccountId) }}</td><td><span class="status" :class="{ enabled: task.status === 2, failed: task.status === -1 }">{{ taskStatusText(task.status) }}</span></td><td>{{ task.attemptCount }}/{{ task.maxAttempts }}</td><td>{{ formatTime(task.scheduledTime) }}</td><td class="result-cell" :title="task.errorMessage || task.resultJson || ''">{{ taskResultText(task) }}</td><td class="actions"><button v-if="task.status === -1" :disabled="!!pendingAction" @click="retryTask(task)">{{ isActioning(`retry:${task.id}`) ? '排队中...' : '重新执行' }}</button><button v-if="task.status === 0 || task.status === -1" :disabled="!!pendingAction" class="danger" @click="cancelPendingTask(task)">{{ isActioning(`cancel:${task.id}`) ? '取消中...' : '取消任务' }}</button></td></tr>
         <tr v-if="!loading && !tasks.length"><td colspan="8" class="empty">暂无任务记录</td></tr>
       </tbody></table></div>
     </section>
@@ -399,7 +425,9 @@ onMounted(async () => {
           <template v-if="['MATERIAL','SUPPLY'].includes(form.resourceType)">
             <label><span>库存</span><input v-model.number="form.stock" type="number" min="0"></label><label><span>价格</span><input v-model.number="form.amount" type="number" min="0" step="0.01"></label>
             <label class="wide"><span>详情描述</span><textarea v-model="form.description" rows="4" placeholder="商品卖点与交付说明"></textarea></label>
-            <label class="wide"><span>图片地址</span><textarea v-model="form.images" rows="3" placeholder="每行一个 HTTPS 图片地址"></textarea></label>
+            <label class="wide"><span>商品图片</span><MediaUploader v-model="resourceImages" :account-id="form.xianyuAccountId" :max="9" label="上传图片" /><small class="form-hint">优先上传至闲鱼图床；不成功时保存到本机数据卷，发布时再同步。</small></label>
+            <label class="wide"><span>本地视频素材</span><MediaUploader v-model="resourceVideos" :max="5" accept="video" label="上传视频" /><small class="form-hint">视频仅保存在本机素材库，可预览、删除；当前闲鱼发布接口不自动提交视频。</small></label>
+            <label class="wide"><span>或粘贴图片地址</span><textarea v-model="form.images" rows="3" placeholder="每行一个 HTTPS 图片地址"></textarea></label>
           </template>
           <template v-if="form.resourceType === 'MATERIAL'"><label class="wide"><span>跳转目标</span><input v-model="form.targetUrl" placeholder="用于生成站内短链"></label><label><span>卡券仓库</span><select v-model="form.kamiConfigId" :disabled="!form.xianyuAccountId || kamiLoading"><option :value="undefined">{{ !form.xianyuAccountId ? '请先选择关联账号' : kamiLoading ? '正在加载卡券仓库' : '不绑定卡券仓库' }}</option><option v-for="config in kamiConfigs" :key="config.id" :value="config.id">{{ config.aliasName }}（可用 {{ config.availableCount }}）</option></select><small class="form-hint">绑定后可用于虚拟商品自动交付</small></label></template>
           <template v-if="['MATERIAL','PUBLISH_RULE'].includes(form.resourceType)"><label><span>发布地址</span><select v-model="form.addressId"><option :value="undefined">平台默认地址</option><option v-for="address in addresses" :key="address.id" :value="address.id">{{ address.name }}</option></select></label></template>

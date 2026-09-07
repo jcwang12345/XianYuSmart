@@ -500,7 +500,8 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                 cardDeliveryAttempted = cardDelivery;
                 String deliveryResult = orderService.consignDummyDelivery(
                         accountId, orderId, finalDeliveryContent, imageUrls);
-                if (OrderService.CONSIGN_DEFERRED.equals(deliveryResult)) {
+                if (OrderService.CONSIGN_DEFERRED.equals(deliveryResult)
+                        || OrderService.CONSIGN_PLATFORM_BUSY.equals(deliveryResult)) {
                     if (cardDelivery) {
                         kamiConfigService.releaseReservation(orderId);
                     }
@@ -509,8 +510,8 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                         deliveryMessageHeld = false;
                     }
                     // 平台请求未发出时保留订单任务，熔断结束后重新解析并履约。
-                    deliveryTaskService.deferForRisk(recordId, riskRetryTime(accountId),
-                            OrderService.CONSIGN_DEFERRED);
+                    deliveryTaskService.deferForRisk(recordId,
+                            consignRetryTime(accountId, deliveryResult), deliveryResult);
                     log.info("【账号{}】自动发货等待平台恢复: recordId={}, orderId={}",
                             accountId, recordId, orderId);
                     return;
@@ -747,6 +748,13 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             retryAt = System.currentTimeMillis() + 60_000L;
         }
         return Instant.ofEpochMilli(retryAt).atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
+    }
+
+    private LocalDateTime consignRetryTime(Long accountId, String result) {
+        if (OrderService.CONSIGN_PLATFORM_BUSY.equals(result)) {
+            return LocalDateTime.now().plusHours(2);
+        }
+        return riskRetryTime(accountId);
     }
 
     @Override

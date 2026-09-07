@@ -138,6 +138,17 @@ public class HumanTakeoverManager {
         return interventionRecordMapper.countActive();
     }
 
+    /** 关闭人工干预时清理该商品的接管记录，使自动回复立即恢复。 */
+    public void releaseForGoods(Long accountId, String xyGoodsId) {
+        if (accountId == null || xyGoodsId == null || xyGoodsId.isBlank()) return;
+        for (XianyuHumanInterventionRecord record : interventionRecordMapper
+                .findActiveByAccountAndGoodsId(accountId, xyGoodsId)) {
+            takeoverMap.remove(buildKey(accountId, record.getSId()));
+        }
+        int removed = interventionRecordMapper.deleteByAccountAndGoodsId(accountId, xyGoodsId);
+        log.info("【账号{}】已解除商品人工接管: xyGoodsId={}, count={}", accountId, xyGoodsId, removed);
+    }
+
     /** 定时清理过期的接管标记 */
     @Scheduled(fixedDelay = 60000, initialDelay = 60000)
     public void cleanup() {

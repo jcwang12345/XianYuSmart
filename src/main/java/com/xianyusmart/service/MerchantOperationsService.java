@@ -637,6 +637,12 @@ public class MerchantOperationsService {
         }
     }
 
+    public void cancelTask(Long id) {
+        if (taskMapper.cancel(id) == 0) {
+            throw new IllegalArgumentException("只有待执行或等待重试的任务可以取消；执行中的任务不能中途停止");
+        }
+    }
+
     @Transactional
     public void scheduleDueRules() {
         for (MerchantResource rule : resourceMapper.selectDueRules(50)) {

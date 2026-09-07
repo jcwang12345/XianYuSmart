@@ -25,4 +25,7 @@ public interface ImageUploadService {
      * @return CDN URL
      */
     ResultObject<String> uploadImageFromUrl(Long accountId, String imageUrl);
+
+    /** 将已经保存在本机数据卷的图片同步到闲鱼图片服务。 */
+    ResultObject<String> uploadLocalImage(Long accountId, String localMediaUrl);
 }

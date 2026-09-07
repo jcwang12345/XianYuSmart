@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { getAccountList } from '@/api/account'
-import { uploadImage } from '@/api/image'
 import { createPublishPlan, getResources, type MerchantResource } from '@/api/merchant'
 import PublishAddressFields from '@/components/PublishAddressFields.vue'
+import MediaUploader from '@/components/MediaUploader.vue'
 import type { PublishAddress } from '@/data/publish-address'
 import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
@@ -12,7 +12,6 @@ import '@/styles/merchant-workbench.css'
 const step = ref(1)
 const maxStep = ref(1)
 const loading = ref(false)
-const uploading = ref(false)
 const publishRequestId = ref('')
 const publishFingerprint = ref('')
 const accounts = ref<Account[]>([])
@@ -35,7 +34,10 @@ const form = reactive({
   imagesText: ''
 })
 
-const images = computed(() => form.imagesText.split('\n').map(value => value.trim()).filter(Boolean))
+const images = computed<string[]>({
+  get: () => form.imagesText.split('\n').map(value => value.trim()).filter(Boolean),
+  set: value => { form.imagesText = value.join('\n') }
+})
 const publishAddress = computed<PublishAddress>({
   get: () => ({
     province: form.province,
@@ -65,30 +67,6 @@ const useMaterial = (event: Event) => {
   form.amount = Number(material.amount || 0)
   form.stock = material.stock || 1
   form.imagesText = Array.isArray(material.data?.images) ? material.data.images.join('\n') : ''
-}
-
-const uploadFiles = async (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files || [])
-  if (!form.xianyuAccountId) return toast.error('请先选择发布账号')
-  if (images.value.length + files.length > 9) return toast.error('商品图片最多9张')
-  uploading.value = true
-  try {
-    for (const file of files) {
-      const response = await uploadImage(form.xianyuAccountId, file)
-      if (response.data) {
-        form.imagesText = [form.imagesText.trim(), response.data].filter(Boolean).join('\n')
-      }
-    }
-    toast.success(`已上传 ${files.length} 张图片`)
-  } finally {
-    uploading.value = false
-    input.value = ''
-  }
-}
-
-const removeImage = (target: string) => {
-  form.imagesText = images.value.filter(image => image !== target).join('\n')
 }
 
 const next = () => {
@@ -164,9 +142,8 @@ onMounted(load)
           <label class="workbench__field">素材分类<input v-model="form.category" class="workbench__input"><small>仅用于站内整理，提交时由闲鱼根据标题、详情和图片识别真实类目。</small></label>
           <label class="workbench__field">交付方式<select v-model="form.deliveryMethod" class="workbench__select"><option>线上交付</option><option>快递发货</option><option>当面交易</option></select></label>
         </div>
-        <label class="workbench__field">上传商品图片（最多 9 张）<input class="workbench__input" type="file" accept="image/*" multiple :disabled="uploading" @change="uploadFiles"></label>
-        <label class="workbench__field">或填写图片 HTTPS 地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea" maxlength="5000"></textarea><small>{{ form.imagesText.length }} / 5000</small></label>
-        <div class="publish__images"><button v-for="image in images.slice(0, 9)" :key="image" type="button" @click="removeImage(image)"><img :src="image" alt=""><span>移除</span></button></div>
+        <label class="workbench__field">商品图片（最多 9 张）<MediaUploader v-model="images" :account-id="form.xianyuAccountId" :max="9" label="上传商品图" /><small>优先上传到闲鱼图片服务；失败会保存到本机，实际发布时自动同步。</small></label>
+        <label class="workbench__field">或粘贴图片地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea" maxlength="5000" placeholder="支持 HTTPS 图片地址，也可使用上方上传"></textarea><small>{{ form.imagesText.length }} / 5000</small></label>
       </template>
       <template v-else-if="step === 3">
         <div class="publish__notice">所选省、市、区会直接用于平台发布校验，不再依赖账号是否保存过常用位置。</div>

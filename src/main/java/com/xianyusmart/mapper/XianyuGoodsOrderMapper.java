@@ -187,10 +187,21 @@ public interface XianyuGoodsOrderMapper {
     @Update("UPDATE xianyu_goods_order SET delivery_status = #{status}, next_retry_time = #{nextRetryTime}, " +
             "lease_owner = NULL, lease_expire_time = NULL, last_error_code = 'DELIVERY_FAILED', last_error_message = #{errorMessage}, " +
             "exception_revision = exception_revision + IF(#{status} IN ('FAILED', 'REVIEW_REQUIRED'), 1, 0) " +
-            "WHERE id = #{id} AND delivery_status NOT IN ('REVIEW_REQUIRED', 'COMPLETED')")
+            "WHERE id = #{id} AND delivery_status NOT IN ('REVIEW_REQUIRED', 'COMPLETED', 'SKIPPED')")
     int retryOrFailTask(@Param("id") Long id, @Param("status") String status,
                         @Param("nextRetryTime") java.time.LocalDateTime nextRetryTime,
                         @Param("errorMessage") String errorMessage);
+
+    @Update("UPDATE xianyu_goods_order SET state = -1, fail_reason = #{reason}, " +
+            "delivery_status = 'SKIPPED', next_retry_time = NULL, lease_owner = NULL, lease_expire_time = NULL, " +
+            "last_error_code = 'REFUND_REQUESTED', last_error_message = #{reason}, " +
+            "delivery_message_content = NULL, delivery_message_state = 0, delivery_message_attempt_count = 0, " +
+            "delivery_message_next_retry_time = NULL " +
+            "WHERE xianyu_account_id = #{accountId} AND order_id = #{orderId} " +
+            "AND state <> 1 AND confirm_state <> 1 AND delivery_status NOT IN ('COMPLETED', 'SKIPPED')")
+    int skipPendingTaskForRefund(@Param("accountId") Long accountId,
+                                 @Param("orderId") String orderId,
+                                 @Param("reason") String reason);
 
     @Update("UPDATE xianyu_goods_order SET delivery_status = 'RETRY_WAIT', " +
             "attempt_count = GREATEST(attempt_count - 1, 0), next_retry_time = #{retryAt}, " +

@@ -14,6 +14,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
 
 import java.io.IOException;
+import java.nio.file.Paths;
 
 /**
  * Web MVC 配置
@@ -30,6 +31,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Value("${app.security.allowed-origins}")
     private String allowedOrigins;
+
+    @Value("${app.media.storage-dir:/app/data/media}")
+    private String mediaStorageDir;
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
@@ -57,6 +61,8 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
+        registry.addResourceHandler("/media/**")
+                .addResourceLocations(Paths.get(mediaStorageDir).toAbsolutePath().normalize().toUri().toString());
         registry.addResourceHandler("/**")
                 .addResourceLocations("classpath:/static/")
                 .resourceChain(true)

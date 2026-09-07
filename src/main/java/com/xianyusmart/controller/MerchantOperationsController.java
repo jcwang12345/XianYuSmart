@@ -92,6 +92,16 @@ public class MerchantOperationsController {
         }
     }
 
+    @PostMapping("/tasks/{id}/cancel")
+    public ResultObject<Void> cancelTask(@PathVariable Long id) {
+        try {
+            operationsService.cancelTask(id);
+            return ResultObject.success(null);
+        } catch (Exception e) {
+            return ResultObject.failed(e.getMessage());
+        }
+    }
+
     @PostMapping("/supplies/{id}/material")
     public ResultObject<MerchantResourceRespDTO> convertSupplyToMaterial(@PathVariable Long id) {
         try {

@@ -24,6 +24,8 @@ app:
     max-attempts: ${NOTIFICATION_MAX_ATTEMPTS:5}
   risk-guard:
     state-file: ${RISK_GUARD_STATE_FILE:data/platform-risk-guard.json}
+  media:
+    storage-dir: ${MEDIA_STORAGE_DIR:/app/data/media}
   security:
     allowed-origins: ${ALLOWED_ORIGINS:http://localhost:5173,http://localhost:12400}
     trust-proxy: ${TRUST_PROXY:false}
@@ -46,8 +48,8 @@ jwt:
 spring:
   servlet:
     multipart:
-      max-file-size: 10MB
-      max-request-size: 12MB
+      max-file-size: ${MEDIA_MAX_FILE_SIZE:500MB}
+      max-request-size: ${MEDIA_MAX_REQUEST_SIZE:510MB}
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: GMT+8

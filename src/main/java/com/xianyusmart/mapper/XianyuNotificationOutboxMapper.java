@@ -36,7 +36,7 @@ public interface XianyuNotificationOutboxMapper {
     int claim(@Param("id") Long id, @Param("workerId") String workerId,
               @Param("leaseSeconds") int leaseSeconds);
 
-    @Update("UPDATE xianyu_notification_outbox SET status = 'SENT', next_retry_time = NULL, " +
+    @Update("UPDATE xianyu_notification_outbox SET status = 'SENT', next_retry_time = NOW(3), " +
             "lease_owner = NULL, lease_expire_time = NULL, last_error_message = NULL " +
             "WHERE id = #{id} AND status = 'PROCESSING' AND lease_owner = #{workerId}")
     int markSent(@Param("id") Long id, @Param("workerId") String workerId);

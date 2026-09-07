@@ -6,6 +6,7 @@ import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.service.AccountService;
 import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.ImageUploadService;
+import com.xianyusmart.service.LocalMediaStorageService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +48,9 @@ public class ImageUploadServiceImpl implements ImageUploadService {
 
     @Autowired
     private AccountBrowserProfileService accountBrowserProfileService;
+
+    @Autowired
+    private LocalMediaStorageService localMediaStorageService;
     
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
@@ -59,29 +63,21 @@ public class ImageUploadServiceImpl implements ImageUploadService {
     public ResultObject<String> uploadImage(Long accountId, byte[] imageData, String filename) {
         try {
             XianyuAccount account = accountMapper.selectById(accountId);
-            if (account == null) {
-                return ResultObject.failed("账号不存在");
-            }
+            if (account == null) return saveLocally(imageData, filename, "账号不存在，图片已保存到本地素材库");
             
             String cookie = accountService.getCookieByAccountId(accountId);
-            if (cookie == null || cookie.isEmpty()) {
-                return ResultObject.failed("账号Cookie为空");
-            }
+            if (cookie == null || cookie.isEmpty()) return saveLocally(imageData, filename, "账号未登录，图片已保存到本地素材库");
             
             // 压缩图片
             byte[] compressedData = compressImage(imageData);
-            if (compressedData == null) {
-                return ResultObject.failed("图片压缩失败");
-            }
+            if (compressedData == null) return saveLocally(imageData, filename, "图片压缩失败，已保存原图到本地素材库");
             
             // 上传到闲鱼CDN
             String cdnUrl = uploadToGoofishCDN(accountId, cookie, compressedData, filename);
-            if (cdnUrl == null) {
-                return ResultObject.failed("上传到闲鱼CDN失败");
-            }
+            if (cdnUrl == null) return saveLocally(imageData, filename, "闲鱼图床暂不可用，图片已保存到本地素材库");
             if ("COOKIE_EXPIRED".equals(cdnUrl)) {
                 accountService.updateCookieStatus(accountId, 2);
-                return ResultObject.failed("Cookie已过期，请刷新Cookie");
+                return saveLocally(imageData, filename, "Cookie已过期，图片已保存到本地素材库；发布前请刷新Cookie");
             }
             
             log.info("【账号{}】图片上传成功: {}", accountId, cdnUrl);
@@ -89,7 +85,7 @@ public class ImageUploadServiceImpl implements ImageUploadService {
             
         } catch (Exception e) {
             log.error("上传图片失败: accountId={}", accountId, e);
-            return ResultObject.failed("上传图片失败: " + e.getMessage());
+            return saveLocally(imageData, filename, "闲鱼图床上传异常，图片已保存到本地素材库");
         }
     }
     
@@ -108,6 +104,37 @@ public class ImageUploadServiceImpl implements ImageUploadService {
         } catch (Exception e) {
             log.error("从URL上传图片失败: accountId={}", accountId, e);
             return ResultObject.failed("从URL上传图片失败: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public ResultObject<String> uploadLocalImage(Long accountId, String localMediaUrl) {
+        try {
+            byte[] imageData = localMediaStorageService.read(localMediaUrl);
+            XianyuAccount account = accountMapper.selectById(accountId);
+            if (account == null) return ResultObject.failed("账号不存在");
+            String cookie = accountService.getCookieByAccountId(accountId);
+            if (cookie == null || cookie.isBlank()) return ResultObject.failed("账号Cookie不可用");
+            byte[] compressed = compressImage(imageData);
+            if (compressed == null) return ResultObject.failed("本地图片读取或压缩失败");
+            String url = uploadToGoofishCDN(accountId, cookie, compressed, "image.jpg");
+            if ("COOKIE_EXPIRED".equals(url)) {
+                accountService.updateCookieStatus(accountId, 2);
+                return ResultObject.failed("Cookie已过期，请刷新Cookie后重新发布");
+            }
+            return url == null ? ResultObject.failed("上传到闲鱼CDN失败") : ResultObject.success(url);
+        } catch (Exception e) {
+            log.error("本地图片同步到闲鱼失败: accountId={}", accountId, e);
+            return ResultObject.failed("本地图片同步失败: " + e.getMessage());
+        }
+    }
+
+    private ResultObject<String> saveLocally(byte[] imageData, String filename, String message) {
+        try {
+            return ResultObject.success(localMediaStorageService.store(imageData, filename), message);
+        } catch (IOException storageError) {
+            log.error("本地图片保存失败", storageError);
+            return ResultObject.failed(message + "；本地保存也失败: " + storageError.getMessage());
         }
     }
     

@@ -86,10 +86,17 @@ public class PlatformPublishService {
         List<String> sourceImages = extractImages(data.get("images")).stream().limit(9).toList();
         validatePublishInput(title, description, sourceImages, material.getAmount(), material.getStock());
 
-        Map<String, Object> category = recommendCategory(accountId, cookieText, title, description, sourceImages);
         Map<String, Object> platformAddress = resolveAddress(accountId, cookieText, address, data);
         List<String> cdnImages = new ArrayList<>();
         for (String image : sourceImages) {
+            if (image.startsWith("/media/")) {
+                ResultObject<String> upload = imageUploadService.uploadLocalImage(accountId, image);
+                if (upload.getCode() != 200 || upload.getData() == null || upload.getData().isBlank()) {
+                    throw new IllegalStateException("本地商品图片同步到闲鱼失败: " + upload.getMsg());
+                }
+                cdnImages.add(upload.getData());
+                continue;
+            }
             String normalizedImage = normalizeImageUrl(image);
             if (isPlatformImage(normalizedImage)) {
                 cdnImages.add(normalizedImage);
@@ -99,8 +106,19 @@ public class PlatformPublishService {
             if (upload.getCode() != 200 || upload.getData() == null || upload.getData().isBlank()) {
                 throw new IllegalStateException("商品图片上传失败: " + upload.getMsg());
             }
-            cdnImages.add(upload.getData());
+            String uploadedUrl = upload.getData();
+            if (uploadedUrl.startsWith("/media/")) {
+                ResultObject<String> retry = imageUploadService.uploadLocalImage(accountId, uploadedUrl);
+                if (retry.getCode() != 200 || retry.getData() == null || retry.getData().isBlank()) {
+                    throw new IllegalStateException("商品图片同步到闲鱼失败: " + retry.getMsg());
+                }
+                uploadedUrl = retry.getData();
+            }
+            cdnImages.add(uploadedUrl);
         }
+
+        // 本地暂存图片已全部同步为平台地址后，再参与类目识别。
+        Map<String, Object> category = recommendCategory(accountId, cookieText, title, description, cdnImages);
 
         Map<String, Object> publishData = buildPublishData(
                 title, description, material.getAmount(), material.getStock(), cdnImages, category, platformAddress);
@@ -177,7 +195,9 @@ public class PlatformPublishService {
             stock = 1;
         }
         validatePublishInput(title, description, images, amount, stock);
-        Map<String, Object> category = recommendCategory(accountId, cookieText, title, description, images);
+        // 预检不上传文件；本地暂存图片会在真正发布时先同步，类目预检按标题和详情完成。
+        Map<String, Object> category = recommendCategory(accountId, cookieText, title, description,
+                images.stream().filter(image -> !image.startsWith("/media/")).toList());
         Map<String, Object> address = resolveAddress(accountId, cookieText, request, request);
         return Map.of(
                 "valid", true,
@@ -653,6 +673,9 @@ public class PlatformPublishService {
             throw new IllegalArgumentException("商品图片数量必须为1至9张");
         }
         for (String image : images) {
+            if (image != null && image.startsWith("/media/")) {
+                continue;
+            }
             URI uri = URI.create(normalizeImageUrl(image));
             if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null) {
                 throw new IllegalArgumentException("商品图片必须使用有效的HTTPS地址");

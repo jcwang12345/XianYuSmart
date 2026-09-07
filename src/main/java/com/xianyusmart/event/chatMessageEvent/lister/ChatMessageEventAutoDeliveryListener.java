@@ -7,8 +7,10 @@ import com.xianyusmart.enums.DeliveryChannel;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageData;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageReceivedEvent;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
+import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.service.DeliveryTaskService;
 import com.xianyusmart.service.BuyerProfileService;
+import com.xianyusmart.service.KamiConfigService;
 import com.xianyusmart.service.MerchantOperationsService;
 import com.xianyusmart.service.NotificationCenterService;
 import com.xianyusmart.service.OrderService;
@@ -54,6 +56,12 @@ public class ChatMessageEventAutoDeliveryListener {
     private DeliveryTaskService deliveryTaskService;
 
     @Autowired
+    private XianyuGoodsOrderMapper orderMapper;
+
+    @Autowired
+    private KamiConfigService kamiConfigService;
+
+    @Autowired
     private BuyerProfileService buyerProfileService;
 
     @Autowired
@@ -78,6 +86,11 @@ public class ChatMessageEventAutoDeliveryListener {
                 message.getXyGoodsId(), message.getSId(), message.getOrderId());
 
         try {
+            if (isRefundRequestedMessage(message)) {
+                handleRefundRequested(message);
+                return;
+            }
+
             if (isBargainWaitingMessage(message)) {
                 handleBargainWaiting(message);
                 return;
@@ -153,6 +166,28 @@ public class ChatMessageEventAutoDeliveryListener {
         }
         return message.getMsgContent().contains("[已付款，待发货]")
                 || message.getMsgContent().contains("[我已付款，等待你发货]");
+    }
+
+    private boolean isRefundRequestedMessage(ChatMessageData message) {
+        return message.getContentType() != null
+                && message.getContentType() == 26
+                && message.getMsgContent() != null
+                && message.getMsgContent().contains("我发起了退款申请");
+    }
+
+    private void handleRefundRequested(ChatMessageData message) {
+        Long accountId = message.getXianyuAccountId();
+        String orderId = message.getOrderId();
+        if (accountId == null || orderId == null || orderId.isBlank()) {
+            log.warn("【账号{}】退款消息缺少订单ID，无法停止自动发货: pnmId={}",
+                    accountId, message.getPnmId());
+            return;
+        }
+        String reason = "买家已发起退款，已停止自动发货";
+        if (orderMapper.skipPendingTaskForRefund(accountId, orderId, reason) == 1) {
+            kamiConfigService.releaseReservation(orderId);
+            log.info("【账号{}】检测到买家退款，已停止自动发货: orderId={}", accountId, orderId);
+        }
     }
 
     private boolean isBargainWaitingMessage(ChatMessageData message) {

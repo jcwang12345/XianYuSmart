@@ -46,6 +46,9 @@ public class ItemServiceImpl implements ItemService {
     private com.xianyusmart.service.AutoDeliveryService autoDeliveryService;
 
     @Autowired
+    private com.xianyusmart.service.reply.HumanTakeoverManager humanTakeoverManager;
+
+    @Autowired
     private com.xianyusmart.service.ItemDetailSyncService itemDetailSyncService;
 
     @Autowired
@@ -995,6 +998,10 @@ public class ItemServiceImpl implements ItemService {
             
             // 4. 保存配置
             autoDeliveryService.saveOrUpdateGoodsConfig(goodsConfig);
+            // 关闭人工干预时，不能让已存在的接管记录继续拦截自动回复。
+            if (Integer.valueOf(0).equals(reqDTO.getHumanInterventionOn())) {
+                humanTakeoverManager.releaseForGoods(reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId());
+            }
             
             // 5. 返回结果
             UpdateAutoReplyRespDTO respDTO = new UpdateAutoReplyRespDTO();

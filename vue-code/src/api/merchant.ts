@@ -128,6 +128,10 @@ export function requeueTask(id: number) {
   return request<void>({ url: `/merchant/tasks/${id}/requeue`, method: 'POST' })
 }
 
+export function cancelTask(id: number) {
+  return request<void>({ url: `/merchant/tasks/${id}/cancel`, method: 'POST' })
+}
+
 export function batchPublish(resourceIds: number[], xianyuAccountId?: number) {
   return request<MerchantTask[]>({ url: '/merchant/tasks/batch-publish', method: 'POST', data: { resourceIds, xianyuAccountId } })
 }
