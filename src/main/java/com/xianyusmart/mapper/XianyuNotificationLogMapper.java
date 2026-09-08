@@ -14,6 +14,6 @@ import java.util.List;
 @Mapper
 public interface XianyuNotificationLogMapper extends BaseMapper<XianyuNotificationLog> {
 
-    @Select("SELECT * FROM xianyu_notification_log ORDER BY create_time DESC LIMIT #{limit}")
+    @Select("SELECT * FROM xianyu_notification_log ORDER BY create_time DESC, id DESC LIMIT #{limit}")
     List<XianyuNotificationLog> selectRecent(@Param("limit") int limit);
 }

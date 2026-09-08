@@ -30,7 +30,7 @@ public interface XianyuOperationLogMapper extends BaseMapper<XianyuOperationLog>
             "<if test='operationStatus != null'>" +
             "  AND operation_status = #{operationStatus} " +
             "</if>" +
-            "ORDER BY create_time DESC " +
+            "ORDER BY create_time DESC, id DESC " +
             "LIMIT #{pageSize} OFFSET #{offset}" +
             "</script>")
     List<XianyuOperationLog> selectByPage(

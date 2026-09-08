@@ -89,9 +89,11 @@ public class EmailNotifyServiceImpl implements EmailNotifyService {
     @Async
     public void sendCookieExpireNotifyEmail(Long accountId, String accountNote) {
         setTenantByAccount(accountId);
+        String displayName = accountNote == null || accountNote.isBlank() ? "账号" + accountId : accountNote;
+        String detectedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
         notificationCenterService.dispatch("CREDENTIAL_EXPIRED", accountId, "闲鱼账号登录凭证已失效",
-                accountNote == null ? "登录凭证已失效，请重新登录。" : accountNote,
-                Map.of("accountNote", accountNote == null ? "" : accountNote));
+                displayName + " 自动续期与浏览器恢复均失败，请重新扫码登录。检测时间：" + detectedAt,
+                Map.of("accountNote", displayName, "detectedAt", detectedAt));
         if (!isEmailConfigured()) {
             log.warn("邮箱未配置，跳过发送Cookie过期通知邮件");
             return;

@@ -360,7 +360,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                             OperationConstants.TargetType.COOKIE,
                             String.valueOf(accountId),
                             null, null, null, null);
-                    success = refreshCookieWithBrowser(accountId);
+                    success = doRefreshCookieWithBrowser(accountId);
                 }
 
                 if (success) {
@@ -412,7 +412,19 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
         }
     }
 
-    private boolean refreshCookieWithBrowser(Long accountId) {
+    @Override
+    public boolean forceBrowserRefresh(Long accountId) {
+        synchronized (getRefreshLock(accountId)) {
+            log.info("【账号{}】Token接口已确认Session异常，强制启动浏览器刷新Cookie", accountId);
+            boolean success = doRefreshCookieWithBrowser(accountId);
+            if (success) {
+                updateAccountStatusToNormal(accountId, "浏览器强制刷新Cookie成功，账号状态恢复正常");
+            }
+            return success;
+        }
+    }
+
+    private boolean doRefreshCookieWithBrowser(Long accountId) {
         Long lastTime = lastBrowserRefreshTime.get(accountId);
         if (lastTime != null && (System.currentTimeMillis() - lastTime) < BROWSER_REFRESH_COOLDOWN_MS) {
             long remainingMinutes = (BROWSER_REFRESH_COOLDOWN_MS - (System.currentTimeMillis() - lastTime)) / 60000;

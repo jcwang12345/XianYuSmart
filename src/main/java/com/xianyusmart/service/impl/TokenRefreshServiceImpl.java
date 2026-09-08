@@ -578,11 +578,12 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
     }
 
     private final Map<Long, Long> lastCookieExpireNotifyTimes = new HashMap<>();
-    private static final long COOKIE_NOTIFY_INTERVAL_MS = 10 * 60 * 1000L;
+    private static final long COOKIE_NOTIFY_INTERVAL_MS = 6 * 60 * 60 * 1000L;
 
     private void triggerCookieExpireNotify(Long accountId) {
         try {
-            if (emailNotifyService == null || !emailNotifyService.isCookieExpireNotifyEnabled()) {
+            // 企业微信等IM渠道不依赖SMTP开关；EmailNotifyService内部会单独判断邮件配置。
+            if (emailNotifyService == null) {
                 return;
             }
             long now = System.currentTimeMillis();

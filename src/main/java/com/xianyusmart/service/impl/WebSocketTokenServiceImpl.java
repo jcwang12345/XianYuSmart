@@ -580,11 +580,14 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 accountId, refreshAttempt, MAX_COOKIE_RETRY_COUNT);
 
         try {
-            // 调用hasLogin刷新Cookie（参考Python的hasLogin方法）
-            boolean refreshSuccess = cookieRefreshService.refreshCookie(accountId);
+            // 第一次先走轻量hasLogin；如果Token接口仍返回Session过期，第二次必须
+            // 进入持久化浏览器刷新。不能把“hasLogin成功但Cookie无变化”误判成续期成功。
+            boolean browserFallback = refreshAttempt > 0;
+            boolean refreshSuccess = refreshCookieForTokenFailure(accountId, refreshAttempt);
 
             if (refreshSuccess) {
-                log.info("【账号{}】hasLogin成功，登录态有效，准备重新获取Token（重置重试计数）", accountId);
+                log.info("【账号{}】{}成功，准备重新获取Token（重置Token重试计数）",
+                        accountId, browserFallback ? "浏览器Cookie刷新" : "hasLogin检查");
 
                 try {
                     // 随机间隔500-1500ms，避免固定间隔被识别为机器人
@@ -599,7 +602,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 if (newCookieStr != null && !newCookieStr.isEmpty()) {
                     Map<String, String> newCookies = XianyuSignUtils.parseCookies(newCookieStr);
                     String newMh5tk = newCookies.get("_m_h5_tk");
-                    log.info("【账号{}】hasLogin后已取得最新Cookie，长度: {}，_m_h5_tk={}",
+                    log.info("【账号{}】凭证刷新后已取得最新Cookie，长度: {}，_m_h5_tk={}",
                             accountId, newCookieStr.length(), newMh5tk == null ? "缺失" : "可用");
                     // Token重试次数可以归零，但刷新总次数必须继续累计，避免Session过期时无限递归。
                     return getAccessTokenWithRetry(accountId, 0, refreshAttempt + 1);
@@ -607,7 +610,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                     log.error("【账号{}】hasLogin后获取刷新后的Cookie失败", accountId);
                 }
             } else {
-                log.warn("【账号{}】hasLogin失败", accountId);
+                log.warn("【账号{}】{}失败", accountId,
+                        browserFallback ? "浏览器Cookie刷新" : "hasLogin检查");
             }
         } catch (CaptchaRequiredException e) {
             log.warn("【账号{}】hasLogin后重新获取Token时触发滑块验证，停止自动重试，等待人工处理", accountId);
@@ -620,6 +624,15 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
         // hasLogin失败，重试
         return refreshTokenViaHasLogin(accountId, refreshAttempt + 1);
+    }
+
+    /**
+     * Token失败后的两级恢复策略。单独封装以验证第二级不会再次停留在hasLogin假成功。
+     */
+    boolean refreshCookieForTokenFailure(Long accountId, int refreshAttempt) {
+        return refreshAttempt == 0
+                ? cookieRefreshService.refreshCookie(accountId)
+                : cookieRefreshService.forceBrowserRefresh(accountId);
     }
 
     /**

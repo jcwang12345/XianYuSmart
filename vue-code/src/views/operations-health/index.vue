@@ -197,6 +197,15 @@ const acknowledgeAllExceptions = async () => {
 const eventLabel = (value: string) =>
   eventOptions.find(option => option.value === value)?.label || value
 
+const formatDateTime = (value?: string) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 onMounted(load)
 </script>
 
@@ -288,7 +297,7 @@ onMounted(load)
           <span :class="item.sendStatus === 1 ? 'badge success' : 'badge warning'">{{ item.sendStatus === 1 ? '成功' : '失败' }}</span>
           <div><strong>{{ item.title }}</strong><p>{{ eventLabel(item.eventType) }} · HTTP {{ item.httpStatus || '-' }}</p></div>
         </div>
-        <div class="item-meta"><span v-if="item.errorMessage" class="error">{{ item.errorMessage }}</span><span>{{ item.createTime }}</span></div>
+        <div class="item-meta"><span v-if="item.errorMessage" class="error">{{ item.errorMessage }}</span><span>{{ formatDateTime(item.createTime) }}</span></div>
       </article>
     </section>
 

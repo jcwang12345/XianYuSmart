@@ -24,6 +24,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -87,6 +88,23 @@ class NotificationCenterServiceOutboxTest {
         assertEquals("account:1:order:order-1", tasks.get(0).getDedupeKey());
         assertEquals(tasks.get(0).getDedupeKey(), tasks.get(1).getDedupeKey());
         assertNotEquals(tasks.get(0).getEventId(), tasks.get(1).getEventId());
+    }
+
+    @Test
+    void repeatedCredentialExpiredEventsShareSixHourReminderWindow() {
+        TenantContext.set(7L);
+        channel.setEventTypes("CREDENTIAL_EXPIRED");
+        when(channelMapper.selectEnabled()).thenReturn(List.of(channel));
+
+        service.dispatch("CREDENTIAL_EXPIRED", 4L, "凭证失效", "请重新登录", Map.of());
+        service.dispatch("CREDENTIAL_EXPIRED", 4L, "凭证失效", "请重新登录", Map.of());
+
+        ArgumentCaptor<XianyuNotificationOutbox> captor =
+                ArgumentCaptor.forClass(XianyuNotificationOutbox.class);
+        verify(outboxMapper, times(2)).insert(captor.capture());
+        List<XianyuNotificationOutbox> tasks = captor.getAllValues();
+        assertEquals(tasks.get(0).getDedupeKey(), tasks.get(1).getDedupeKey());
+        assertTrue(tasks.get(0).getDedupeKey().startsWith("account:4:reminder-window:"));
     }
 
     @Test

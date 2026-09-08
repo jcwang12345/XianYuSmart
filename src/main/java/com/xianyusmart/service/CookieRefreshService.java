@@ -34,6 +34,12 @@ public interface CookieRefreshService {
      * @return 是否刷新成功
      */
     boolean refreshCookie(Long accountId);
+
+    /**
+     * 强制通过账号独立的持久化浏览器刷新Cookie。
+     * 用于hasLogin仍返回成功、但业务Token接口已经判定Session失效的场景。
+     */
+    boolean forceBrowserRefresh(Long accountId);
     
     /**
      * 清理重复Cookie

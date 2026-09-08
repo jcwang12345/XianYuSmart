@@ -48,6 +48,7 @@ import javax.crypto.spec.SecretKeySpec;
 public class NotificationCenterService {
 
     private static final int MAX_CHANNELS_PER_TENANT = 10;
+    private static final long CREDENTIAL_REMINDER_WINDOW_MS = Duration.ofHours(6).toMillis();
     private static final Set<String> CHANNEL_TYPES = Set.of(
             "WEBHOOK", "WECHAT_WORK", "DINGTALK", "FEISHU", "BARK", "PUSHPLUS", "TELEGRAM"
     );
@@ -512,6 +513,11 @@ public class NotificationCenterService {
             if (orderId != null && !orderId.toString().isBlank()) {
                 return "account:" + accountId + ":order:" + orderId;
             }
+        }
+        if ("CREDENTIAL_EXPIRED".equals(eventType) || "ACCOUNT_OFFLINE".equals(eventType)) {
+            // 首次立即提醒；持续异常每6小时最多提醒一次。数据库唯一键负责并发去重。
+            long reminderWindow = System.currentTimeMillis() / CREDENTIAL_REMINDER_WINDOW_MS;
+            return "account:" + accountId + ":reminder-window:" + reminderWindow;
         }
         return "event:" + eventId;
     }
