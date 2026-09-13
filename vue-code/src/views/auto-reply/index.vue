@@ -92,6 +92,7 @@ const {
   viewRecordDetail,
   handleRecordsPageChange,
   parseTriggerContext,
+  formatAiIntent,
   handleSaveFixedMaterial,
   handleSyncDetailToFixedMaterial,
   toggleFixedMaterialExpanded,
@@ -1053,6 +1054,15 @@ onMounted(() => {
             <div class="ar__detail-row">
               <span class="ar__detail-label">买家</span>
               <span class="ar__detail-value">{{ recordDetail.buyerUserName || recordDetail.buyerUserId }}</span>
+            </div>
+            <div v-if="parseTriggerContext(recordDetail.triggerContext)?.aiIntent" class="ar__detail-row">
+              <span class="ar__detail-label">AI意图</span>
+              <span class="ar__detail-value">
+                {{ formatAiIntent(parseTriggerContext(recordDetail.triggerContext).aiIntent) }}
+                <template v-if="parseTriggerContext(recordDetail.triggerContext)?.bargainRound">
+                  · 第 {{ parseTriggerContext(recordDetail.triggerContext).bargainRound }} 轮
+                </template>
+              </span>
             </div>
 
             <!-- All user questions -->

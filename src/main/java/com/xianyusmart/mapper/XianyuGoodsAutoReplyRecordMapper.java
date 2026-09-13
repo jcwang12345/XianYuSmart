@@ -27,6 +27,15 @@ public interface XianyuGoodsAutoReplyRecordMapper {
             "lease_owner = NULL, lease_expire_time = NULL, " +
             "exception_revision = exception_revision + IF(#{state} = -1, 1, 0) WHERE id = #{id}")
     int updateStateAndContent(@Param("id") Long id, @Param("state") Integer state, @Param("replyContent") String replyContent);
+
+    /** 完整保存一次回复的最终结果，供后台审计和问题排查。 */
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state = #{state}, reply_content = #{replyContent}, " +
+            "reply_type = #{replyType}, matched_keyword = #{matchedKeyword}, trigger_context = #{triggerContext}, " +
+            "lease_owner = NULL, lease_expire_time = NULL, " +
+            "exception_revision = exception_revision + IF(#{state} = -1, 1, 0) WHERE id = #{id}")
+    int updateReplyResult(@Param("id") Long id, @Param("state") Integer state,
+                          @Param("replyContent") String replyContent, @Param("replyType") Integer replyType,
+                          @Param("matchedKeyword") String matchedKeyword, @Param("triggerContext") String triggerContext);
     
     /**
      * 更新触发上下文

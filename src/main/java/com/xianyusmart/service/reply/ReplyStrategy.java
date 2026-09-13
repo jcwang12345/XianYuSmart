@@ -2,6 +2,7 @@ package com.xianyusmart.service.reply;
 
 import com.xianyusmart.entity.bo.KeywordReplyRuleBO;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageData;
+import com.xianyusmart.service.bo.RAGReplyResult;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -17,6 +18,10 @@ public interface ReplyStrategy {
         private String matchedKeyword;
         private KeywordReplyRuleBO matchedRule;
         private List<KeywordReplyRuleBO> matchedRules = new ArrayList<>();
+        private String aiIntent;
+        private Integer bargainRound;
+        private String contextMessages;
+        private List<RAGReplyResult.RAGHitDetail> ragHitDetails = new ArrayList<>();
 
         @lombok.Data
         public static class ReplyItem {

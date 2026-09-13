@@ -177,6 +177,22 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                     .filter(t -> t != null && !t.trim().isEmpty())
                     .collect(java.util.stream.Collectors.joining("\n"));
             record.setReplyType(replyResult.getItems().get(0).getReplyType());
+
+            triggerContext.setAiIntent(replyResult.getAiIntent());
+            triggerContext.setBargainRound(replyResult.getBargainRound());
+            triggerContext.setContextMessages(replyResult.getContextMessages());
+            if (replyResult.getRagHitDetails() != null) {
+                List<AutoReplyTriggerContext.RAGHitDetail> hitDetails = replyResult.getRagHitDetails().stream()
+                        .map(hit -> {
+                            AutoReplyTriggerContext.RAGHitDetail detail = new AutoReplyTriggerContext.RAGHitDetail();
+                            detail.setDocumentId(hit.getDocumentId());
+                            detail.setContent(hit.getContent());
+                            detail.setScore(hit.getScore());
+                            return detail;
+                        })
+                        .toList();
+                triggerContext.setRagHitDetails(hitDetails);
+            }
             
             log.info("【账号{}】回复策略生成内容: type={}, keyword={}, itemCount={}", 
                     accountId, replyResult.getItems().get(0).getReplyType(), replyResult.getMatchedKeyword(),
@@ -190,7 +206,9 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 }
                 
                 XianyuGoodsInfo goodsInfoForContext = goodsInfoMapper.selectOne(
-                    new LambdaQueryWrapper<XianyuGoodsInfo>().eq(XianyuGoodsInfo::getXyGoodId, xyGoodsId)
+                    new LambdaQueryWrapper<XianyuGoodsInfo>()
+                            .eq(XianyuGoodsInfo::getXyGoodId, xyGoodsId)
+                            .eq(XianyuGoodsInfo::getXianyuAccountId, accountId)
                 );
                 if (goodsInfoForContext != null && goodsInfoForContext.getDetailInfo() != null && !goodsInfoForContext.getDetailInfo().isEmpty()) {
                     triggerContext.setGoodsDetail(goodsInfoForContext.getDetailInfo());
@@ -199,14 +217,10 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 log.warn("【账号{}】获取固定资料和商品详情失败: {}", accountId, e.getMessage());
             }
             
-            if (existingRecordId == null) {
-                try {
-                    String triggerContextJson = objectMapper.writeValueAsString(triggerContext);
-                    record.setTriggerContext(triggerContextJson);
-                    autoReplyRecordMapper.updateTriggerContext(record.getId(), triggerContextJson);
-                } catch (Exception e) {
-                    log.warn("【账号{}】序列化触发上下文失败，跳过保存: {}", accountId, e.getMessage());
-                }
+            try {
+                record.setTriggerContext(objectMapper.writeValueAsString(triggerContext));
+            } catch (Exception e) {
+                log.warn("【账号{}】序列化触发上下文失败，跳过保存: {}", accountId, e.getMessage());
             }
             
             // 8. 发送回复消息
@@ -239,14 +253,14 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             // 9. 更新记录状态
             if (sendSuccess) {
                 log.info("【账号{}】自动回复成功: xyGoodsId={}, sId={}", accountId, xyGoodsId, sId);
-                updateRecordState(record.getId(), 1, allReplyText);
+                updateReplyResult(record, 1, allReplyText);
                 
                 if (allReplyText != null && !allReplyText.trim().isEmpty()) {
                     sentMessageSaveService.saveAiAssistantReply(accountId, cid, toId, allReplyText, xyGoodsId);
                 }
             } else {
                 log.error("【账号{}】自动回复发送失败: xyGoodsId={}, sId={}", accountId, xyGoodsId, sId);
-                updateRecordState(record.getId(), -1, allReplyText);
+                updateReplyResult(record, -1, allReplyText);
             }
             
         } catch (Exception e) {
@@ -282,6 +296,15 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             autoReplyRecordMapper.updateStateAndContent(recordId, state, replyContent);
         } catch (Exception e) {
             log.error("更新回复记录状态失败: recordId={}, state={}", recordId, state, e);
+        }
+    }
+
+    private void updateReplyResult(XianyuGoodsAutoReplyRecord record, Integer state, String replyContent) {
+        try {
+            autoReplyRecordMapper.updateReplyResult(record.getId(), state, replyContent,
+                    record.getReplyType(), record.getMatchedKeyword(), record.getTriggerContext());
+        } catch (Exception e) {
+            log.error("更新完整回复结果失败: recordId={}, state={}", record.getId(), state, e);
         }
     }
 }

@@ -48,6 +48,7 @@ build/
 /.arts/
 /.worktrees/
 /.tools/
+/XianyuAutoAgent/
 /.pnpm-store/
 /vue-code/pnpm-workspace.yaml
 /.qoder/

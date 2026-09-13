@@ -40,6 +40,12 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
     @Autowired
     private XianyuGoodsInfoMapper goodsInfoMapper;
 
+    @Autowired
+    private AIReplyPreparationService preparationService;
+
+    @Autowired
+    private AIReplySafetyGuard safetyGuard;
+
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
         ChatMessageData lastMessage = messageList.get(messageList.size() - 1);
@@ -57,7 +63,7 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
             return executeKeywordWithPolish(accountId, matchedRules);
         }
 
-        return executeAIReply(accountId, xyGoodsId, buyerMessage);
+        return executeAIReply(accountId, xyGoodsId, messageList);
     }
 
     private ReplyResult executeKeywordWithPolish(Long accountId, List<KeywordReplyRuleBO> matchedRules) {
@@ -85,8 +91,9 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
                         originalText
                 );
                 String polishedText = aiService.simpleChat(polishPrompt);
-                if (polishedText != null && !polishedText.trim().isEmpty()) {
-                    finalText = polishedText;
+                String safePolishedText = safetyGuard.safeOrNull(polishedText);
+                if (safePolishedText != null) {
+                    finalText = safePolishedText;
                 }
             } catch (Exception e) {
                 log.warn("【账号{}】AI润化失败，使用原文回复: {}", accountId, e.getMessage());
@@ -119,27 +126,42 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
         return result;
     }
 
-    private ReplyResult executeAIReply(Long accountId, String xyGoodsId, String buyerMessage) {
+    private ReplyResult executeAIReply(Long accountId, String xyGoodsId,
+                                       List<ChatMessageData> messageList) {
         try {
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
             String fixedMaterial = goodsConfig != null ? goodsConfig.getFixedMaterial() : null;
 
             XianyuGoodsInfo goodsInfo = goodsInfoMapper.selectOne(
-                    new LambdaQueryWrapper<XianyuGoodsInfo>().eq(XianyuGoodsInfo::getXyGoodId, xyGoodsId)
+                    new LambdaQueryWrapper<XianyuGoodsInfo>()
+                            .eq(XianyuGoodsInfo::getXyGoodId, xyGoodsId)
+                            .eq(XianyuGoodsInfo::getXianyuAccountId, accountId)
             );
             String goodsDetail = goodsInfo != null ? goodsInfo.getDetailInfo() : null;
+            AIReplyPreparationService.PreparedReply prepared = preparationService.prepare(messageList, goodsConfig, goodsInfo);
+            return executePreparedAIReply(prepared, xyGoodsId, fixedMaterial, goodsDetail);
 
-            RAGReplyResult ragResult = aiService.chatByRAGWithFixedMaterial(buyerMessage, xyGoodsId, fixedMaterial, goodsDetail);
-
-            if (ragResult != null && ragResult.getReplyContent() != null && !ragResult.getReplyContent().trim().isEmpty()) {
-                return ReplyResult.of(Collections.singletonList(
-                        ReplyResult.ReplyItem.text(ragResult.getReplyContent(), REPLY_TYPE_AI)
-                ));
-            }
-            return ReplyResult.fail();
         } catch (Exception e) {
             log.error("【账号{}】AI回复失败: xyGoodsId={}", accountId, xyGoodsId, e);
             return ReplyResult.fail();
         }
     }
+
+    private ReplyResult executePreparedAIReply(AIReplyPreparationService.PreparedReply prepared,
+                                               String xyGoodsId, String fixedMaterial, String goodsDetail) {
+        RAGReplyResult ragResult = aiService.chatByRAGWithFixedMaterial(
+                prepared.buyerMessage(), xyGoodsId, prepared.contextMessages(),
+                AIReplyStrategy.appendPolicy(fixedMaterial, prepared.policy()), goodsDetail);
+
+        String safeReply = ragResult == null ? null : safetyGuard.safeOrNull(ragResult.getReplyContent());
+        if (safeReply == null) return ReplyResult.fail();
+        ReplyResult result = ReplyResult.of(Collections.singletonList(
+                ReplyResult.ReplyItem.text(safeReply, REPLY_TYPE_AI)));
+        result.setAiIntent(prepared.intent().name());
+        result.setBargainRound(prepared.bargainRound());
+        result.setContextMessages(prepared.contextMessages());
+        result.setRagHitDetails(ragResult.getHitDetails());
+        return result;
+    }
+
 }

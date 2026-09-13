@@ -41,6 +41,12 @@ public class AutoReplyTriggerContext {
      * AI回复时携带的商品详情
      */
     private String goodsDetail;
+
+    /** 本轮AI路由到的专家意图。 */
+    private String aiIntent;
+
+    /** 当前会话识别到的议价轮次，仅议价意图有值。 */
+    private Integer bargainRound;
     
     /**
      * 触发消息

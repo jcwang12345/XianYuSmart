@@ -31,37 +31,55 @@ public class AIReplyStrategy implements ReplyStrategy {
     @Autowired
     private XianyuGoodsInfoMapper goodsInfoMapper;
 
+    @Autowired
+    private AIReplyPreparationService preparationService;
+
+    @Autowired
+    private AIReplySafetyGuard safetyGuard;
+
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
         ChatMessageData lastMessage = messageList.get(messageList.size() - 1);
         Long accountId = lastMessage.getXianyuAccountId();
         String xyGoodsId = lastMessage.getXyGoodsId();
 
-        String buyerMessage = messageList.stream()
-                .map(ChatMessageData::getMsgContent)
-                .reduce((a, b) -> a + "\n" + b)
-                .orElse("");
-
         try {
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
             String fixedMaterial = goodsConfig != null ? goodsConfig.getFixedMaterial() : null;
 
             XianyuGoodsInfo goodsInfo = goodsInfoMapper.selectOne(
-                    new LambdaQueryWrapper<XianyuGoodsInfo>().eq(XianyuGoodsInfo::getXyGoodId, xyGoodsId)
+                    new LambdaQueryWrapper<XianyuGoodsInfo>()
+                            .eq(XianyuGoodsInfo::getXyGoodId, xyGoodsId)
+                            .eq(XianyuGoodsInfo::getXianyuAccountId, accountId)
             );
             String goodsDetail = goodsInfo != null ? goodsInfo.getDetailInfo() : null;
 
-            RAGReplyResult result = aiService.chatByRAGWithFixedMaterial(buyerMessage, xyGoodsId, fixedMaterial, goodsDetail);
+            AIReplyPreparationService.PreparedReply prepared = preparationService.prepare(
+                    messageList, goodsConfig, goodsInfo);
+            String guardedMaterial = appendPolicy(fixedMaterial, prepared.policy());
+            RAGReplyResult result = aiService.chatByRAGWithFixedMaterial(
+                    prepared.buyerMessage(), xyGoodsId, prepared.contextMessages(), guardedMaterial, goodsDetail);
 
-            if (result != null && result.getReplyContent() != null && !result.getReplyContent().trim().isEmpty()) {
-                return ReplyResult.of(Collections.singletonList(
-                        ReplyResult.ReplyItem.text(result.getReplyContent(), REPLY_TYPE_AI)
-                ));
+            String safeReply = result == null ? null : safetyGuard.safeOrNull(result.getReplyContent());
+            if (safeReply != null) {
+                ReplyResult replyResult = ReplyResult.of(Collections.singletonList(
+                        ReplyResult.ReplyItem.text(safeReply, REPLY_TYPE_AI)));
+                replyResult.setAiIntent(prepared.intent().name());
+                replyResult.setBargainRound(prepared.bargainRound());
+                replyResult.setContextMessages(prepared.contextMessages());
+                replyResult.setRagHitDetails(result.getHitDetails());
+                return replyResult;
             }
             return ReplyResult.fail();
         } catch (Exception e) {
             log.error("【账号{}】AI回复策略执行失败: xyGoodsId={}", accountId, xyGoodsId, e);
             return ReplyResult.fail();
         }
+    }
+
+    static String appendPolicy(String fixedMaterial, String policy) {
+        String material = fixedMaterial == null ? "" : fixedMaterial.trim();
+        if (material.isEmpty()) return "【系统回复策略】\n" + policy;
+        return material + "\n\n【系统回复策略】\n" + policy;
     }
 }

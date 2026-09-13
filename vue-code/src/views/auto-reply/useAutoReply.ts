@@ -1234,6 +1234,14 @@ export function useAutoReply() {
     }
   }
 
+  const formatAiIntent = (intent: string | null | undefined) => ({
+    GENERAL: '通用咨询',
+    PRICE: '议价',
+    TECHNICAL: '商品参数',
+    DELIVERY: '交付咨询',
+    AFTER_SALES: '售后咨询'
+  }[intent || ''] || intent || '—')
+
   // Confirm dialog actions
   const handleDialogConfirm = () => {
     confirmDialog.value.onConfirm()
@@ -1333,6 +1341,7 @@ export function useAutoReply() {
     viewRecordDetail,
     handleRecordsPageChange,
     parseTriggerContext,
+    formatAiIntent,
     handleSaveFixedMaterial,
     handleSyncDetailToFixedMaterial,
     toggleFixedMaterialExpanded,
