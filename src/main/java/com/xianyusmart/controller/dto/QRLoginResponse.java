@@ -16,6 +16,12 @@ public class QRLoginResponse {
     private String sessionId;
     private String qrCodeUrl;
     private String message;
+    /** Local session deadline, not a guarantee of platform validity. */
+    private Long expiresAt;
+
+    public QRLoginResponse(boolean success, String sessionId, String qrCodeUrl, String message) {
+        this(success, sessionId, qrCodeUrl, message, null);
+    }
     
     public QRLoginResponse(boolean success, String message) {
         this.success = success;

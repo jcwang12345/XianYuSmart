@@ -18,7 +18,9 @@ public class QRLoginSession {
     private Map<String, String> cookies = new HashMap<>();
     private String unb;
     private long createdTime;
-    private long expireTime = 300000; // 5分钟过期（毫秒）
+    // Local monitoring ceiling only. The platform may invalidate the QR sooner.
+    public static final long MAX_WAIT_MS = 15 * 60 * 1000L;
+    private long expireTime = MAX_WAIT_MS;
     private Map<String, String> params = new HashMap<>();
     private String verificationUrl;
     @JsonIgnore

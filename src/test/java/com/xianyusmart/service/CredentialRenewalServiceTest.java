@@ -35,7 +35,7 @@ class CredentialRenewalServiceTest {
         ObjectProvider<EmailNotifyService> mp=mock(ObjectProvider.class);when(mp.getObject()).thenReturn(mail);
         var account=new XianyuAccount();account.setId(1L);account.setTenantId(7L);account.setStatus(1);when(accounts.selectById(1L)).thenReturn(account);
         when(mail.isEmailConfigured()).thenReturn(true);when(mail.isCookieExpireNotifyEnabled()).thenReturn(true);
-        when(qr.generateQRCode(1L)).thenReturn(new QRLoginResponse(true,"session",png(),"ok"));
+        when(qr.generateQRCode(1L)).thenReturn(new QRLoginResponse(true,"session",png(),"ok",System.currentTimeMillis()+QRLoginSession.MAX_WAIT_MS));
         var service=new CredentialRenewalService(accounts,qr,wsp,mp,notices,new RenewalImageStore(),Runnable::run);
         TenantContext.set(7L);service.request(1L);TenantContext.set(7L);service.request(1L);
         verify(qr,times(1)).generateQRCode(1L);

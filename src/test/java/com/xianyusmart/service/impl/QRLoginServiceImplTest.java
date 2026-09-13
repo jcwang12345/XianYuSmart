@@ -11,6 +11,13 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class QRLoginServiceImplTest {
+    @Test void localSessionNoLongerExpiresAtFiveMinutesButRemainsBounded() {
+        var session=new QRLoginSession("local-window");
+        session.setCreatedTime(System.currentTimeMillis()-6*60*1000L);
+        assertFalse(session.isExpired());
+        session.setCreatedTime(System.currentTimeMillis()-16*60*1000L);
+        assertTrue(session.isExpired());
+    }
     @Test void scanWithDifferentAccountCannotOverwriteCredentials() {
         QRLoginServiceImpl service=new QRLoginServiceImpl();
         var accounts=org.mockito.Mockito.mock(com.xianyusmart.service.AccountService.class);

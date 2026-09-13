@@ -334,6 +334,8 @@ public class QRLoginServiceImpl implements QRLoginService {
                         String qrDataUrl = generateQRCodeImage(qrContent);
                         session.setQrCodeUrl(qrDataUrl);
                         session.setStatus("waiting");
+                        // Start the local scan window when the image is ready, not before network setup.
+                        session.setCreatedTime(System.currentTimeMillis());
                         
                         // 保存会话
                         sessions.put(sessionId, session);
@@ -342,7 +344,8 @@ public class QRLoginServiceImpl implements QRLoginService {
                         taskExecutor.execute(() -> monitorQRStatus(sessionId));
                         
                         log.info("二维码生成成功");
-                        return new QRLoginResponse(true, sessionId, qrDataUrl, null);
+                        return new QRLoginResponse(true, sessionId, qrDataUrl, null,
+                                session.getCreatedTime() + session.getExpireTime());
                     } else {
                         return new QRLoginResponse(false, "获取登录二维码失败");
                     }
@@ -412,10 +415,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             
             log.info("开始监控二维码状态");
             
-            long maxWaitTime = 300000; // 5分钟
-            long startTime = System.currentTimeMillis();
-            
-            while (System.currentTimeMillis() - startTime < maxWaitTime) {
+            while (!session.isExpired()) {
                 try {
                     // 检查会话是否还存在
                     if (!sessions.containsKey(sessionId)) {

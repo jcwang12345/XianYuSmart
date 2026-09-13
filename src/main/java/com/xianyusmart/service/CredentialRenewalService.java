@@ -22,6 +22,8 @@ import java.util.concurrent.Executor;
 @Slf4j
 public class CredentialRenewalService {
     private static final long REMINDER_MS = 6 * 60 * 60 * 1000L;
+    private static final long RENEWAL_WINDOW_MS = 30 * 60 * 1000L;
+    private static final int MAX_GENERATIONS = 10;
     private final XianyuAccountMapper accounts;
     private final QRLoginService qr;
     private final ObjectProvider<WebSocketService> websocket;
@@ -34,8 +36,8 @@ public class CredentialRenewalService {
     @org.springframework.beans.factory.annotation.Autowired
     private ObjectProvider<WebSocketTokenService> tokenService;
     private static final class Flow {
-        Long tenant, account; String note, session, image; int generation;
-        long reminderAt, expiresAt, nextCheck; boolean confirmed, terminal;
+        Long tenant, account; String note, accountNote, session, image; int generation;
+        long reminderAt, expiresAt, nextCheck, windowEndsAt; boolean confirmed, terminal;
         String mailBody; int mailAttempts; long nextMail;
     }
     public CredentialRenewalService(XianyuAccountMapper accounts, QRLoginService qr,
@@ -59,8 +61,10 @@ public class CredentialRenewalService {
                     Flow old = flows.get(accountId);
                     if (old != null && old.reminderAt > System.currentTimeMillis()) return;
                     Flow flow = new Flow(); flow.tenant=account.getTenantId();flow.account=accountId;
-                    flow.note=(account.getAccountNote()==null ? "闲鱼账号" : account.getAccountNote()) + "（ID " + accountId + "）";
+                    flow.accountNote=account.getAccountNote();
+                    flow.note=(flow.accountNote==null || flow.accountNote.isBlank() ? "未填写备注" : flow.accountNote) + "（ID " + accountId + "）";
                     flow.reminderAt=System.currentTimeMillis()+REMINDER_MS;
+                    flow.windowEndsAt=System.currentTimeMillis()+RENEWAL_WINDOW_MS;
                     flows.put(accountId,flow);
                     if(tokenService!=null && tokenService.getObject().getPendingCaptchaUrl(accountId)!=null) {
                         flow.terminal=true;
@@ -83,7 +87,6 @@ public class CredentialRenewalService {
     private void generate(Flow flow) {
         images.remove(flow.image);
         flow.generation++;
-        long started = System.currentTimeMillis();
         boolean canMail = email.getObject().isEmailConfigured() && email.getObject().isCookieExpireNotifyEnabled();
         if (!canMail && !notifications.hasRenewalImageChannel()) {
             flow.terminal=true;
@@ -91,17 +94,18 @@ public class CredentialRenewalService {
             return;
         }
         var result = qr.generateQRCode(flow.account);
-        // The QR session itself expires after five minutes; use a conservative four-minute delivery window.
-        flow.expiresAt=started+240000;
+        // Share the actual local session deadline; never invent a guaranteed platform TTL.
+        flow.expiresAt=result.getExpiresAt()==null ? 0 : Math.min(result.getExpiresAt(),flow.windowEndsAt);
         if (!result.isSuccess() || result.getSessionId()==null || flow.expiresAt <= System.currentTimeMillis()) {
             flow.terminal=true;
             notice(flow,"CREDENTIAL_EXPIRED","扫码续期二维码暂时无法生成", "平台暂未返回可用二维码，请稍后在账号管理中重试；本次不附带无效图片。",null);
             return;
         }
         flow.session=result.getSessionId();
-        flow.image=images.put(flow.tenant,flow.account,result.getQrCodeUrl(),flow.expiresAt);
+        flow.image=images.put(flow.tenant,flow.account,flow.accountNote,result.getQrCodeUrl(),flow.expiresAt);
         String until=DateTimeFormatter.ofPattern("MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai")).format(Instant.ofEpochMilli(flow.expiresAt));
-        String body="账号："+flow.note+"\n影响：AI 回复、订单同步和发货可能受阻。\n操作：使用此账号的闲鱼 App 扫描本条二维码并确认登录。\n请于北京时间 "+until+" 前扫码（平台可能提前失效），以最新二维码为准。\n第 "+flow.generation+" / 3 次换码；本轮过期最多自动换码两次，之后停止刷屏，持续异常六小时后再次提醒。\n扫码后自动核对账号、保存凭证并尝试恢复连接；无需登录管理网页。登录二维码请勿转发。";
+        String windowUntil=DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.of("Asia/Shanghai")).format(Instant.ofEpochMilli(flow.windowEndsAt));
+        String body="账号："+flow.note+"\n影响：AI 回复、订单同步和发货可能受阻。\n操作：使用此账号的闲鱼 App 扫描本条二维码并确认登录。\n本张最晚扫码时间：北京时间 "+until+"；平台可能提前失效，以最新二维码为准。\n本轮自动续码至北京时间 "+windowUntil+"（30 分钟窗口，最多 "+MAX_GENERATIONS+" 张），当前第 "+flow.generation+" 张。仅在过期后换码；已扫码等待确认时不主动换码。结束后停止刷屏，持续异常六小时后再次提醒。\n扫码后自动核对账号、保存凭证并尝试恢复连接；无需登录管理网页。登录二维码请勿转发。";
         notifications.dispatch("CREDENTIAL_EXPIRED",flow.account,"需扫码续期 · "+flow.note,body,Map.of("_renewalBatch",flow.image));
         notifications.dispatch("CREDENTIAL_EXPIRED",flow.account,"续期二维码 · "+flow.note,body,Map.of("_renewalBatch",flow.image,"_renewalImage",flow.image));
         var entry=images.get(flow.image,flow.tenant,flow.account);
@@ -162,7 +166,11 @@ public class CredentialRenewalService {
             return;
         }
         if("expired".equals(status.getStatus()) || "not_found".equals(status.getStatus()) || System.currentTimeMillis()>flow.expiresAt) {
-            if(flow.generation<3 && !"scanned".equals(status.getStatus())) generate(flow);
+            if("scanned".equals(status.getStatus())) {
+                // A phone already on the confirmation screen must not lose its workflow at the image cutoff.
+                images.remove(flow.image);flow.nextCheck=System.currentTimeMillis()+10000;return;
+            }
+            if(flow.generation<MAX_GENERATIONS && System.currentTimeMillis()<flow.windowEndsAt) generate(flow);
             else { flow.terminal=true;images.remove(flow.image);
                 notice(flow,"CREDENTIAL_EXPIRED","本轮续期二维码已过期","账号："+flow.note+"\n尚未完成续期，本轮已停止自动换码，旧二维码请勿再用。持续异常六小时后会再次提醒；需要立即恢复时可在账号管理重新生成二维码。",null); }
         }
