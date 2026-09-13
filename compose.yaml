@@ -16,6 +16,8 @@ services:
       - --collation-server=utf8mb4_general_ci
       - --default-time-zone=+08:00
       - --max-connections=100
+      # 每张业务表独立表空间，磁盘按真实数据增长，避免集中到单一巨大 ibdata 文件。
+      - --innodb-file-per-table=ON
       # Flyway V3 creates tenant-normalization triggers. MySQL with binary logging
       # rejects trigger creation by the application user unless this is enabled.
       - --log-bin-trust-function-creators=1
@@ -38,7 +40,7 @@ services:
   app:
     build:
       context: .
-    image: ${APP_IMAGE:-xianyusmart:2.1.0}
+    image: ${APP_IMAGE:-xianyusmart:2.2.0}
     restart: unless-stopped
     mem_limit: 3g
     depends_on:
@@ -50,7 +52,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       ACCOUNT_DATA_ENCRYPTION_KEY: ${ACCOUNT_DATA_ENCRYPTION_KEY:?ACCOUNT_DATA_ENCRYPTION_KEY is required}
-      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-28800000}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-1800000}
+      JWT_REFRESH_EXPIRATION_MS: ${JWT_REFRESH_EXPIRATION_MS:-2592000000}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:2000,http://127.0.0.1:2000}

@@ -14,6 +14,7 @@ import { getAccountList } from '@/api/account'
 import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
 import { isPlatformAdmin, permissionState } from '@/utils/permission'
+import { getAccountGroups, newRequestId, type AccountGroup } from '@/api/matrix'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -21,6 +22,7 @@ const users = ref<PlatformUser[]>([])
 const summary = ref<PlatformUserList>({ records: [], total: 0, activeCount: 0, adminCount: 0 })
 const options = ref<PermissionOption[]>([])
 const accounts = ref<Account[]>([])
+const accountGroups = ref<AccountGroup[]>([])
 const editing = ref<PlatformUser | null>()
 const passwordTarget = ref<PlatformUser | null>()
 const newPassword = ref('')
@@ -31,6 +33,7 @@ const form = ref({
   memberRole: 'OPERATOR' as TeamMemberRole,
   accountScopeMode: 'ALL' as 'ALL' | 'SELECTED',
   accountIds: [] as number[],
+  accountGroupIds: [] as number[],
   status: 1,
   permissions: [] as string[]
 })
@@ -52,15 +55,17 @@ function groupOptions(type: 'MENU' | 'ACTION') {
 async function load() {
   loading.value = true
   try {
-    const [userResponse, permissionResponse, accountResponse] = await Promise.all([
+    const [userResponse, permissionResponse, accountResponse, groupResponse] = await Promise.all([
       getPlatformUsers(),
       getPermissionOptions(),
-      getAccountList()
+      getAccountList(),
+      getAccountGroups()
     ])
     summary.value = userResponse.data || summary.value
     users.value = userResponse.data?.records || []
     options.value = permissionResponse.data || []
     accounts.value = accountResponse.data?.accounts || []
+    accountGroups.value = groupResponse.data || []
   } finally {
     loading.value = false
   }
@@ -75,6 +80,7 @@ function openCreate() {
     memberRole: 'OPERATOR',
     accountScopeMode: 'ALL',
     accountIds: [],
+    accountGroupIds: [],
     status: 1,
     permissions: options.value.map(option => option.code)
   }
@@ -89,6 +95,7 @@ function openEdit(user: PlatformUser) {
     memberRole: user.memberRole || (user.role === 'ADMIN' ? 'OWNER' : 'OPERATOR'),
     accountScopeMode: user.accountScopeMode || 'ALL',
     accountIds: [...(user.accountIds || [])],
+    accountGroupIds: [...(user.accountGroupIds || [])],
     status: user.status,
     permissions: [...(user.permissions || [])]
   }
@@ -121,8 +128,10 @@ async function save() {
       memberRole: form.value.role === 'ADMIN' ? 'OWNER' : form.value.memberRole,
       accountScopeMode: form.value.accountScopeMode,
       accountIds: form.value.accountIds,
+      accountGroupIds: form.value.accountGroupIds,
       status: form.value.status,
-      permissions: form.value.permissions
+      permissions: form.value.permissions,
+      requestId: newRequestId('team-member')
     })
     toast.success(isCreating.value ? '平台账号已创建' : '账号权限已更新')
     closeEditor()
@@ -141,7 +150,8 @@ async function resetPassword() {
   if (!passwordTarget.value) return
   await resetPlatformUserPassword({
     userId: passwordTarget.value.id,
-    newPassword: newPassword.value
+    newPassword: newPassword.value,
+    requestId: newRequestId('team-password')
   })
   toast.success('密码已重置，该账号需要重新登录')
   passwordTarget.value = null
@@ -206,7 +216,7 @@ onMounted(load)
           </div>
           <div class="role-cell">
             <span :class="['role', user.role.toLowerCase()]">{{ memberRoleLabel(user.memberRole) }}</span>
-            <small>{{ user.accountScopeMode === 'ALL' ? '全部闲鱼账号' : `${user.accountIds?.length || 0} 个闲鱼账号` }} · {{ user.permissions?.length || 0 }} 项权限</small>
+            <small>{{ user.accountScopeMode === 'ALL' ? '全部闲鱼账号' : `${user.accountIds?.length || 0} 个直授权 + ${user.accountGroupIds?.length || 0} 个动态分组` }} · {{ user.permissions?.length || 0 }} 项权限</small>
           </div>
           <div class="login-cell">
             <strong>{{ formatTime(user.lastLoginTime) }}</strong>
@@ -273,6 +283,12 @@ onMounted(load)
                 <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb || `账号 ${account.id}` }}</option>
               </select>
             </label>
+            <label v-if="form.accountScopeMode === 'SELECTED'">动态店铺分组
+              <select v-model="form.accountGroupIds" multiple :size="Math.min(Math.max(accountGroups.length, 3), 7)">
+                <option v-for="group in accountGroups" :key="group.id" :value="group.id">{{ group.groupName }}（{{ group.accountCount || 0 }}）</option>
+              </select>
+              <small>分组成员以后变化时，成员权限自动随分组更新。</small>
+            </label>
           </div>
 
           <div v-if="form.role === 'ADMIN'" class="admin-notice">
@@ -331,15 +347,15 @@ onMounted(load)
 .permission-hero, .account-panel, .summary-grid article { background: #fff; border: 1px solid #e4e7ec; border-radius: 10px; }
 .permission-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 20px; }
 h2, h3, p { margin: 0; } h2 { margin-top: 3px; font-size: 21px; } .permission-hero p, .account-panel header p { margin-top: 6px; color: #667085; font-size: 13px; }
-.eyebrow { color: #155eef; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.eyebrow { color: #9a6200; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
 button, input, select { font: inherit; } button { padding: 8px 13px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: #344054; cursor: pointer; }
-.primary { border-color: #155eef; background: #155eef; color: #fff; }
+.primary { border-color: #9a6200; background: #9a6200; color: #fff; }
 .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
 .summary-grid article { padding: 15px 17px; } .summary-grid span { color: #667085; font-size: 12px; } .summary-grid strong { display: block; margin-top: 5px; font-size: 24px; }
 .account-panel > header { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid #eaecf0; }
 .account-panel h3 { font-size: 16px; }
 .account-row { display: grid; grid-template-columns: minmax(220px, 1.3fr) minmax(140px, .7fr) minmax(190px, .8fr) 86px auto; align-items: center; gap: 16px; padding: 14px 18px; border-bottom: 1px solid #f0f1f3; }
-.account-row:last-child { border-bottom: 0; }.identity { display: flex; align-items: center; gap: 11px; }.avatar { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 8px; background: #eef4ff; color: #155eef; font-weight: 700; }
+.account-row:last-child { border-bottom: 0; }.identity { display: flex; align-items: center; gap: 11px; }.avatar { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 8px; background: #fff8d9; color: #9a6200; font-weight: 700; }
 .identity strong, .identity small, .role-cell small, .login-cell strong, .login-cell small { display: block; }.identity small, .role-cell small, .login-cell small { margin-top: 4px; color: #98a2b3; font-size: 11px; }.login-cell strong { font-size: 13px; font-weight: 500; }
 .role, .state { display: inline-block; width: fit-content; padding: 3px 8px; border-radius: 999px; font-size: 12px; }.role.admin { color: #6941c6; background: #f4f3ff; }.role.user, .state.enabled { color: #067647; background: #ecfdf3; }.state.disabled { color: #b42318; background: #fef3f2; }
 .actions { display: flex; gap: 6px; justify-content: flex-end; }.actions button { padding: 6px 9px; font-size: 12px; }.empty { padding: 70px 20px; text-align: center; color: #98a2b3; }
@@ -348,7 +364,7 @@ button, input, select { font: inherit; } button { padding: 8px 13px; border: 1px
 .editor > header, .password-dialog header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid #eaecf0; }.editor h3 { margin-top: 4px; }
 .icon-button { padding: 2px 8px; border: 0; font-size: 23px; }.base-form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 18px 20px; }
 label { color: #475467; font-size: 13px; }.base-form label, .password-dialog label { display: grid; gap: 6px; }input, select { width: 100%; padding: 9px 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; background: #fff; color: #344054; }
-.admin-notice { margin: 0 20px 20px; padding: 13px 14px; border: 1px solid #b2ccff; border-radius: 8px; background: #eff4ff; color: #344054; font-size: 13px; }
+.admin-notice { margin: 0 20px 20px; padding: 13px 14px; border: 1px solid #efd77f; border-radius: 8px; background: #eff4ff; color: #344054; font-size: 13px; }
 .scope-form { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; margin: 0 20px 18px; padding: 13px; border: 1px solid #d1e9ff; border-radius: 8px; background: #f5fbff; }.scope-form label { display: grid; gap: 6px; }.scope-form select[multiple] { min-height: 90px; }
 .permission-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 0 20px 18px; overflow: auto; }.permission-sections > section { border: 1px solid #e4e7ec; border-radius: 9px; overflow: hidden; }
 .section-title { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #eaecf0; }.section-title strong, .section-title small { display: block; }.section-title small { margin-top: 3px; color: #98a2b3; font-size: 11px; }.section-title button { padding: 4px 8px; font-size: 12px; }

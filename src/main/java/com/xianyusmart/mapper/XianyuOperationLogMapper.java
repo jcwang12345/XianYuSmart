@@ -20,7 +20,8 @@ public interface XianyuOperationLogMapper extends BaseMapper<XianyuOperationLog>
      */
     @Select("<script>" +
             "SELECT * FROM xianyu_operation_log " +
-            "WHERE xianyu_account_id = #{accountId} " +
+            "WHERE 1 = 1 " +
+            "<if test='accountId != null'> AND xianyu_account_id = #{accountId} </if>" +
             "<if test='operationType != null and operationType != \"\"'>" +
             "  AND operation_type = #{operationType} " +
             "</if>" +
@@ -30,6 +31,15 @@ public interface XianyuOperationLogMapper extends BaseMapper<XianyuOperationLog>
             "<if test='operationStatus != null'>" +
             "  AND operation_status = #{operationStatus} " +
             "</if>" +
+            "<if test='outcomeState != null and outcomeState != \"\"'> AND outcome_state = #{outcomeState} </if>" +
+            "<if test='operatorUsername != null and operatorUsername != \"\"'> AND operator_username = #{operatorUsername} </if>" +
+            "<if test='requestId != null and requestId != \"\"'> AND request_id = #{requestId} </if>" +
+            "<if test='startTime != null'> AND create_time &gt;= #{startTime} </if>" +
+            "<if test='endTime != null'> AND create_time &lt;= #{endTime} </if>" +
+            "<if test='keyword != null and keyword != \"\"'>" +
+            " AND (operation_desc LIKE CONCAT('%', #{keyword}, '%')" +
+            " OR target_id LIKE CONCAT('%', #{keyword}, '%')" +
+            " OR request_id LIKE CONCAT('%', #{keyword}, '%')) </if>" +
             "ORDER BY create_time DESC, id DESC " +
             "LIMIT #{pageSize} OFFSET #{offset}" +
             "</script>")
@@ -38,6 +48,12 @@ public interface XianyuOperationLogMapper extends BaseMapper<XianyuOperationLog>
             @Param("operationType") String operationType,
             @Param("operationModule") String operationModule,
             @Param("operationStatus") Integer operationStatus,
+            @Param("outcomeState") String outcomeState,
+            @Param("operatorUsername") String operatorUsername,
+            @Param("requestId") String requestId,
+            @Param("startTime") Long startTime,
+            @Param("endTime") Long endTime,
+            @Param("keyword") String keyword,
             @Param("pageSize") Integer pageSize,
             @Param("offset") Integer offset
     );
@@ -47,7 +63,8 @@ public interface XianyuOperationLogMapper extends BaseMapper<XianyuOperationLog>
      */
     @Select("<script>" +
             "SELECT COUNT(*) FROM xianyu_operation_log " +
-            "WHERE xianyu_account_id = #{accountId} " +
+            "WHERE 1 = 1 " +
+            "<if test='accountId != null'> AND xianyu_account_id = #{accountId} </if>" +
             "<if test='operationType != null and operationType != \"\"'>" +
             "  AND operation_type = #{operationType} " +
             "</if>" +
@@ -57,12 +74,27 @@ public interface XianyuOperationLogMapper extends BaseMapper<XianyuOperationLog>
             "<if test='operationStatus != null'>" +
             "  AND operation_status = #{operationStatus} " +
             "</if>" +
+            "<if test='outcomeState != null and outcomeState != \"\"'> AND outcome_state = #{outcomeState} </if>" +
+            "<if test='operatorUsername != null and operatorUsername != \"\"'> AND operator_username = #{operatorUsername} </if>" +
+            "<if test='requestId != null and requestId != \"\"'> AND request_id = #{requestId} </if>" +
+            "<if test='startTime != null'> AND create_time &gt;= #{startTime} </if>" +
+            "<if test='endTime != null'> AND create_time &lt;= #{endTime} </if>" +
+            "<if test='keyword != null and keyword != \"\"'>" +
+            " AND (operation_desc LIKE CONCAT('%', #{keyword}, '%')" +
+            " OR target_id LIKE CONCAT('%', #{keyword}, '%')" +
+            " OR request_id LIKE CONCAT('%', #{keyword}, '%')) </if>" +
             "</script>")
     Integer countByCondition(
             @Param("accountId") Long accountId,
             @Param("operationType") String operationType,
             @Param("operationModule") String operationModule,
-            @Param("operationStatus") Integer operationStatus
+            @Param("operationStatus") Integer operationStatus,
+            @Param("outcomeState") String outcomeState,
+            @Param("operatorUsername") String operatorUsername,
+            @Param("requestId") String requestId,
+            @Param("startTime") Long startTime,
+            @Param("endTime") Long endTime,
+            @Param("keyword") String keyword
     );
     
     /**

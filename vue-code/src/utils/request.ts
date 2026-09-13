@@ -8,6 +8,7 @@ export interface RequestConfig extends AxiosRequestConfig {
 
 // Token存储key
 const TOKEN_KEY = 'xianyu_auth_token'
+const REFRESH_TOKEN_KEY = 'xianyu_auth_refresh_token'
 const USERNAME_KEY = 'xianyu_auth_username'
 
 /** 获取Token */
@@ -16,14 +17,20 @@ export function getAuthToken(): string | null {
 }
 
 /** 设置Token */
-export function setAuthToken(token: string, username: string) {
+export function setAuthToken(token: string, username: string, refreshToken?: string) {
   localStorage.setItem(TOKEN_KEY, token)
   localStorage.setItem(USERNAME_KEY, username)
+  if (refreshToken) localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken)
+}
+
+export function getRefreshToken(): string | null {
+  return localStorage.getItem(REFRESH_TOKEN_KEY)
 }
 
 /** 清除Token */
 export function clearAuthToken() {
   localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(REFRESH_TOKEN_KEY)
   localStorage.removeItem(USERNAME_KEY)
 }
 
@@ -46,6 +53,47 @@ const service: AxiosInstance = axios.create({
   }
 })
 
+type RetryableConfig = RequestConfig & { _retry?: boolean }
+let refreshPromise: Promise<string> | null = null
+
+async function refreshAccessToken(): Promise<string> {
+  const refreshToken = getRefreshToken()
+  if (!refreshToken) throw new Error('缺少续期凭据')
+  if (!refreshPromise) {
+    refreshPromise = axios.post<ApiResponse<{
+      token: string
+      refreshToken: string
+      username: string
+    }>>('/api/login/refresh', { refreshToken }, { timeout: 15000 })
+      .then(({ data }) => {
+        if ((data.code !== 0 && data.code !== 200) || !data.data?.token || !data.data.refreshToken) {
+          throw new Error(data.msg || '会话续期失败')
+        }
+        setAuthToken(data.data.token, data.data.username || getAuthUsername() || '', data.data.refreshToken)
+        return data.data.token
+      })
+      .finally(() => { refreshPromise = null })
+  }
+  return refreshPromise
+}
+
+async function retryAfterRefresh(config: RetryableConfig) {
+  if (config._retry || config.url?.includes('/login/refresh')) throw new Error('登录已过期，请重新登录')
+  config._retry = true
+  const token = await refreshAccessToken()
+  config.headers = config.headers || {}
+  config.headers.Authorization = `Bearer ${token}`
+  return service.request(config)
+}
+
+function redirectToLogin(message: string) {
+  clearAuthToken()
+  if (!window.location.pathname.includes('/login')) {
+    toast.error(message)
+    window.location.href = '/login'
+  }
+}
+
 // 请求拦截器
 service.interceptors.request.use(
   (config) => {
@@ -63,18 +111,17 @@ service.interceptors.request.use(
 
 // 响应拦截器
 service.interceptors.response.use(
-  (response: AxiosResponse<ApiResponse<any>>) => {
+  async (response: AxiosResponse<ApiResponse<any>>) => {
     const res = response.data
 
     // 401未登录 -> 跳转登录页
     if (res.code === 401) {
-      clearAuthToken()
-      // 避免在登录页重复跳转
-      if (!window.location.pathname.includes('/login')) {
-        toast.error(res.msg || '登录已过期，请重新登录')
-        window.location.href = '/login'
+      try {
+        return await retryAfterRefresh(response.config as RetryableConfig)
+      } catch {
+        redirectToLogin(res.msg || '登录已过期，请重新登录')
+        return Promise.reject(new Error(res.msg || '未登录'))
       }
-      return Promise.reject(new Error(res.msg || '未登录'))
     }
 
     // 特殊处理：1001是滑块验证码，需要业务代码自己处理，不在这里拦截
@@ -95,14 +142,14 @@ service.interceptors.response.use(
 
     return response // 保持返回完整的 AxiosResponse
   },
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
-      clearAuthToken()
-      if (!window.location.pathname.includes('/login')) {
-        toast.error(error.response?.data?.msg || '登录已过期，请重新登录')
-        window.location.href = '/login'
+      try {
+        return await retryAfterRefresh(error.config as RetryableConfig)
+      } catch {
+        redirectToLogin(error.response?.data?.msg || '登录已过期，请重新登录')
+        return Promise.reject(error)
       }
-      return Promise.reject(error)
     }
     // 只有在错误消息未显示过时才弹出提示
     if (!(error as any).messageShown && !(error.config as RequestConfig | undefined)?.silent) {

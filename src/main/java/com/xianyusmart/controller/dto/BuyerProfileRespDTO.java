@@ -39,4 +39,7 @@ public class BuyerProfileRespDTO {
     private Long orderCount;
 
     private BigDecimal totalAmount;
+
+    /** 已有可信金额的成交订单数；为0时 totalAmount 必须保持 null。 */
+    private Long amountKnownOrderCount;
 }

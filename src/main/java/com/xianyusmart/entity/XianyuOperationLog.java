@@ -84,6 +84,23 @@ public class XianyuOperationLog {
      * 操作耗时（毫秒）
      */
     private Integer durationMs;
+
+    /** 贯穿入口、任务、平台响应与审计日志的请求标识。 */
+    private String requestId;
+
+    /** 可重试写操作的业务幂等键。 */
+    private String idempotencyKey;
+
+    /** LOCAL_SUCCESS / PLATFORM_CONFIRMED / PARTIAL / FAILED / UNKNOWN。 */
+    private String outcomeState;
+
+    /** LOCAL / PLATFORM_API / PLATFORM_WEB / MANUAL_IMPORT / SYSTEM_DERIVED。 */
+    private String dataSource;
+
+    private String platformResponseCode;
+
+    /** 变更前后字段差异；敏感凭据不得写入。 */
+    private String fieldDiffJson;
     
     /**
      * 创建时间（时间戳，毫秒）

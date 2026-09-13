@@ -19,6 +19,7 @@ import IconTruck from '@/components/icons/IconTruck.vue'
 interface Props {
   goodsList: GoodsItemWithConfig[]
   loading?: boolean
+  selectedIds?: string[]
 }
 
 interface Emits {
@@ -30,10 +31,26 @@ interface Emits {
   (e: 'configAutoRate', item: GoodsItemWithConfig): void
   (e: 'toggleListingStatus', item: GoodsItemWithConfig): void
   (e: 'delete', xyGoodId: string, title: string): void
+  (e: 'update:selectedIds', ids: string[]): void
 }
 
-defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), { selectedIds: () => [] })
 const emit = defineEmits<Emits>()
+
+const isSelected = (goodsId: string) => props.selectedIds.includes(goodsId)
+const toggleSelected = (goodsId: string) => {
+  emit('update:selectedIds', isSelected(goodsId)
+    ? props.selectedIds.filter(id => id !== goodsId)
+    : [...props.selectedIds, goodsId])
+}
+const allSelected = () => props.goodsList.length > 0
+  && props.goodsList.every(item => isSelected(item.item.xyGoodId))
+const toggleAll = () => {
+  const visibleIds = props.goodsList.map(item => item.item.xyGoodId)
+  emit('update:selectedIds', allSelected()
+    ? props.selectedIds.filter(id => !visibleIds.includes(id))
+    : [...new Set([...props.selectedIds, ...visibleIds])])
+}
 
 const getAutoRateModeText = (mode: number) => {
   if (mode === 1) return '始终评价'
@@ -91,8 +108,15 @@ const handleImgError = (e: Event) => {
       v-for="item in goodsList"
       :key="item.item.xyGoodId"
       class="goods-card"
+      :class="{ 'goods-card--selected': isSelected(item.item.xyGoodId) }"
       @click="emit('view', item.item.xyGoodId)"
     >
+      <button
+        class="goods-card__select"
+        :aria-label="isSelected(item.item.xyGoodId) ? '取消选择商品' : '选择商品'"
+        :aria-pressed="isSelected(item.item.xyGoodId)"
+        @click.stop="toggleSelected(item.item.xyGoodId)"
+      >{{ isSelected(item.item.xyGoodId) ? '✓' : '' }}</button>
       <!-- 图片区域（含悬浮标题） -->
       <div class="goods-card__image-wrap">
         <img
@@ -193,6 +217,9 @@ const handleImgError = (e: Event) => {
     <table class="table" v-if="goodsList.length > 0">
       <thead class="table__head">
         <tr>
+          <th class="table__th table__th--select">
+            <input type="checkbox" :checked="allSelected()" aria-label="选择当前页全部商品" @change="toggleAll">
+          </th>
           <th class="table__th table__th--image">图片</th>
           <th class="table__th">商品标题</th>
           <th class="table__th table__th--price">价格</th>
@@ -206,7 +233,10 @@ const handleImgError = (e: Event) => {
         </tr>
       </thead>
       <tbody class="table__body">
-        <tr v-for="item in goodsList" :key="item.item.xyGoodId" class="table__tr">
+        <tr v-for="item in goodsList" :key="item.item.xyGoodId" class="table__tr" :class="{ 'table__tr--selected': isSelected(item.item.xyGoodId) }">
+          <td class="table__td table__td--select">
+            <input type="checkbox" :checked="isSelected(item.item.xyGoodId)" aria-label="选择此商品" @change="toggleSelected(item.item.xyGoodId)">
+          </td>
           <td class="table__td table__td--image">
             <div class="goods-thumb">
               <img
@@ -350,6 +380,7 @@ const handleImgError = (e: Event) => {
 }
 
 .goods-card {
+  position: relative;
   background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: var(--c-r-md);
@@ -360,6 +391,13 @@ const handleImgError = (e: Event) => {
   backdrop-filter: blur(28px) saturate(1.8);
   -webkit-backdrop-filter: blur(28px) saturate(1.8);
 }
+
+.goods-card--selected { box-shadow: inset 0 0 0 2px rgba(10,132,255,.72), 0 8px 32px rgba(0,0,0,.10); }
+.goods-card__select { position: absolute; top: 10px; left: 10px; z-index: 4; width: 28px; height: 28px; padding: 0; border: 1px solid rgba(255,255,255,.85); border-radius: 8px; color: #fff; background: rgba(28,28,30,.38); font-weight: 800; cursor: pointer; backdrop-filter: blur(12px); }
+.goods-card__select[aria-pressed="true"] { background: #0a84ff; }
+.table__th--select, .table__td--select { width: 42px; text-align: center; }
+.table__tr--selected { background: rgba(10,132,255,.055); }
+.table__th--select input, .table__td--select input { width: 16px; height: 16px; accent-color: #0a84ff; cursor: pointer; }
 
 @media (hover: hover) {
   .goods-card:hover {

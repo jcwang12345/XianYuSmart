@@ -22,6 +22,8 @@ public class XianyuGoodsInfo {
      * 闲鱼商品ID
      */
     private String xyGoodId;
+
+    private String outerId;
     
     /**
      * 商品标题
@@ -52,15 +54,53 @@ public class XianyuGoodsInfo {
      * 关联的闲鱼账号ID
      */
     private Long xianyuAccountId;
+
+    private String productSource;
+
+    private String publishChannel;
+
+    private String itemType;
+
+    private String categoryId;
+
+    private String categoryName;
+
+    private String businessMode;
+
+    private String conditionCode;
     
     /**
      * 商品价格
      */
     private String soldPrice;
+
+    private java.math.BigDecimal originalPrice;
+
+    private java.math.BigDecimal shippingFee;
+
+    private String shippingType;
     
     private Integer skuCount;
+
+    private Integer stock;
     
     private Integer status;
+
+    private String syncStatus;
+
+    private String coverageStatus;
+
+    private String platformUpdatedTime;
+
+    private String lastSyncedTime;
+
+    private String lastSyncRequestId;
+
+    private String platformSnapshotHash;
+
+    private String lastSyncErrorCode;
+
+    private String lastSyncErrorMessage;
     
     /**
      * 创建时间（SQLite存储为TEXT）

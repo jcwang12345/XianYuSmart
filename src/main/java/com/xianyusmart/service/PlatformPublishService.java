@@ -11,6 +11,7 @@ import com.xianyusmart.config.PlaywrightManager;
 import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.entity.MerchantResource;
 import com.xianyusmart.exception.RiskGuardBlockedException;
+import com.xianyusmart.exception.PlatformOutcomeUnknownException;
 import com.xianyusmart.utils.XianyuApiCallUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -128,11 +129,14 @@ public class PlatformPublishService {
         XianyuApiCallUtils.ApiCallResult publishResult = apiCallUtils.callApiWithRetry(
                 accountId, "mtop.idle.pc.idleitem.publish", publishData, cookieText);
         if (!publishResult.isSuccess()) {
+            if (publishResult.isOutcomeUnknown()) {
+                throw new PlatformOutcomeUnknownException("发布请求结果未知: " + publishResult.getErrorMessage());
+            }
             throw new IllegalStateException("平台拒绝发布: " + publishResult.getErrorMessage());
         }
         String itemId = responseParser.extractPublishedItemId(publishResult.getResponse());
         if (itemId.isBlank()) {
-            throw new IllegalStateException("平台返回成功但缺少商品ID，发布结果无法确认");
+            throw new PlatformOutcomeUnknownException("平台返回成功但缺少商品ID，发布结果无法确认");
         }
         boolean localSynced = true;
         try {
@@ -141,14 +145,16 @@ public class PlatformPublishService {
             localSynced = false;
             log.error("平台商品发布成功但本地商品记录保存失败: itemId={}, accountId={}", itemId, accountId, e);
         }
-        return Map.of(
-                "success", true,
-                "itemId", itemId,
-                "url", "https://www.goofish.com/item?id=" + itemId,
-                "category", category,
-                "imageCount", cdnImages.size(),
-                "localSynced", localSynced
-        );
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", true);
+        result.put("itemId", itemId);
+        result.put("url", "https://www.goofish.com/item?id=" + itemId);
+        result.put("category", category);
+        result.put("imageCount", cdnImages.size());
+        result.put("localSynced", localSynced);
+        result.put("outcomeState", localSynced ? "PLATFORM_CONFIRMED" : "PLATFORM_CONFIRMED_LOCAL_PENDING");
+        result.put("finalRequest", publishData);
+        return result;
     }
 
     private void persistPublishedItem(String itemId, String title, String description, BigDecimal amount,
@@ -200,12 +206,16 @@ public class PlatformPublishService {
         Map<String, Object> category = recommendCategory(accountId, cookieText, title, description,
                 images.stream().filter(image -> !image.startsWith("/media/")).toList());
         Map<String, Object> address = resolveAddress(accountId, cookieText, request, request);
-        return Map.of(
-                "valid", true,
-                "category", category,
-                "address", address,
-                "imageCount", images.size()
-        );
+        Map<String, Object> finalRequest = buildPublishData(title, description, amount, stock,
+                images, category, address, request);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("valid", true);
+        result.put("category", category);
+        result.put("address", address);
+        result.put("imageCount", images.size());
+        result.put("finalRequest", finalRequest);
+        result.put("previewUsesProductionBuilder", true);
+        return result;
     }
 
     public Map<String, Object> delete(Long accountId, String goodsId) {

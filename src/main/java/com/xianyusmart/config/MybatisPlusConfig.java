@@ -40,7 +40,15 @@ public class MybatisPlusConfig {
             "xianyu_fixed_delivery_template_account", "xianyu_kami_config_account",
             "xianyu_device_profile"
             ,"xianyu_order_confirmation", "xianyu_reply_preference", "xianyu_welcome_claim",
-            "operational_issue", "xianyu_account_capability", "conversation_assignment"
+            "operational_issue", "xianyu_account_capability", "conversation_assignment",
+            "xianyu_account_access_channel", "xianyu_account_dataset_state", "xianyu_shop_profile_snapshot",
+            "xianyu_shop_risk_event", "xianyu_shop_risk_action",
+            "xianyu_goods_event", "xianyu_goods_metric_daily",
+            "xianyu_goods_batch_job", "xianyu_goods_batch_item",
+            "xianyu_order_event", "xianyu_refund_case", "xianyu_refund_action",
+            "xianyu_message_send_attempt", "xianyu_notification_event",
+            "xianyu_account_group", "xianyu_account_group_member", "xianyu_shop_metric_daily",
+            "sys_user_account_group_scope", "xianyu_saved_filter"
     );
 
     /**

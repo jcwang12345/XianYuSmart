@@ -120,7 +120,7 @@ onMounted(load)
 .automation__module { display: flex; min-height: 132px; align-items: flex-start; justify-content: space-between; flex-direction: column; color: #344054; text-align: left; cursor: pointer; }
 .automation__module strong { font-size: 15px; }
 .automation__module p { margin: 8px 0 0; color: #667085; font-size: 12px; line-height: 1.7; }
-.automation__module span { color: #155eef; font-size: 12px; font-weight: 600; }
+.automation__module span { color: #9a6200; font-size: 12px; font-weight: 600; }
 .automation__steps { margin: 16px 0; padding-left: 22px; color: #475467; font-size: 13px; line-height: 1.8; }
 .automation__event { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 10px; padding: 10px 0; border-bottom: 1px solid #eaecf0; }
 .automation__event div { min-width: 0; }

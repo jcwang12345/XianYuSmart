@@ -22,6 +22,8 @@ import com.xianyusmart.entity.XianyuGoodsInfo;
 import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 import com.xianyusmart.entity.XianyuKamiConfig;
 import com.xianyusmart.exception.RiskGuardBlockedException;
+import com.xianyusmart.exception.PlatformOutcomeUnknownException;
+import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.MerchantDistributionMapper;
 import com.xianyusmart.mapper.MerchantResourceMapper;
 import com.xianyusmart.mapper.MerchantTaskMapper;
@@ -82,6 +84,8 @@ public class MerchantOperationsService {
     private final AIService aiService;
     private final OpportunityImageService opportunityImageService;
     private final ProductContentPolicyService productContentPolicyService;
+    private final PublishCapabilityService publishCapabilityService;
+    private final ProductEventService productEventService;
     private final ObjectMapper objectMapper;
 
     public MerchantOperationsService(MerchantResourceMapper resourceMapper,
@@ -103,6 +107,8 @@ public class MerchantOperationsService {
                                      AIService aiService,
                                      OpportunityImageService opportunityImageService,
                                      ProductContentPolicyService productContentPolicyService,
+                                     PublishCapabilityService publishCapabilityService,
+                                     ProductEventService productEventService,
                                      ObjectMapper objectMapper) {
         this.resourceMapper = resourceMapper;
         this.taskMapper = taskMapper;
@@ -123,6 +129,8 @@ public class MerchantOperationsService {
         this.aiService = aiService;
         this.opportunityImageService = opportunityImageService;
         this.productContentPolicyService = productContentPolicyService;
+        this.publishCapabilityService = publishCapabilityService;
+        this.productEventService = productEventService;
         this.objectMapper = objectMapper;
     }
 
@@ -374,23 +382,39 @@ public class MerchantOperationsService {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
             throw new IllegalArgumentException("商品价格必须大于 0");
         }
-        String requestKey = text(request.get("requestId"));
-        MerchantTask existingTask = requestKey.isBlank() ? null
-                : taskMapper.selectByRequestKey(requireTenantId(), "PUBLISH", requestKey);
-        if (existingTask != null) {
-            return existingPublishResult(existingTask);
+        String requestKey = text(request.get("requestId")).trim();
+        if (requestKey.isBlank() || requestKey.length() > 64) {
+            throw new BusinessException(400, "发布请求必须提供不超过64个字符的requestId");
+        }
+        String publishChannel = publishCapabilityService.requireAvailableChannel(
+                accountId, text(request.get("publishChannel")));
+        boolean dryRun = Boolean.TRUE.equals(request.get("dryRun"));
+        if (!dryRun) {
+            MerchantTask existingTask = taskMapper.selectByRequestKey(requireTenantId(), "PUBLISH", requestKey);
+            if (existingTask != null) {
+                return existingPublishResult(existingTask);
+            }
         }
 
         Map<String, Object> data = new HashMap<>(request);
         data.remove("dryRun");
-        boolean dryRun = Boolean.TRUE.equals(request.get("dryRun"));
+        data.put("publishChannel", publishChannel);
         Map<String, Object> contentPreflight = productContentPolicyService.validate(request);
         Map<String, Object> platformPreflight = platformPublishService.preflight(request, accountId);
         Map<String, Object> preflight = new LinkedHashMap<>(platformPreflight);
         preflight.put("contentPolicy", contentPreflight);
+        preflight.put("publishChannel", publishChannel);
+        preflight.put("capabilities", publishCapabilityService.capabilities(accountId));
         if (dryRun) {
             // 预检必须经过平台类目和默认地址接口，避免仅校验本地字段造成虚假通过。
-            return Map.of("valid", true, "dryRun", true, "preview", data, "platform", preflight);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("valid", true);
+            result.put("dryRun", true);
+            result.put("requestId", requestKey);
+            result.put("preview", platformPreflight.get("finalRequest"));
+            result.put("platform", preflight);
+            result.put("outcomeState", "PREFLIGHT_PASSED");
+            return result;
         }
         MerchantResourceReqDTO materialRequest = new MerchantResourceReqDTO();
         materialRequest.setResourceType("MATERIAL");
@@ -407,26 +431,34 @@ public class MerchantOperationsService {
         taskRequest.setRequestKey(requestKey.isBlank() ? null : requestKey);
         taskRequest.setResourceId(material.getId());
         taskRequest.setXianyuAccountId(accountId);
+        taskRequest.setRequest(data);
         MerchantTask task = createTask(taskRequest);
         claimAndExecute(task);
         MerchantTask completedTask = taskMapper.selectById(task.getId());
         if (completedTask == null || completedTask.getStatus() != 2) {
             String error = completedTask == null ? "发布任务状态丢失" : completedTask.getErrorMessage();
-            return Map.of(
-                    "valid", false,
-                    "dryRun", false,
-                    "material", material,
-                    "task", completedTask == null ? task : completedTask,
-                    "error", error == null || error.isBlank() ? "商品发布失败" : error
-            );
+            MerchantTask current = completedTask == null ? task : completedTask;
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("valid", false);
+            result.put("dryRun", false);
+            result.put("requestId", requestKey);
+            result.put("material", material);
+            result.put("task", current);
+            result.put("outcomeState", current.getOutcomeState() == null ? "FAILED" : current.getOutcomeState());
+            result.put("recoveryHint", current.getRecoveryHint());
+            result.put("error", error == null || error.isBlank() ? "商品发布失败" : error);
+            return result;
         }
-        return Map.of(
-                "valid", true,
-                "dryRun", false,
-                "material", material,
-                "task", completedTask,
-                "platform", readJson(completedTask.getResultJson())
-        );
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("valid", true);
+        result.put("dryRun", false);
+        result.put("requestId", requestKey);
+        result.put("material", material);
+        result.put("task", completedTask);
+        result.put("platform", readJson(completedTask.getResultJson()));
+        result.put("outcomeState", completedTask.getOutcomeState());
+        result.put("recoveryHint", completedTask.getRecoveryHint());
+        return result;
     }
 
     public void deleteResource(Long id) {
@@ -518,22 +550,52 @@ public class MerchantOperationsService {
     private Map<String, Object> existingPublishResult(MerchantTask task) {
         if (task.getStatus() != null && task.getStatus() == 2) {
             MerchantResource material = requireResource(task.getResourceId());
-            return Map.of(
-                    "valid", true,
-                    "dryRun", false,
-                    "material", toResponse(material),
-                    "task", task,
-                    "platform", readJson(task.getResultJson())
-            );
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("valid", true);
+            result.put("dryRun", false);
+            result.put("requestId", task.getRequestKey());
+            result.put("material", toResponse(material));
+            result.put("task", task);
+            result.put("platform", readJson(task.getResultJson()));
+            result.put("outcomeState", task.getOutcomeState());
+            result.put("recoveryHint", task.getRecoveryHint());
+            result.put("idempotentReplay", true);
+            return result;
         }
-        return Map.of(
-                "valid", false,
-                "dryRun", false,
-                "task", task,
-                "error", task.getStatus() != null && task.getStatus() == 1
-                        ? "商品正在发布，请勿重复提交"
-                        : "同一发布请求已失败，请在任务中心确认远端结果后手动处理"
-        );
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("valid", false);
+        result.put("dryRun", false);
+        result.put("requestId", task.getRequestKey());
+        result.put("task", task);
+        result.put("outcomeState", task.getOutcomeState());
+        result.put("recoveryHint", task.getRecoveryHint());
+        result.put("idempotentReplay", true);
+        result.put("error", task.getStatus() != null && task.getStatus() == 1
+                ? "商品正在发布，请勿重复提交"
+                : Integer.valueOf(4).equals(task.getStatus())
+                ? "平台结果未知，请按请求ID核查，确认前禁止重复发布"
+                : "同一发布请求已失败，请在任务中心确认远端结果后手动处理");
+        return result;
+    }
+
+    public Map<String, Object> publishRequestStatus(String requestId) {
+        String normalized = requestId == null ? "" : requestId.trim();
+        if (normalized.isBlank() || normalized.length() > 64) {
+            throw new BusinessException(400, "requestId无效");
+        }
+        MerchantTask task = taskMapper.selectByRequestKey(requireTenantId(), "PUBLISH", normalized);
+        if (task == null) throw new BusinessException(404, "未找到该发布请求");
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("requestId", normalized);
+        response.put("taskId", task.getId());
+        response.put("status", task.getStatus());
+        response.put("outcomeState", task.getOutcomeState());
+        response.put("verificationStatus", task.getVerificationStatus());
+        response.put("platform", readJson(task.getResultJson()));
+        response.put("error", task.getErrorMessage());
+        response.put("recoveryHint", task.getRecoveryHint());
+        response.put("updatedTime", task.getUpdatedTime());
+        return response;
     }
 
     public List<MerchantTask> batchPublish(Map<String, Object> request) {
@@ -727,6 +789,14 @@ public class MerchantOperationsService {
                     OperationConstants.Module.RISK_CONTROL, task.getTaskType() + "任务等待平台恢复",
                     OperationConstants.Status.PARTIAL, OperationConstants.TargetType.TASK,
                     String.valueOf(task.getId()), null, null, trimError(e.getMessage()), null);
+        } catch (PlatformOutcomeUnknownException e) {
+            taskMapper.markOutcomeUnknown(task.getId(), trimError(e.getMessage()));
+            operationLogService.log(task.getXianyuAccountId(), OperationConstants.Type.UPDATE,
+                    OperationConstants.Module.MERCHANT_OPERATIONS, task.getTaskType() + "平台结果未知",
+                    OperationConstants.Status.PARTIAL, OperationConstants.TargetType.TASK,
+                    String.valueOf(task.getId()), task.getRequestJson(), null, trimError(e.getMessage()), null);
+            log.warn("运营任务平台结果未知，停止自动重试: taskId={}, type={}, error={}",
+                    task.getId(), task.getTaskType(), e.getMessage());
         } catch (Exception e) {
             int attempt = task.getAttemptCount() == null ? 1 : task.getAttemptCount() + 1;
             taskMapper.fail(task.getId(), trimError(e.getMessage()), LocalDateTime.now().plusMinutes(Math.min(60, attempt * 5L)));
@@ -946,6 +1016,10 @@ public class MerchantOperationsService {
         if (!itemId.isBlank()) {
             // 素材是可复用的共享定义；每个账号的发布结果保存在独立任务中，不能覆盖素材主记录。
             updateDistributionPublished(material.getId(), accountId, itemId);
+            String publishChannel = text(materialData.get("publishChannel"));
+            productEventService.publishCompleted(accountId, itemId, task.getRequestKey(),
+                    publishChannel.isBlank() ? "QR_COOKIE" : publishChannel,
+                    text(result.get("outcomeState")), result);
         }
         return result;
     }

@@ -31,4 +31,14 @@ class AccountDataPermissionHandlerTest {
         AccountScopeContext.set(true, Set.of());
         assertNull(handler.getSqlSegment(new Table("xianyu_goods"), null, "test"));
     }
+
+    @Test
+    void accountMatrixTablesAreProtectedBySelectedScope() {
+        AccountScopeContext.set(false, Set.of(7L));
+        for (String tableName : Set.of("xianyu_account_access_channel", "xianyu_account_dataset_state",
+                "xianyu_shop_profile_snapshot", "xianyu_shop_risk_event", "xianyu_shop_risk_action")) {
+            assertEquals(tableName + ".xianyu_account_id IN (7)",
+                    handler.getSqlSegment(new Table(tableName), null, "test").toString());
+        }
+    }
 }

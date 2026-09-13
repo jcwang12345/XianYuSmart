@@ -13,7 +13,7 @@ import IconSparkle from '@/components/icons/IconSparkle.vue'
 
 declare const __APP_VERSION__: string
 
-const appVersion = __APP_VERSION__ || '2.1.0'
+const appVersion = __APP_VERSION__ || '2.2.0'
 
 const visible = ref(false)
 const loading = ref(false)
@@ -508,8 +508,8 @@ defineExpose({ open })
   margin-top: 12px;
   padding: 12px 14px;
   border-radius: 6px;
-  color: #155eef;
-  background: #eef4ff;
+  color: #9a6200;
+  background: #fff8d9;
   font-size: 13px;
 }
 
@@ -530,14 +530,14 @@ defineExpose({ open })
   margin: 10px 0;
   overflow: hidden;
   border-radius: 99px;
-  background: rgba(21, 94, 239, .14);
+  background: rgba(214, 155, 0, .14);
 }
 
 .progress-track span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #155eef;
+  background: #9a6200;
   transition: width .25s ease;
 }
 

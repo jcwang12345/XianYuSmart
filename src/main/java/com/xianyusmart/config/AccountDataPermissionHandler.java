@@ -22,7 +22,13 @@ public class AccountDataPermissionHandler implements MultiDataPermissionHandler 
             "xianyu_keyword_reply_rule", "xianyu_goods_sku", "xianyu_goods_sku_property",
             "xianyu_human_intervention_record", "xianyu_buyer_profile", "xianyu_kami_external_request",
             "xianyu_order_confirmation", "xianyu_device_profile", "operational_issue",
-            "xianyu_account_capability", "conversation_assignment"
+            "xianyu_account_capability", "conversation_assignment",
+            "xianyu_account_access_channel", "xianyu_account_dataset_state", "xianyu_shop_profile_snapshot",
+            "xianyu_shop_risk_event", "xianyu_shop_risk_action",
+            "xianyu_goods_event", "xianyu_goods_metric_daily", "xianyu_goods_batch_item",
+            "xianyu_order_event", "xianyu_refund_case", "xianyu_refund_action",
+            "xianyu_message_send_attempt", "xianyu_notification_event",
+            "xianyu_account_group_member", "xianyu_shop_metric_daily"
     );
     private static final Set<String> OPTIONAL_ACCOUNT_TABLES = Set.of(
             "merchant_resource", "merchant_task", "merchant_distribution"

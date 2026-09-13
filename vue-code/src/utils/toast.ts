@@ -16,7 +16,7 @@ const COLOR_MAP: Record<string, string> = {
   success: '#079455',
   error: '#d92d20',
   warning: '#dc6803',
-  info: '#155eef',
+  info: '#9a6200',
 }
 
 const ICON_MAP: Record<string, string> = {

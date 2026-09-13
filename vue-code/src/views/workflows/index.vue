@@ -345,20 +345,20 @@ onMounted(load)
 .workflow__saved { display: flex; min-height: 0; overflow-y: auto; flex: 1; flex-direction: column; gap: 8px; }
 .workflow__list-item { display: flex; align-items: flex-start; flex-direction: column; gap: 4px; padding: 11px; border: 1px solid #eaecf0; border-radius: 7px; color: #344054; background: #fff; text-align: left; cursor: pointer; }
 .workflow__list-item small { color: #667085; }
-.workflow__list-item--active { border-color: #84adff; background: #f5f8ff; }
+.workflow__list-item--active { border-color: #efc852; background: #fffdf2; }
 .workflow__main { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
 .workflow__palette { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 9px; }
 .workflow__palette > span:first-child { margin-right: 4px; color: #667085; font-size: 12px; }
-.workflow__connecting { color: #155eef; font-size: 12px; }
+.workflow__connecting { color: #9a6200; font-size: 12px; }
 .workflow__canvas { position: relative; min-height: 540px; overflow: auto; padding: 0; cursor: default; touch-action: none; background-color: #fbfcfe; background-image: linear-gradient(#eaecf0 1px, transparent 1px), linear-gradient(90deg, #eaecf0 1px, transparent 1px); background-size: 20px 20px; }
 .workflow__surface { position: relative; width: 1200px; height: 620px; }
 .workflow__surface svg { position: absolute; width: 1200px; height: 620px; pointer-events: none; }
-.workflow__surface line { stroke: #84adff; stroke-width: 2; }
-.workflow__surface marker path { fill: #84adff; }
-.workflow__node { position: absolute; display: flex; width: 145px; min-height: 80px; align-items: flex-start; flex-direction: column; justify-content: center; gap: 4px; padding: 10px 12px; border: 1px solid #b2ccff; border-left: 4px solid #155eef; border-radius: 8px; color: #344054; background: #fff; box-shadow: 0 4px 12px rgba(16, 24, 40, .08); text-align: left; cursor: grab; user-select: none; touch-action: none; }
+.workflow__surface line { stroke: #efc852; stroke-width: 2; }
+.workflow__surface marker path { fill: #efc852; }
+.workflow__node { position: absolute; display: flex; width: 145px; min-height: 80px; align-items: flex-start; flex-direction: column; justify-content: center; gap: 4px; padding: 10px 12px; border: 1px solid #efd77f; border-left: 4px solid #9a6200; border-radius: 8px; color: #344054; background: #fff; box-shadow: 0 4px 12px rgba(16, 24, 40, .08); text-align: left; cursor: grab; user-select: none; touch-action: none; }
 .workflow__node:active { cursor: grabbing; }
 .workflow__node span, .workflow__node small { color: #667085; font-size: 10px; }
-.workflow__node--active { outline: 3px solid rgba(21, 94, 239, .12); }
+.workflow__node--active { outline: 3px solid rgba(214, 155, 0, .12); }
 .workflow__node--source { border-color: #079455; border-left-color: #079455; }
 .workflow__config h2 { margin: 0; font-size: 16px; }
 .workflow__config-title { display: flex; align-items: center; justify-content: space-between; }

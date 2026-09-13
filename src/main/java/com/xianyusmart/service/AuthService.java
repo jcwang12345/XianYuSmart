@@ -23,6 +23,8 @@ public interface AuthService {
      */
     LoginRespBO login(LoginReqBO reqBO);
 
+    LoginRespBO refresh(String refreshToken, String ip, String deviceId);
+
     /**
      * 验证Token是否有效（在数据库中且未过期）
      */

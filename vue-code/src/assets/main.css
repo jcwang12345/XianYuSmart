@@ -1,5 +1,6 @@
 @import './base.css';
 @import './theme.css';
+@import '../styles/merchant-workbench.css';
 
 /* 统一页面基础尺寸，避免不同路由出现额外边距和滚动层。 */
 html,
@@ -47,25 +48,355 @@ button:disabled {
   --d-text-primary: #101828;
   --d-text-secondary: #667085;
   --d-text-tertiary: #98a2b3;
-  --d-accent: #155eef;
+  --d-accent: #9a6200;
   --d-radius-sm: 6px;
   --d-radius-md: 8px;
   --d-radius-lg: 10px;
 }
 
 *:focus-visible {
-  outline: 2px solid #155eef;
+  outline: 3px solid rgba(255, 198, 42, .75);
   outline-offset: 2px;
 }
 
 a {
   text-decoration: none;
-  color: #155eef;
+  color: #7a5000;
   transition: color 0.15s ease;
 }
 
 a:hover {
-  color: #004eeb;
+  color: #171717;
+}
+
+/* --------------------------------------------------------------------------
+ * XianYuSmart responsive design layer
+ * Keeps legacy feature pages visually coherent without changing business logic.
+ * -------------------------------------------------------------------------- */
+
+.app-layout main {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(255, 218, 68, .10), transparent 28rem),
+    var(--xy-canvas);
+}
+
+.app-layout main > :not(.readonly-notice) {
+  width: min(100%, var(--page-max-width));
+  margin-inline: auto;
+}
+
+:is(.workbench, .merchant-dashboard, .command-page, .accounts, .connection, .goods,
+  .orders, .messages, .ad, .ar, .ol, .kami-page, .settings, .operations-page,
+  .health-page, .buyer-page, .permission-page, .fixed-template-page, .po, .qrlogin-page) {
+  color: var(--xy-ink) !important;
+  background-color: transparent !important;
+}
+
+:is(.workbench, .merchant-dashboard, .command-page, .operations-page, .health-page,
+  .buyer-page, .permission-page, .fixed-template-page) {
+  padding: var(--page-gutter) !important;
+}
+
+:is(.workbench, .merchant-dashboard, .command-page, .operations-page, .health-page,
+  .buyer-page, .permission-page, .fixed-template-page) h1 {
+  color: var(--xy-ink);
+  font-size: clamp(22px, 1.5vw, 30px);
+  font-weight: 750;
+  letter-spacing: -.025em;
+}
+
+:is(.workbench, .merchant-dashboard, .command-page, .operations-page, .health-page,
+  .buyer-page, .permission-page, .fixed-template-page) h2 {
+  color: var(--xy-ink);
+  font-weight: 700;
+  letter-spacing: -.015em;
+}
+
+:is(.workbench__card, .dashboard-panel, .metric-card, .panel, .content-card,
+  .type-nav, .permission-hero, .fixed-template-card) {
+  border-color: var(--glass-border) !important;
+  border-radius: var(--surface-radius) !important;
+  background: #fff !important;
+  box-shadow: var(--surface-shadow) !important;
+}
+
+/* Buttons: yellow is reserved for decisive merchant actions; secondary stays quiet. */
+:is(.workbench__btn, .button, .btn, .primary-btn, .secondary-btn,
+  .table-action-btn, .table-action-btn-danger) {
+  min-height: 40px;
+  border-radius: 10px !important;
+  font-weight: 650 !important;
+}
+
+:is(.workbench__btn--primary, .button--primary, .btn--primary, .primary-btn,
+  .settings__btn--primary, .btn-glass--primary,
+  button.primary, button[class*="btn"][class*="primary"],
+  [class$="__btn--confirm"], [class$="__dialog-btn--primary"]) {
+  border-color: var(--xy-yellow-strong) !important;
+  color: var(--xy-ink) !important;
+  background: linear-gradient(180deg, #ffe36a, var(--xy-yellow)) !important;
+  box-shadow: 0 5px 14px rgba(214, 151, 0, .16) !important;
+}
+
+:is(.workbench__btn--primary, .button--primary, .btn--primary, .primary-btn,
+  .settings__btn--primary, .btn-glass--primary,
+  button.primary, button[class*="btn"][class*="primary"],
+  [class$="__btn--confirm"], [class$="__dialog-btn--primary"]):hover:not(:disabled) {
+  border-color: #f3b900 !important;
+  background: var(--xy-yellow-strong) !important;
+  transform: translateY(-1px);
+}
+
+:is(.workbench__btn, .button, .btn, .primary-btn, .secondary-btn):active:not(:disabled) {
+  transform: translateY(0);
+}
+
+:is(.workbench__btn, .button, .btn, .primary-btn, .secondary-btn) {
+  transition: transform .16s ease, background-color .16s ease, border-color .16s ease,
+    box-shadow .16s ease, color .16s ease;
+}
+
+/* Form controls share one rhythm across second- and third-level pages. */
+.app-layout main :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  border-color: #d9d6cc;
+  border-radius: 10px;
+  color: var(--xy-ink);
+  background-color: #fff;
+}
+
+.app-layout main :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+  min-height: var(--control-height);
+}
+
+.app-layout main :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):hover:not(:disabled) {
+  border-color: #aaa69a;
+}
+
+.app-layout main :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea):focus {
+  border-color: #d69b00 !important;
+  outline: 0;
+  box-shadow: 0 0 0 4px rgba(255, 198, 42, .20) !important;
+}
+
+.app-layout main :is(input, select, textarea):disabled {
+  color: #8b8982;
+  background: #f3f2ee;
+}
+
+.app-layout main :is(label, .workbench__field) > small,
+.app-layout main .form-hint {
+  color: #77746c !important;
+  line-height: 1.55;
+}
+
+/* Navigation states and tab groups. */
+:is(.tabs, .view-tabs) {
+  gap: 6px !important;
+  padding: 4px !important;
+  border: 1px solid var(--glass-border) !important;
+  border-radius: 12px !important;
+  background: rgba(255, 255, 255, .78) !important;
+}
+
+:is(.tabs, .view-tabs) button {
+  min-height: 38px;
+  border: 0 !important;
+  border-radius: 9px !important;
+}
+
+:is(.tabs, .view-tabs) button.active {
+  border-color: transparent !important;
+  color: var(--xy-ink) !important;
+  background: var(--xy-yellow-soft) !important;
+  box-shadow: inset 0 0 0 1px rgba(230, 169, 0, .18);
+}
+
+/* Tables remain dense at 1080p but become scrollable, never clipped. */
+.app-layout main :is(.table-scroll, .table-wrap, [class*="__table-wrap"]) {
+  max-width: 100%;
+  overflow: auto;
+  overscroll-behavior-x: contain;
+}
+
+.app-layout main table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  color: #5e5b54;
+  background: #faf9f5 !important;
+}
+
+.app-layout main table tbody tr:hover {
+  background: #fffdf3;
+}
+
+.app-layout main .eyebrow {
+  color: #8a5900 !important;
+}
+
+.app-layout main :is(.chat__avatar, .avatar) {
+  color: var(--xy-ink) !important;
+  background: var(--xy-yellow-soft) !important;
+}
+
+.app-layout main .chat__message--mine p {
+  color: var(--xy-ink) !important;
+  background: var(--xy-yellow) !important;
+}
+
+/* Shared modal treatment for the many legacy dialog implementations. */
+:is(.modal-overlay, .ad__dialog-overlay, .ar__dialog-overlay, .goods__dialog-overlay,
+  .ol__dialog-overlay, .orders__dialog-overlay, .dialog-mask, .template-dialog-mask,
+  .goods-edit__overlay, .detail-overlay, .sku-detail-overlay, .comparison__dialog-mask,
+  .supply-dialog, .health-page > .overlay, .buyer-page > .overlay,
+  .permission-page > .overlay) {
+  padding: clamp(12px, 2.5vw, 32px) !important;
+  background: rgba(25, 23, 17, .52) !important;
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
+}
+
+:is(.modal-container, .ad__dialog, .ar__dialog, .ar__detail-dialog, .ar__records-dialog,
+  .goods__dialog, .ol__dialog, .orders__dialog, .detail-dialog, .template-dialog,
+  .editor, .comparison__dialog, .supply-dialog__panel, .goods-edit__panel,
+  .health-page .dialog, .buyer-page .dialog, .password-dialog) {
+  max-height: min(90dvh, 960px) !important;
+  border: 1px solid rgba(255, 255, 255, .7) !important;
+  border-radius: 18px !important;
+  background: #fff !important;
+  box-shadow: 0 28px 80px rgba(24, 21, 13, .24) !important;
+}
+
+:is(.modal-header, .ad__dialog-header, .ar__dialog-header, .ar__detail-dialog-header,
+  .ar__records-dialog-header, .goods__dialog-header, .ol__dialog-header,
+  .orders__dialog-header, .detail-dialog__header, .editor > header) {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: rgba(255, 255, 255, .96) !important;
+  border-bottom-color: var(--glass-border) !important;
+}
+
+:is(.modal-footer, .ad__dialog-footer, .ar__dialog-footer, .goods__dialog-footer,
+  .orders__dialog-footer, .editor > footer) {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  background: rgba(255, 255, 255, .97) !important;
+  border-top-color: var(--glass-border) !important;
+}
+
+@media (min-width: 2560px) {
+  :root {
+    --page-max-width: 2200px;
+    --page-gutter: 32px;
+  }
+
+  .workbench__grid:not(.workbench__grid--two) {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(4, minmax(260px, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  :root {
+    --page-gutter: 12px;
+    --control-height: 46px;
+    --surface-radius: 12px;
+  }
+
+  .app-layout main :is(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+    font-size: 16px;
+  }
+
+  :is(.workbench, .merchant-dashboard, .command-page, .operations-page, .health-page,
+    .buyer-page, .permission-page, .fixed-template-page) {
+    padding: 12px !important;
+  }
+
+  :is(.workbench__header, .merchant-dashboard__header, .page-header, .page-head,
+    .fixed-template-header) {
+    align-items: stretch !important;
+    gap: 12px !important;
+    flex-direction: column !important;
+  }
+
+  :is(.workbench__header, .merchant-dashboard__header, .page-header) > button,
+  :is(.workbench__header, .merchant-dashboard__header, .page-header) > .workbench__actions {
+    width: 100%;
+  }
+
+  :is(.workbench__header, .merchant-dashboard__header, .page-header) > button,
+  :is(.workbench__header, .merchant-dashboard__header, .page-header) .workbench__btn {
+    min-height: 46px;
+  }
+
+  :is(.tabs, .view-tabs) {
+    display: flex !important;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  :is(.tabs, .view-tabs)::-webkit-scrollbar { display: none; }
+
+  :is(.tabs, .view-tabs) button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  :is(.modal-overlay, .ad__dialog-overlay, .ar__dialog-overlay, .goods__dialog-overlay,
+    .ol__dialog-overlay, .orders__dialog-overlay, .dialog-mask, .template-dialog-mask,
+    .goods-edit__overlay, .detail-overlay, .sku-detail-overlay, .comparison__dialog-mask,
+    .supply-dialog, .health-page > .overlay, .buyer-page > .overlay,
+    .permission-page > .overlay) {
+    align-items: flex-end !important;
+    justify-content: center !important;
+    padding: 0 !important;
+  }
+
+  :is(.modal-container, .ad__dialog, .ar__dialog, .ar__detail-dialog, .ar__records-dialog,
+    .goods__dialog, .ol__dialog, .orders__dialog, .detail-dialog, .template-dialog,
+    .editor, .comparison__dialog, .supply-dialog__panel, .goods-edit__panel,
+    .health-page .dialog, .buyer-page .dialog, .password-dialog) {
+    width: 100% !important;
+    max-width: none !important;
+    max-height: 94dvh !important;
+    margin: 0 !important;
+    border-width: 0 !important;
+    border-radius: 20px 20px 0 0 !important;
+  }
+
+  :is(.modal-header, .ad__dialog-header, .ar__dialog-header, .ar__detail-dialog-header,
+    .ar__records-dialog-header, .goods__dialog-header, .ol__dialog-header,
+    .orders__dialog-header, .detail-dialog__header, .editor > header) {
+    padding: 16px !important;
+  }
+
+  :is(.modal-body, .ad__dialog-body, .ar__dialog-body, .ar__detail-dialog-body,
+    .ar__records-dialog-body, .goods__dialog-body, .ol__dialog-body,
+    .orders__dialog-body, .detail-dialog__body, .editor .form-grid) {
+    padding: 16px !important;
+  }
+
+  :is(.modal-footer, .ad__dialog-footer, .ar__dialog-footer, .goods__dialog-footer,
+    .orders__dialog-footer, .editor > footer) {
+    gap: 10px !important;
+    padding: 12px 16px max(12px, env(safe-area-inset-bottom)) !important;
+  }
+
+  :is(.modal-footer, .ad__dialog-footer, .ar__dialog-footer, .goods__dialog-footer,
+    .orders__dialog-footer, .editor > footer) > button {
+    min-height: 46px;
+    flex: 1;
+  }
+
+  .app-layout main table {
+    min-width: 720px;
+  }
 }
 
 @keyframes toast-in {

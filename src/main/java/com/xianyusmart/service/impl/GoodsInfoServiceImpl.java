@@ -76,6 +76,10 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
             
             // 关联闲鱼账号ID
             goodsInfo.setXianyuAccountId(xianyuAccountId);
+            goodsInfo.setProductSource("PLATFORM_LIST_SYNC");
+            goodsInfo.setSyncStatus("SUCCEEDED");
+            goodsInfo.setCoverageStatus("PARTIAL");
+            goodsInfo.setLastSyncedTime(getCurrentTimeString());
             
             // 价格信息
             if (itemDTO.getPriceInfo() != null) {
@@ -132,6 +136,11 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
         goodsInfo.setDetailUrl(detailUrl);
         goodsInfo.setSoldPrice(soldPrice);
         goodsInfo.setStatus(GoodsStatus.ON_SALE.getCode());
+        goodsInfo.setProductSource("SYSTEM_PUBLISH");
+        goodsInfo.setPublishChannel("QR_COOKIE");
+        goodsInfo.setSyncStatus("SUCCEEDED");
+        goodsInfo.setCoverageStatus("PARTIAL");
+        goodsInfo.setLastSyncedTime(getCurrentTimeString());
         goodsInfo.setUpdatedTime(getCurrentTimeString());
 
         // 发布结果使用独立事务原子落库，失败时保留远端商品ID供人工恢复。
@@ -306,6 +315,10 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
             }
             
             existingGoods.setDetailInfo(detailInfo);
+            existingGoods.setProductSource("PLATFORM_DETAIL_SYNC");
+            existingGoods.setSyncStatus("SUCCEEDED");
+            existingGoods.setCoverageStatus("FULL");
+            existingGoods.setLastSyncedTime(getCurrentTimeString());
             existingGoods.setUpdatedTime(getCurrentTimeString());
             int updated = goodsInfoMapper.updateById(existingGoods);
             

@@ -22,7 +22,7 @@ const route = useRoute()
 
 declare const __APP_VERSION__: string
 
-const currentVersion = ref(__APP_VERSION__ || '2.1.0')
+const currentVersion = ref(__APP_VERSION__ || '2.2.0')
 const hasNewVersion = ref(false)
 const isAdmin = ref(false)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
@@ -208,7 +208,7 @@ onUnmounted(() => {
         <div class="drawer-menu" @click.stop>
           <div class="drawer-header">
             <div class="logo" :class="{ 'is-update-entry': isAdmin }" @click="openUpdateDialog">
-              <div class="logo-icon">X</div>
+              <div class="logo-icon">闲</div>
               <div class="logo-text-wrap">
                 <div class="logo-text">XianYuSmart</div>
                 <div class="version-tag" :class="{ 'has-update': isAdmin && hasNewVersion }">
@@ -232,7 +232,7 @@ onUnmounted(() => {
     <div v-if="isDesktop" class="layout-container">
       <aside class="sidebar">
         <div class="logo" :class="{ 'is-update-entry': isAdmin }" @click="openUpdateDialog">
-          <div class="logo-icon">X</div>
+          <div class="logo-icon">闲</div>
           <div class="logo-text-wrap">
             <div class="logo-text">XianYuSmart</div>
             <div class="version-tag" :class="{ 'has-update': isAdmin && hasNewVersion }">
@@ -296,10 +296,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 7px;
   padding: 8px 12px;
-  border: 1px solid rgba(21, 94, 239, .2);
-  border-radius: 7px;
-  color: #155eef;
-  background: #fff;
+  border: 1px solid rgba(226, 169, 0, .34);
+  border-radius: 12px;
+  color: var(--xy-ink);
+  background: var(--xy-yellow-soft);
   box-shadow: 0 5px 16px rgba(16, 24, 40, .1);
   cursor: pointer;
 }
@@ -308,7 +308,7 @@ onUnmounted(() => {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #155eef;
+  background: var(--xy-coral);
 }
 
 .layout-container {
@@ -329,11 +329,13 @@ onUnmounted(() => {
 
 /* ========== 桌面端: 固定侧边栏 ========== */
 .sidebar {
-  background: #fcfcfd;
+  width: clamp(228px, 14vw, 276px);
+  flex: 0 0 clamp(228px, 14vw, 276px);
+  background: #fffef8;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  border-right: 1px solid #eaecf0;
-  box-shadow: 2px 0 10px rgba(16, 24, 40, .025);
+  border-right: 1px solid #ebe7d9;
+  box-shadow: 3px 0 18px rgba(28, 25, 15, .035);
   transition: width 0.3s ease;
   overflow-y: auto;
   overflow-x: hidden;
@@ -348,7 +350,7 @@ onUnmounted(() => {
 .logo {
   display: flex;
   align-items: center;
-  padding: 18px 20px 16px;
+  padding: 20px 20px 18px;
   border-bottom: none;
   gap: 10px;
 }
@@ -356,14 +358,14 @@ onUnmounted(() => {
 .logo-icon {
   width: 32px;
   height: 32px;
-  background: #155eef;
-  border: 1px solid #155eef;
-  box-shadow: 0 4px 10px rgba(21, 94, 239, .18);
-  border-radius: 9px;
+  background: linear-gradient(145deg, #ffe873, var(--xy-yellow));
+  border: 1px solid #f0bd18;
+  box-shadow: 0 6px 16px rgba(213, 153, 0, .20);
+  border-radius: 11px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
+  color: var(--xy-ink);
   font-size: 18px;
   font-weight: bold;
   flex-shrink: 0;
@@ -371,7 +373,8 @@ onUnmounted(() => {
 
 .logo-text {
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 750;
+  letter-spacing: -.02em;
   color: var(--apple-text);
 }
 
@@ -534,11 +537,11 @@ main::-webkit-scrollbar {
 .menu-toggle-btn {
   width: 44px;
   height: 44px;
-  background: #155eef;
-  border: 1px solid #155eef;
-  border-radius: 6px;
-  box-shadow: none;
-  color: white;
+  background: var(--xy-yellow);
+  border: 1px solid var(--xy-yellow-strong);
+  border-radius: 10px;
+  box-shadow: 0 4px 12px rgba(213, 153, 0, .16);
+  color: var(--xy-ink);
   font-size: 22px;
   display: flex;
   align-items: center;
@@ -551,8 +554,8 @@ main::-webkit-scrollbar {
 .menu-toggle-btn:hover,
 .menu-toggle-btn:active,
 .menu-toggle-btn:focus {
-  background: #004eeb;
-  border-color: #004eeb;
+  background: var(--xy-yellow-strong);
+  border-color: #eeb100;
   outline: none;
 }
 
@@ -569,9 +572,9 @@ main::-webkit-scrollbar {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0,0,0,0.30);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  background: rgba(25, 23, 17, .46);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
   z-index: 1000;
   display: flex;
   align-items: stretch;
@@ -580,11 +583,11 @@ main::-webkit-scrollbar {
 .drawer-menu {
   width: 280px;
   max-width: 80vw;
-  background: #fff;
+  background: #fffef8;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  border-right: 1px solid #eaecf0;
-  box-shadow: 12px 0 32px rgba(16, 24, 40, .14);
+  border-right: 1px solid #ebe7d9;
+  box-shadow: 16px 0 44px rgba(25, 23, 17, .18);
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -728,17 +731,19 @@ main::-webkit-scrollbar {
 /* 手机模式 (< 768px) */
 @media (max-width: 767px) {
   .mobile-header {
-    padding: 10px 14px;
-    height: 52px;
+    padding: 10px 12px;
+    height: 60px;
+    background: rgba(255, 254, 248, .96);
   }
 
   .mobile-page-title {
-    font-size: 16px;
+    font-size: 17px;
+    font-weight: 700;
   }
 
   .menu-toggle-btn {
-    width: 40px;
-    height: 40px;
+    width: 42px;
+    height: 42px;
     font-size: 20px;
   }
 
@@ -776,8 +781,8 @@ main::-webkit-scrollbar {
 /* 小屏手机模式 (< 480px) */
 @media (max-width: 480px) {
   .mobile-header {
-    padding: 8px 12px;
-    height: 48px;
+    padding: 9px 10px;
+    height: 58px;
   }
 
   .mobile-page-title {
@@ -785,8 +790,8 @@ main::-webkit-scrollbar {
   }
 
   .menu-toggle-btn {
-    width: 36px;
-    height: 36px;
+    width: 40px;
+    height: 40px;
     font-size: 18px;
   }
 

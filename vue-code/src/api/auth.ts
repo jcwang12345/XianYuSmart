@@ -10,7 +10,7 @@ export function checkUserExists() {
 
 /** 登录 */
 export function login(data: { username: string; password: string; totpCode?: string }) {
-  return request<{ token: string; username: string }>({
+  return request<{ token: string; refreshToken: string; username: string; accessTokenExpiresInMs: number; refreshTokenExpireTime: string }>({
     url: '/login/login',
     method: 'post',
     data
@@ -19,7 +19,7 @@ export function login(data: { username: string; password: string; totpCode?: str
 
 /** 注册 */
 export function register(data: { username: string; password: string; confirmPassword: string }) {
-  return request<{ token: string; username: string }>({
+  return request<{ token: string; refreshToken: string; username: string; accessTokenExpiresInMs: number; refreshTokenExpireTime: string }>({
     url: '/login/register',
     method: 'post',
     data

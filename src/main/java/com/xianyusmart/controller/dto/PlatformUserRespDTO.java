@@ -24,6 +24,8 @@ public class PlatformUserRespDTO {
 
     private List<Long> accountIds;
 
+    private List<Long> accountGroupIds;
+
     private Integer status;
 
     private List<String> permissions;

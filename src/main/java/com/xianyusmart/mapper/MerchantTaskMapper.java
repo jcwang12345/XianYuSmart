@@ -46,13 +46,27 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
 
     @Update("UPDATE merchant_task SET status = 2, result_json = #{resultJson}, error_message = NULL, next_retry_time = NULL, " +
             "verification_status = CASE WHEN task_type <> 'PUBLISH' THEN 'NOT_REQUIRED' " +
+            "WHEN JSON_VALID(#{resultJson}) AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false THEN 'LOCAL_PENDING' " +
             "WHEN JSON_VALID(#{resultJson}) AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.itemId')), '') IS NOT NULL " +
-            "THEN 'VERIFIED' ELSE 'PENDING' END WHERE id = #{id}")
+            "THEN 'VERIFIED' ELSE 'PENDING' END, " +
+            "outcome_state = CASE WHEN task_type <> 'PUBLISH' THEN 'LOCAL_SUCCESS' " +
+            "WHEN JSON_VALID(#{resultJson}) AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
+            "THEN 'PLATFORM_CONFIRMED_LOCAL_PENDING' ELSE 'PLATFORM_CONFIRMED' END, " +
+            "data_source = CASE WHEN task_type='PUBLISH' THEN 'PLATFORM_WEB' ELSE 'LOCAL' END, " +
+            "recovery_hint = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
+            "AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
+            "THEN '平台已发布成功，请按商品ID修复本地缓存；不要重复发布' ELSE NULL END WHERE id = #{id}")
     int complete(@Param("id") Long id, @Param("resultJson") String resultJson);
 
-    @Update("UPDATE merchant_task SET status = -1, error_message = #{errorMessage}, next_retry_time = #{nextRetryTime} WHERE id = #{id}")
+    @Update("UPDATE merchant_task SET status = -1, outcome_state='FAILED', error_message = #{errorMessage}, " +
+            "next_retry_time = #{nextRetryTime} WHERE id = #{id}")
     int fail(@Param("id") Long id, @Param("errorMessage") String errorMessage,
              @Param("nextRetryTime") LocalDateTime nextRetryTime);
+
+    @Update("UPDATE merchant_task SET status = 4, verification_status='UNKNOWN', outcome_state='UNKNOWN', " +
+            "data_source='PLATFORM_WEB', error_message=#{errorMessage}, next_retry_time=NULL, " +
+            "recovery_hint='请按请求ID查询平台商品结果，确认前禁止重复发布' WHERE id=#{id}")
+    int markOutcomeUnknown(@Param("id") Long id, @Param("errorMessage") String errorMessage);
 
     @Update("UPDATE merchant_task SET status = 0, attempt_count = 0, scheduled_time = NOW(3), next_retry_time = NULL, error_message = NULL WHERE id = #{id}")
     int requeue(@Param("id") Long id);

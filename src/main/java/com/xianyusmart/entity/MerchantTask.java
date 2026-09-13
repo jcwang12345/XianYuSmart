@@ -50,6 +50,15 @@ public class MerchantTask {
     /** NOT_REQUIRED/PENDING/VERIFIED/FAILED，禁止用本地成功代替平台回读确认。 */
     private String verificationStatus;
 
+    /** QUEUED/PLATFORM_CONFIRMED/PLATFORM_CONFIRMED_LOCAL_PENDING/FAILED/UNKNOWN。 */
+    private String outcomeState;
+
+    private String dataSource;
+
+    private String platformResponseCode;
+
+    private String recoveryHint;
+
     private String errorMessage;
 
     private LocalDateTime createdTime;

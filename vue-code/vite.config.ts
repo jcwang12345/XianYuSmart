@@ -3,6 +3,8 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import pkg from './package.json'
 
+const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://localhost:12400'
+
 export default defineConfig({
   plugins: [vue()],
   define: {
@@ -17,12 +19,24 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:12400',
-        changeOrigin: true
+        target: proxyTarget,
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.removeHeader('origin')
+            proxyReq.removeHeader('referer')
+          })
+        }
       },
       '/ai': {
-        target: 'http://localhost:12400',
-        changeOrigin: true
+        target: proxyTarget,
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on('proxyReq', (proxyReq) => {
+            proxyReq.removeHeader('origin')
+            proxyReq.removeHeader('referer')
+          })
+        }
       }
     }
   },

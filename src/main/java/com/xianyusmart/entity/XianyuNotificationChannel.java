@@ -37,6 +37,12 @@ public class XianyuNotificationChannel {
 
     private String eventTypes;
 
+    /** ALL / GROUPS / ACCOUNTS */
+    private String scopeType;
+
+    @JsonIgnore
+    private String scopeIdsJson;
+
     private Integer enabled;
 
     private LocalDateTime lastSuccessTime;

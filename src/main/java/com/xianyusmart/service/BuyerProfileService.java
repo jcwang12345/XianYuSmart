@@ -2,7 +2,7 @@ package com.xianyusmart.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.xianyusmart.context.UserContext;
+import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.controller.dto.BuyerProfileQueryReqDTO;
 import com.xianyusmart.controller.dto.BuyerMessageDTO;
 import com.xianyusmart.controller.dto.BuyerProfileDetailReqDTO;
@@ -179,7 +179,7 @@ public class BuyerProfileService {
     }
 
     private Long requireTenantId() {
-        Long tenantId = UserContext.getUserId();
+        Long tenantId = TenantContext.get();
         if (tenantId == null) {
             throw new IllegalStateException("登录状态已失效");
         }

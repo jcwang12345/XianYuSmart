@@ -212,8 +212,8 @@ public class WebSocketController {
     @PostMapping("/sendMessage")
     public ResultObject<String> sendMessage(@RequestBody SendMessageReqDTO reqDTO) {
         try {
-            log.info("发送消息请求: xianyuAccountId={}, cid={}, toId={}, text={}", 
-                    reqDTO.getXianyuAccountId(), reqDTO.getCid(), reqDTO.getToId(), reqDTO.getText());
+            log.info("发送消息请求: xianyuAccountId={}, cid={}, toId={}, textLength={}",
+                    reqDTO.getXianyuAccountId(), reqDTO.getCid(), reqDTO.getToId(), reqDTO.getText() == null ? 0 : reqDTO.getText().length());
             
             // 参数校验
             if (reqDTO.getXianyuAccountId() == null) {
@@ -235,7 +235,7 @@ public class WebSocketController {
             }
             
             // 发送消息
-            boolean success = webSocketService.sendMessage(
+            boolean success = webSocketService.sendMessageWithResult(
                     reqDTO.getXianyuAccountId(),
                     reqDTO.getCid(),
                     reqDTO.getToId(),
@@ -261,6 +261,9 @@ public class WebSocketController {
                 return ResultObject.failed("消息发送失败");
             }
             
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            log.warn("文本消息发送结果未知: accountId={}, cid={}", reqDTO.getXianyuAccountId(), reqDTO.getCid());
+            return ResultObject.failed("消息已提交但送达结果未知，请先查看会话，确认前不要重复发送");
         } catch (Exception e) {
             log.error("发送消息失败", e);
             return ResultObject.failed("发送消息失败: " + e.getMessage());
@@ -300,7 +303,7 @@ public class WebSocketController {
             int height = reqDTO.getHeight() != null && reqDTO.getHeight() > 0 ? reqDTO.getHeight() : 600;
             
             // 发送图片消息
-            boolean success = webSocketService.sendImageMessage(
+            boolean success = webSocketService.sendImageMessageWithResult(
                     reqDTO.getXianyuAccountId(),
                     reqDTO.getCid(),
                     reqDTO.getToId(),
@@ -328,6 +331,9 @@ public class WebSocketController {
                 return ResultObject.failed("图片消息发送失败");
             }
             
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            log.warn("图片消息发送结果未知: accountId={}, cid={}", reqDTO.getXianyuAccountId(), reqDTO.getCid());
+            return ResultObject.failed("图片已提交但送达结果未知，请先查看会话，确认前不要重复发送");
         } catch (Exception e) {
             log.error("发送图片消息失败", e);
             return ResultObject.failed("发送图片消息失败: " + e.getMessage());

@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.xianyusmart.context.TenantContext;
-import com.xianyusmart.context.UserContext;
 import com.xianyusmart.controller.dto.NotificationChannelReqDTO;
 import com.xianyusmart.controller.dto.NotificationChannelRespDTO;
 import com.xianyusmart.entity.XianyuNotificationChannel;
@@ -24,6 +23,7 @@ import com.xianyusmart.service.notification.WebhookSecurity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,11 +55,13 @@ public class NotificationCenterService {
     private static final Set<String> CHANNEL_TYPES = Set.of(
             "WEBHOOK", "WECHAT_WORK", "DINGTALK", "FEISHU", "BARK", "PUSHPLUS", "TELEGRAM"
     );
+    private static final Set<String> SCOPE_TYPES = Set.of("ALL", "GROUPS", "ACCOUNTS");
 
     public static final Set<String> EVENT_TYPES = Set.of(
             "ORDER_CREATED", "DELIVERY_SUCCESS", "DELIVERY_EXCEPTION",
             "ACCOUNT_OFFLINE", "CREDENTIAL_EXPIRED", "KAMI_STOCK_LOW", "ACCOUNT_RECOVERED", "ACCOUNT_VERIFICATION_REQUIRED",
-            "OPERATIONAL_ISSUE_CREATED", "CONVERSATION_SLA_BREACHED", "PRODUCT_PUBLISH_FAILED", "ACCOUNT_CAPABILITY_CHANGED"
+            "OPERATIONAL_ISSUE_CREATED", "CONVERSATION_SLA_BREACHED", "PRODUCT_PUBLISH_FAILED", "ACCOUNT_CAPABILITY_CHANGED",
+            "REFUND_REQUESTED", "PENALTY_CREATED", "PENALTY_DEADLINE"
     );
 
     private final XianyuNotificationChannelMapper channelMapper;
@@ -68,6 +70,10 @@ public class NotificationCenterService {
     private final XianyuAccountMapper accountMapper;
     private final ObjectMapper objectMapper;
     private final PinnedHttpsClient httpsClient;
+    private final NotificationInboxService inboxService;
+    private final JdbcTemplate jdbcTemplate;
+    private final AccountAccessService accountAccessService;
+    private final OperationLogService operationLogService;
     private final String workerId = "notification-" + UUID.randomUUID().toString().substring(0, 8);
 
     @Autowired
@@ -89,12 +95,20 @@ public class NotificationCenterService {
                                      XianyuNotificationOutboxMapper outboxMapper,
                                      XianyuAccountMapper accountMapper,
                                      PinnedHttpsClient httpsClient,
+                                     NotificationInboxService inboxService,
+                                     JdbcTemplate jdbcTemplate,
+                                     AccountAccessService accountAccessService,
+                                     OperationLogService operationLogService,
                                      ObjectMapper objectMapper) {
         this.channelMapper = channelMapper;
         this.logMapper = logMapper;
         this.outboxMapper = outboxMapper;
         this.accountMapper = accountMapper;
         this.httpsClient = httpsClient;
+        this.inboxService = inboxService;
+        this.jdbcTemplate = jdbcTemplate;
+        this.accountAccessService = accountAccessService;
+        this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
     }
 
@@ -104,12 +118,14 @@ public class NotificationCenterService {
 
     @Transactional
     public NotificationChannelRespDTO saveChannel(NotificationChannelReqDTO request) {
+        String requestId = requireRequestId(request == null ? null : request.getRequestId());
         String channelName = request.getChannelName().trim();
         if (channelName.length() > 100) {
             throw new IllegalArgumentException("渠道名称不能超过100个字符");
         }
         String channelType = normalizeChannelType(request.getChannelType());
         List<String> eventTypes = normalizeEventTypes(request.getEventTypes());
+        Scope scope = normalizeScope(request.getScopeType(), request.getScopeIds());
         XianyuNotificationChannel channel = request.getId() == null
                 ? new XianyuNotificationChannel()
                 : channelMapper.selectById(request.getId());
@@ -131,19 +147,23 @@ public class NotificationCenterService {
         channel.setConfigJson(writeConfig(config));
         channel.setMessageTemplate(normalizeMessageTemplate(request.getMessageTemplate()));
         channel.setEventTypes(String.join(",", eventTypes));
+        channel.setScopeType(scope.type());
+        channel.setScopeIdsJson(writeScopeIds(scope.ids()));
         channel.setEnabled(Boolean.FALSE.equals(request.getEnabled()) ? 0 : 1);
         if (channel.getId() == null) {
             channelMapper.insert(channel);
         } else {
             channelMapper.updateById(channel);
         }
+        audit("NOTIFICATION_CHANNEL_SAVE","保存通知渠道",String.valueOf(channel.getId()),requestId,"LOCAL_SUCCESS");
         return toResponse(channelMapper.selectById(channel.getId()));
     }
 
-    public void deleteChannel(Long id) {
+    public void deleteChannel(Long id,String requestId) {
         if (id == null || channelMapper.deleteById(id) != 1) {
             throw new IllegalArgumentException("通知渠道不存在");
         }
+        audit("NOTIFICATION_CHANNEL_DELETE","删除通知渠道",String.valueOf(id),requireRequestId(requestId),"LOCAL_SUCCESS");
     }
 
     public Map<String, Object> testChannel(Long id) {
@@ -172,11 +192,15 @@ public class NotificationCenterService {
             return;
         }
         try {
+            inboxService.record(eventType, accountId, title, content, data == null ? Map.of() : data);
             for (XianyuNotificationChannel channel : channelMapper.selectEnabled()) {
                 Set<String> subscriptions = splitEvents(channel.getEventTypes());
                 boolean inherited = ("ACCOUNT_RECOVERED".equals(eventType) || "ACCOUNT_VERIFICATION_REQUIRED".equals(eventType))
                         && subscriptions.contains("CREDENTIAL_EXPIRED");
                 if (!subscriptions.contains(eventType) && !inherited) {
+                    continue;
+                }
+                if (!matchesScope(channel, accountId)) {
                     continue;
                 }
                 if (data != null && data.containsKey("_renewalImage") && !"WECHAT_WORK".equals(channel.getChannelType())) {
@@ -312,6 +336,8 @@ public class NotificationCenterService {
         response.setConfig(maskSecrets(config));
         response.setMessageTemplate(channel.getMessageTemplate());
         response.setEventTypes(new ArrayList<>(splitEvents(channel.getEventTypes())));
+        response.setScopeType(normalizeStoredScopeType(channel.getScopeType()));
+        response.setScopeIds(readScopeIds(channel.getScopeIdsJson()));
         response.setEnabled(Integer.valueOf(1).equals(channel.getEnabled()));
         response.setLastSuccessTime(channel.getLastSuccessTime());
         response.setLastErrorMessage(channel.getLastErrorMessage());
@@ -671,12 +697,85 @@ public class NotificationCenterService {
     }
 
     private Long requireTenantId() {
-        Long tenantId = UserContext.getUserId();
+        Long tenantId = TenantContext.get();
         if (tenantId == null) {
             throw new IllegalStateException("登录状态已失效");
         }
         return tenantId;
     }
+
+    private String requireRequestId(String value){
+        if(value==null||value.trim().isEmpty())throw new IllegalArgumentException("requestId不能为空");
+        String text=value.trim();if(text.length()>80)throw new IllegalArgumentException("requestId不能超过80个字符");return text;
+    }
+
+    private void audit(String type,String description,String targetId,String requestId,String outcome){
+        com.xianyusmart.entity.XianyuOperationLog event=new com.xianyusmart.entity.XianyuOperationLog();
+        event.setOperationType(type);event.setOperationModule("通知中心");event.setOperationDesc(description);
+        event.setOperationStatus(1);event.setTargetType("NOTIFICATION_CHANNEL");event.setTargetId(targetId);
+        event.setRequestId(requestId);event.setIdempotencyKey(requestId);event.setOutcomeState(outcome);event.setDataSource("LOCAL");
+        operationLogService.log(event);
+    }
+
+    private Scope normalizeScope(String scopeType, List<Long> requestedIds) {
+        String type = scopeType == null || scopeType.isBlank() ? "ALL" : scopeType.trim().toUpperCase();
+        if (!SCOPE_TYPES.contains(type)) throw new IllegalArgumentException("通知范围无效");
+        LinkedHashSet<Long> ids = new LinkedHashSet<>();
+        if (!"ALL".equals(type) && requestedIds != null) {
+            requestedIds.stream().filter(id -> id != null && id > 0).forEach(ids::add);
+        }
+        if (!"ALL".equals(type) && ids.isEmpty()) throw new IllegalArgumentException("通知范围至少选择一项");
+        if (ids.size() > 100) throw new IllegalArgumentException("通知范围最多选择100项");
+        for (Long id : ids) {
+            if ("ACCOUNTS".equals(type)) {
+                accountAccessService.requireAccess(id);
+                Long count = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM xianyu_account WHERE tenant_id=? AND id=?", Long.class, requireTenantId(), id);
+                if (count == null || count == 0) throw new IllegalArgumentException("通知账号不属于当前经营主体：" + id);
+            } else {
+                Long count = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM xianyu_account_group WHERE tenant_id=? AND id=?", Long.class, requireTenantId(), id);
+                if (count == null || count == 0) throw new IllegalArgumentException("通知分组不存在：" + id);
+            }
+        }
+        return new Scope(type, List.copyOf(ids));
+    }
+
+    private boolean matchesScope(XianyuNotificationChannel channel, Long accountId) {
+        String type = normalizeStoredScopeType(channel.getScopeType());
+        if ("ALL".equals(type)) return true;
+        if (accountId == null) return false;
+        List<Long> ids = readScopeIds(channel.getScopeIdsJson());
+        if ("ACCOUNTS".equals(type)) return ids.contains(accountId);
+        if (ids.isEmpty()) return false;
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        List<Object> args = new ArrayList<>();
+        args.add(channel.getTenantId() == null ? requireTenantId() : channel.getTenantId());
+        args.add(accountId);
+        args.addAll(ids);
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM xianyu_account_group_member WHERE tenant_id=? AND xianyu_account_id=? AND group_id IN (" + placeholders + ")",
+                Long.class, args.toArray());
+        return count != null && count > 0;
+    }
+
+    private String normalizeStoredScopeType(String value) {
+        String normalized = value == null ? "ALL" : value.trim().toUpperCase();
+        return SCOPE_TYPES.contains(normalized) ? normalized : "ALL";
+    }
+
+    private String writeScopeIds(List<Long> ids) {
+        try { return objectMapper.writeValueAsString(ids == null ? List.of() : ids); }
+        catch (Exception e) { throw new IllegalArgumentException("通知范围格式无效", e); }
+    }
+
+    private List<Long> readScopeIds(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try { return objectMapper.readValue(json, new TypeReference<List<Long>>() {}); }
+        catch (Exception e) { log.warn("通知范围解析失败"); return List.of(); }
+    }
+
+    private record Scope(String type, List<Long> ids) {}
 
     private String limit(String value, int maxLength) {
         return value == null ? "" : value.substring(0, Math.min(value.length(), maxLength));

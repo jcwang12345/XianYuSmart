@@ -6,22 +6,30 @@ import {
   deleteNotificationChannel,
   getHealthOverview,
   getNotificationChannels,
+  getNotificationInbox,
   getNotificationLogs,
   getOperationExceptions,
   saveNotificationChannel,
+  markNotificationRead,
   testNotificationChannel,
+  updateNotificationHandling,
   type HealthOverview,
   type NotificationChannel,
   type NotificationChannelType,
   type NotificationLog,
+  type InboxNotification,
   type OperationException
 } from '@/api/operations-health'
 import { toast } from '@/utils/toast'
 import { showConfirm } from '@/utils/confirm'
+import { getAccountList } from '@/api/account'
+import { getAccountGroups, newRequestId, type AccountGroup } from '@/api/matrix'
+import type { Account } from '@/types'
 
 const tabs = [
   { key: 'health', label: '系统检查' },
   { key: 'exceptions', label: '异常待办' },
+  { key: 'inbox', label: '站内通知' },
   { key: 'channels', label: '通知渠道' },
   { key: 'logs', label: '发送记录' }
 ]
@@ -82,6 +90,9 @@ const overview = ref<HealthOverview>()
 const exceptions = ref<OperationException[]>([])
 const channels = ref<NotificationChannel[]>([])
 const logs = ref<NotificationLog[]>([])
+const inbox = ref<InboxNotification[]>([])
+const accounts = ref<Account[]>([])
+const groups = ref<AccountGroup[]>([])
 const editing = ref(false)
 const acknowledging = ref('')
 const channelForm = ref({
@@ -91,6 +102,8 @@ const channelForm = ref({
   config: {} as Record<string, string>,
   messageTemplate: defaultMessageTemplate,
   eventTypes: [] as string[],
+  scopeType: 'ALL' as 'ALL' | 'GROUPS' | 'ACCOUNTS',
+  scopeIds: [] as number[],
   enabled: true
 })
 const activeChannelType = () =>
@@ -105,6 +118,7 @@ const load = async () => {
   try {
     if (activeTab.value === 'health') overview.value = (await getHealthOverview()).data
     if (activeTab.value === 'exceptions') exceptions.value = (await getOperationExceptions()).data || []
+    if (activeTab.value === 'inbox') inbox.value = (await getNotificationInbox({ pageSize: 100 })).data?.records || []
     if (activeTab.value === 'channels') channels.value = (await getNotificationChannels()).data || []
     if (activeTab.value === 'logs') logs.value = (await getNotificationLogs()).data || []
   } finally {
@@ -125,6 +139,8 @@ const openChannel = (channel?: NotificationChannel) => {
     config: { ...(channel.config || {}) },
     messageTemplate: channel.messageTemplate || defaultMessageTemplate,
     eventTypes: [...channel.eventTypes],
+    scopeType: channel.scopeType || 'ALL',
+    scopeIds: [...(channel.scopeIds || [])],
     enabled: channel.enabled
   } : {
     id: undefined,
@@ -133,6 +149,8 @@ const openChannel = (channel?: NotificationChannel) => {
     config: {},
     messageTemplate: defaultMessageTemplate,
     eventTypes: ['DELIVERY_EXCEPTION', 'ACCOUNT_OFFLINE', 'CREDENTIAL_EXPIRED', 'KAMI_STOCK_LOW'],
+    scopeType: 'ALL',
+    scopeIds: [],
     enabled: true
   }
   editing.value = true
@@ -155,7 +173,11 @@ const saveChannel = async () => {
     toast.warning('请至少选择一个通知事件')
     return
   }
-  await saveNotificationChannel(channelForm.value)
+  if (channelForm.value.scopeType !== 'ALL' && channelForm.value.scopeIds.length === 0) {
+    toast.warning(channelForm.value.scopeType === 'GROUPS' ? '请至少选择一个店铺分组' : '请至少选择一个店铺账号')
+    return
+  }
+  await saveNotificationChannel({ ...channelForm.value, requestId: newRequestId('notification-channel') })
   toast.success('通知渠道已保存')
   editing.value = false
   load()
@@ -170,7 +192,7 @@ const testChannel = async (channel: NotificationChannel) => {
 const removeChannel = async (channel: NotificationChannel) => {
   try {
     await showConfirm(`确定删除通知渠道「${channel.channelName}」？`, '删除确认')
-    await deleteNotificationChannel(channel.id)
+    await deleteNotificationChannel(channel.id, newRequestId('notification-channel-delete'))
     toast.success('通知渠道已删除')
     load()
   } catch {}
@@ -200,6 +222,13 @@ const acknowledgeAllExceptions = async () => {
   } catch {}
 }
 
+const handleInbox = async (item: InboxNotification, status: 'IN_PROGRESS' | 'RESOLVED' | 'IGNORED') => {
+  if (!item.readTime) await markNotificationRead(item.id)
+  await updateNotificationHandling(item.id, status)
+  toast.success(status === 'RESOLVED' ? '通知已标记为已解决' : status === 'IGNORED' ? '通知已忽略' : '通知已进入处理中')
+  await load()
+}
+
 const eventLabel = (value: string) =>
   eventOptions.find(option => option.value === value)?.label || value
 
@@ -212,7 +241,12 @@ const formatDateTime = (value?: string) => {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
-onMounted(load)
+onMounted(async () => {
+  const [accountResult, groupResult] = await Promise.allSettled([getAccountList(), getAccountGroups()])
+  if (accountResult.status === 'fulfilled') accounts.value = accountResult.value.data?.accounts || []
+  if (groupResult.status === 'fulfilled') groups.value = groupResult.value.data || []
+  await load()
+})
 </script>
 
 <template>
@@ -276,6 +310,14 @@ onMounted(load)
       </article>
     </section>
 
+    <section v-else-if="activeTab === 'inbox'" class="panel list">
+      <div v-if="inbox.length === 0" class="empty">暂无站内通知。</div>
+      <article v-for="item in inbox" :key="item.id">
+        <div class="item-main"><span :class="['badge', item.severity === 'ERROR' ? 'danger-badge' : item.severity === 'WARNING' ? 'warning' : '']">{{ item.severity }}</span><div><strong>{{ item.title }}</strong><p>{{ item.contentSummary }}</p><div class="event-tags"><span>{{ eventLabel(item.eventType) }}</span><span>{{ item.accountName || '全局' }}</span><span>{{ item.readTime ? '已读' : '未读' }}</span><span>{{ item.handlingStatus }}</span></div></div></div>
+        <div class="actions"><router-link v-if="item.targetRoute" :to="item.targetRoute">查看业务</router-link><button @click="handleInbox(item, 'IN_PROGRESS')">处理中</button><button class="primary" @click="handleInbox(item, 'RESOLVED')">已解决</button><button @click="handleInbox(item, 'IGNORED')">忽略</button></div>
+      </article>
+    </section>
+
     <section v-else-if="activeTab === 'channels'" class="panel list">
       <div v-if="channels.length === 0" class="empty">尚未配置通知渠道。</div>
       <article v-for="channel in channels" :key="channel.id">
@@ -334,6 +376,9 @@ onMounted(load)
               <input v-model="channelForm.eventTypes" type="checkbox" :value="option.value" />{{ option.label }}
             </label>
           </fieldset>
+          <label>适用范围<select v-model="channelForm.scopeType"><option value="ALL">全部可见店铺</option><option value="GROUPS">指定店铺分组</option><option value="ACCOUNTS">指定店铺</option></select><small>范围由服务端校验；成员无权访问的店铺不会收到配置。</small></label>
+          <fieldset v-if="channelForm.scopeType === 'GROUPS'"><legend>店铺分组</legend><label v-for="group in groups" :key="group.id" class="check-option"><input v-model="channelForm.scopeIds" type="checkbox" :value="group.id">{{ group.groupName }}（{{ group.accountCount || 0 }}）</label></fieldset>
+          <fieldset v-if="channelForm.scopeType === 'ACCOUNTS'"><legend>店铺账号</legend><label v-for="account in accounts" :key="account.id" class="check-option"><input v-model="channelForm.scopeIds" type="checkbox" :value="account.id">{{ account.accountNote || account.unb }}</label></fieldset>
           <label class="enabled"><span>启用渠道</span><input v-model="channelForm.enabled" type="checkbox" /></label>
           <footer><button @click="editing = false">取消</button><button class="primary" @click="saveChannel">保存</button></footer>
         </section>
@@ -348,10 +393,10 @@ onMounted(load)
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px; }
 h2, h3, p { margin: 0; } h2 { font-size: 18px; } .page-head p { margin-top: 5px; color: #667085; font-size: 13px; }
 button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: #344054; cursor: pointer; }
-.primary { color: #fff; border-color: #155eef; background: #155eef; } .danger, .error { color: #b42318; }
+.primary { color: #fff; border-color: #9a6200; background: #9a6200; } .danger, .error { color: #b42318; }
 .tabs { display: flex; gap: 4px; margin: 12px 0; border-bottom: 1px solid #eaecf0; }
 .tabs button { border: 0; border-radius: 6px 6px 0 0; background: transparent; color: #667085; }
-.tabs button.active { color: #155eef; background: #eef4ff; font-weight: 600; }
+.tabs button.active { color: #9a6200; background: #fff8d9; font-weight: 600; }
 .summary { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1px; margin-bottom: 12px; overflow: hidden; border: 1px solid #eaecf0; border-radius: 10px; background: #eaecf0; }
 .summary > div { padding: 18px; background: #fff; } .summary span, .summary strong { display: block; } .summary span { color: #667085; font-size: 12px; }
 .summary strong { margin-top: 5px; font-size: 20px; } .summary.critical strong { color: #b42318; } .summary.warning strong { color: #b54708; } .summary.healthy strong { color: #067647; }
@@ -359,22 +404,24 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .check { padding: 16px; } .check header { display: flex; justify-content: space-between; gap: 12px; } .check p { margin-top: 16px; color: #667085; font-size: 13px; }
 .badge { display: inline-block; width: max-content; padding: 3px 8px; border-radius: 12px; color: #475467; background: #f2f4f7; font-size: 12px; white-space: nowrap; }
 .badge.success { color: #067647; background: #ecfdf3; } .badge.warning { color: #b54708; background: #fffaeb; }
+.badge.danger-badge { color: #b42318; background: #fef3f2; }
+.actions a { display:inline-flex; align-items:center; padding:8px 12px; border:1px solid #d0d5dd; border-radius:6px; color:#344054; text-decoration:none; }
 .list { overflow: hidden; } .list article { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 16px; border-bottom: 1px solid #eaecf0; }
 .list article:last-child { border-bottom: 0; } .item-main { min-width: 0; display: flex; align-items: flex-start; gap: 12px; }
 .item-main p { margin-top: 4px; color: #667085; font-size: 13px; overflow-wrap: anywhere; } .item-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; color: #98a2b3; font-size: 12px; text-align: right; }
 .exception-actions { display: flex; align-items: center; gap: 12px; }
-.event-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; } .event-tags span { padding: 2px 6px; border-radius: 4px; color: #155eef; background: #eef4ff; font-size: 12px; }
+.event-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; } .event-tags span { padding: 2px 6px; border-radius: 4px; color: #9a6200; background: #fff8d9; font-size: 12px; }
 .actions { display: flex; gap: 6px; } .empty { padding: 70px 20px; text-align: center; color: #98a2b3; }
 .overlay { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 20px; background: rgba(16,24,40,.45); }
 .dialog { width: min(680px, 100%); max-height: calc(100vh - 40px); overflow: auto; padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px rgba(16,24,40,.2); }
 .dialog header, .dialog footer, .enabled { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dialog header { margin-bottom: 18px; } .dialog label { display: grid; gap: 6px; margin: 13px 0; color: #667085; font-size: 13px; }
-.dialog input, .dialog textarea { width: 100%; padding: 9px 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; font: inherit; }
+.dialog input, .dialog textarea, .dialog select { width: 100%; padding: 9px 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; font: inherit; }
 .dialog textarea { resize: vertical; line-height: 1.55; }
 .dialog label small { color: #98a2b3; }
 .channel-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .channel-types button { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; }
-.channel-types button.active { border-color: #155eef; color: #155eef; background: #eef4ff; }
+.channel-types button.active { border-color: #9a6200; color: #9a6200; background: #fff8d9; }
 .channel-types small { color: #98a2b3; font-size: 11px; }
 .dialog fieldset { border: 1px solid #eaecf0; border-radius: 8px; } .dialog .check-option { display: inline-flex; align-items: center; gap: 5px; margin-right: 16px; }
 .dialog .check-option input, .dialog .enabled input { width: auto; } .dialog .enabled { display: flex; padding: 10px 0; color: #344054; }

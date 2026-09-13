@@ -29,5 +29,11 @@ public class NotificationChannelReqDTO {
 
     private List<String> eventTypes;
 
+    private String scopeType;
+
+    private List<Long> scopeIds;
+
     private Boolean enabled;
+
+    private String requestId;
 }

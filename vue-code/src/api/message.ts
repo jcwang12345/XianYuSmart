@@ -110,3 +110,69 @@ export function sendMessage(data: {
     data
   });
 }
+
+export interface WorkspaceConversation {
+  accountId: number
+  accountName: string
+  sessionId: string
+  buyerUserId: string
+  buyerName?: string
+  unreadCount: number
+  status: string
+  priority?: string
+  pinned?: boolean
+  keywordFlag?: string
+  customerNote?: string
+  customerBlacklisted?: boolean
+  manualTakeoverState?: string
+  manualTakeoverUntil?: string
+  historyCoverageStatus?: string
+  lastMessage?: string
+  relatedOrderId?: string
+  relatedGoodsId?: string
+  slaBreached?: boolean
+}
+
+export function getWorkspaceConversations(params: Record<string, unknown> = {}) {
+  return request<{ records: WorkspaceConversation[]; returnedCount: number; unreadInResult: number; dataNotice: string }>({
+    url: '/message-workspace/conversations', method: 'GET', params
+  })
+}
+
+export function getWorkspaceConversation(accountId: number, sessionId: string, limit = 100, offset = 0) {
+  return request<Record<string, any>>({ url: '/message-workspace/conversation', method: 'GET', params: { accountId, sessionId, limit, offset } })
+}
+
+export function markWorkspaceConversationRead(accountId: number, sessionId: string) {
+  return request<void>({ url: '/message-workspace/conversation/read', method: 'POST', data: { accountId, sessionId } })
+}
+
+export function takeoverWorkspaceConversation(accountId: number, sessionId: string, goodsId?: string, minutes = 15) {
+  return request<Record<string, any>>({ url: '/message-workspace/conversation/takeover', method: 'POST', data: { accountId, sessionId, goodsId, minutes } })
+}
+
+export function updateWorkspaceConversation(data: {
+  accountId: number; sessionId: string; pinned?: boolean; keywordFlag?: string;
+  customerNote?: string; blacklisted?: boolean; requestId: string
+}) {
+  return request<Record<string, any>>({ url: '/message-workspace/conversation/update', method: 'POST', data })
+}
+
+export interface WorkspaceSendCommand {
+  accountId: number
+  sessionId: string
+  recipientUserId: string
+  goodsId?: string
+  content: string
+  width?: number
+  height?: number
+  requestId: string
+}
+
+export function sendWorkspaceText(data: WorkspaceSendCommand) {
+  return request<{ requestId: string; outcomeState: 'ACKNOWLEDGED' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/text', method: 'POST', data })
+}
+
+export function sendWorkspaceImage(data: WorkspaceSendCommand) {
+  return request<{ requestId: string; outcomeState: 'ACKNOWLEDGED' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/image', method: 'POST', data })
+}

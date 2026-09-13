@@ -9,5 +9,8 @@ import lombok.Data;
 @Data
 public class LoginRespDTO {
     private String token;
+    private String refreshToken;
+    private Long accessTokenExpiresInMs;
+    private String refreshTokenExpireTime;
     private String username;
 }

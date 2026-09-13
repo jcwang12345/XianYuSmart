@@ -7,6 +7,7 @@ import com.google.zxing.common.BitMatrix;
 import com.xianyusmart.entity.SysUser;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.SysUserMapper;
+import com.xianyusmart.security.SensitiveDataCodec;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,7 +47,7 @@ public class TotpService {
         byte[] bytes = new byte[20];
         random.nextBytes(bytes);
         String secret = base32Encode(bytes);
-        user.setTotpSecret(secret);
+        user.setTotpSecret(SensitiveDataCodec.encrypt(secret));
         user.setTotpEnabled(0);
         user.setTotpRecoveryCodes(null);
         userMapper.updateById(user);
@@ -59,7 +60,7 @@ public class TotpService {
     @Transactional
     public List<String> confirm(Long userId, String code) {
         SysUser user = requireUser(userId);
-        if (user.getTotpSecret() == null || !verify(user.getTotpSecret(), code)) {
+        if (user.getTotpSecret() == null || !verify(SensitiveDataCodec.decrypt(user.getTotpSecret()), code)) {
             throw new BusinessException(400, "两步验证码不正确");
         }
         List<String> recoveryCodes = generateRecoveryCodes();
@@ -83,7 +84,7 @@ public class TotpService {
     @Transactional
     public boolean verifyForUser(SysUser user, String code) {
         if (user == null || !Integer.valueOf(1).equals(user.getTotpEnabled())) return true;
-        if (verify(user.getTotpSecret(), code)) return true;
+        if (verify(SensitiveDataCodec.decrypt(user.getTotpSecret()), code)) return true;
         String codeHash = hash(normalizeRecoveryCode(code));
         List<String> hashes = new ArrayList<>(user.getTotpRecoveryCodes() == null || user.getTotpRecoveryCodes().isBlank()
                 ? List.of() : List.of(user.getTotpRecoveryCodes().split(",")));

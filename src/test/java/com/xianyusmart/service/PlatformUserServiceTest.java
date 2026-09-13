@@ -32,9 +32,10 @@ class PlatformUserServiceTest {
         actor.setMemberRole("TENANT_ADMIN");
         when(users.selectById(8L)).thenReturn(actor);
         PlatformUserService service = new PlatformUserService(users, mock(SysLoginTokenMapper.class),
-                mock(PlatformPermissionService.class), mock(AccountAccessService.class));
+                mock(PlatformPermissionService.class), mock(AccountAccessService.class),mock(OperationLogService.class));
         PlatformUserSaveReqDTO request = new PlatformUserSaveReqDTO();
         request.setRole(SysUser.ROLE_ADMIN);
+        request.setRequestId("req-member-role");
         UserContext.set(8L, "manager", 1L);
         TenantContext.set(1L);
 

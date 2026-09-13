@@ -118,13 +118,13 @@ const onSelect = (index: string) => {
 .nav-menu {
   border-right: none;
   background: transparent;
-  padding: 2px 10px 18px;
+  padding: 4px 12px 20px;
 }
 
 .nav-menu-groups {
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: 14px;
 }
 
 .nav-menu-group {
@@ -133,7 +133,7 @@ const onSelect = (index: string) => {
 
 .nav-menu-group-title {
   padding: 0 12px 5px;
-  color: #98a2b3;
+  color: #908c82;
   font-size: 11px;
   font-weight: 600;
   line-height: 20px;
@@ -151,10 +151,10 @@ const onSelect = (index: string) => {
   display: flex;
   align-items: center;
   min-width: 0;
-  height: 38px;
-  padding: 0 10px;
-  border-radius: 8px;
-  color: #667085;
+  height: 42px;
+  padding: 0 11px;
+  border-radius: 11px;
+  color: #625f58;
   text-decoration: none;
   transition: color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
@@ -166,7 +166,7 @@ const onSelect = (index: string) => {
   left: -4px;
   width: 3px;
   border-radius: 3px;
-  background: #155eef;
+  background: #e0a400;
   content: '';
   opacity: 0;
   transform: scaleY(.45);
@@ -174,15 +174,15 @@ const onSelect = (index: string) => {
 }
 
 .nav-menu-item:hover {
-  color: #344054;
-  background: #f2f4f7;
+  color: var(--xy-ink);
+  background: #faf5df;
 }
 
 .nav-menu-item--active {
-  color: #155eef;
-  background: #eef4ff;
-  box-shadow: inset 0 0 0 1px rgba(21, 94, 239, .04);
-  font-weight: 600;
+  color: var(--xy-ink);
+  background: linear-gradient(90deg, var(--xy-yellow-soft), #fffaf0);
+  box-shadow: inset 0 0 0 1px rgba(226, 169, 0, .18);
+  font-weight: 700;
 }
 
 .nav-menu-item--active::before {
@@ -198,7 +198,7 @@ const onSelect = (index: string) => {
   height: 28px;
   margin-right: 8px;
   border-radius: 7px;
-  color: #667085;
+  color: #77736b;
   flex-shrink: 0;
   transition: color 180ms ease, background-color 180ms ease;
 }
@@ -209,13 +209,13 @@ const onSelect = (index: string) => {
 }
 
 .nav-menu-item:hover .nav-menu-icon {
-  color: #344054;
+  color: var(--xy-ink);
   background: rgba(255, 255, 255, .7);
 }
 
 .nav-menu-item--active .nav-menu-icon {
-  color: #155eef;
-  background: rgba(255, 255, 255, .82);
+  color: var(--xy-ink);
+  background: var(--xy-yellow);
 }
 
 .nav-menu-label {

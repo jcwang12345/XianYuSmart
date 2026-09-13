@@ -63,6 +63,9 @@ public class ItemServiceImpl implements ItemService {
     @Autowired
     private com.xianyusmart.service.AccountBrowserProfileService accountBrowserProfileService;
 
+    @Autowired
+    private com.xianyusmart.service.ProductSyncStateService productSyncStateService;
+
     /**
      * 获取指定页的商品信息（内部方法）
      */
@@ -170,6 +173,7 @@ public class ItemServiceImpl implements ItemService {
 
     @Override
     public ResultObject<RefreshItemsRespDTO> refreshItems(AllItemsReqDTO reqDTO) {
+        String requestId = "PRODUCT-SYNC-" + java.util.UUID.randomUUID();
         try {
             log.info("开始刷新商品数据: xianyuAccountId={}", reqDTO.getXianyuAccountId());
             
@@ -194,12 +198,14 @@ public class ItemServiceImpl implements ItemService {
             
             List<ItemDTO> allItems = new ArrayList<>();
             int pageNumber = 1;
+            boolean fullRemoteCoverage = true;
 
             // 自动分页获取所有商品
             while (true) {
                 // 检查是否达到最大页数（maxPages为null或0表示不限制）
                 if (reqDTO.getMaxPages() != null && reqDTO.getMaxPages() > 0 && pageNumber > reqDTO.getMaxPages()) {
                     log.info("达到最大页数限制: {}", reqDTO.getMaxPages());
+                    fullRemoteCoverage = false;
                     break;
                 }
 
@@ -215,9 +221,12 @@ public class ItemServiceImpl implements ItemService {
                     log.error("获取第{}页失败", pageNumber);
                     // 如果是第一页就失败了，返回错误
                     if (pageNumber == 1) {
+                        productSyncStateService.failed(reqDTO.getXianyuAccountId(), requestId,
+                                "PRODUCT_LIST_FETCH_FAILED", pageResult.getMsg());
                         return ResultObject.failed(pageResult.getMsg() != null ? pageResult.getMsg() : "获取商品列表失败");
                     }
                     // 如果不是第一页，继续处理已获取的数据
+                    fullRemoteCoverage = false;
                     break;
                 }
 
@@ -246,21 +255,21 @@ public class ItemServiceImpl implements ItemService {
 
             // 批量保存到数据库
             respDTO.setTotalCount(allItems.size());
+
+            java.util.Set<String> remoteItemIds = new java.util.HashSet<>();
+            for (ItemDTO item : allItems) {
+                if (item.getDetailParams() != null && item.getDetailParams().getItemId() != null) {
+                    remoteItemIds.add(item.getDetailParams().getItemId());
+                }
+            }
+            // 只有完整遍历远程列表才能将“远端未出现”解释为下架；分页截断或中途失败绝不做此推断。
+            if (fullRemoteCoverage) {
+                goodsInfoService.markOfflineIfNotInRemote(reqDTO.getXianyuAccountId(), remoteItemIds);
+            }
             
             if (!allItems.isEmpty()) {
                 // 使用账号ID保存商品
                 Long accountId = reqDTO.getXianyuAccountId();
-                
-                // 收集远程商品ID
-                java.util.Set<String> remoteItemIds = new java.util.HashSet<>();
-                for (ItemDTO item : allItems) {
-                    if (item.getDetailParams() != null && item.getDetailParams().getItemId() != null) {
-                        remoteItemIds.add(item.getDetailParams().getItemId());
-                    }
-                }
-                
-                // 标记本地有但远程没有的在售商品为已下架
-                goodsInfoService.markOfflineIfNotInRemote(accountId, remoteItemIds);
                 
                 // 保存商品并收集成功的商品ID
                 for (ItemDTO item : allItems) {
@@ -291,9 +300,19 @@ public class ItemServiceImpl implements ItemService {
                 log.warn("刷新商品数据完成，但没有获取到任何商品");
             }
 
+            productSyncStateService.completed(reqDTO.getXianyuAccountId(), requestId, fullRemoteCoverage);
+
             return ResultObject.success(respDTO);
         } catch (Exception e) {
             log.error("刷新商品数据异常: xianyuAccountId={}", reqDTO.getXianyuAccountId(), e);
+            if (reqDTO.getXianyuAccountId() != null) {
+                try {
+                    productSyncStateService.failed(reqDTO.getXianyuAccountId(), requestId,
+                            "PRODUCT_SYNC_EXCEPTION", e.getMessage());
+                } catch (Exception stateError) {
+                    log.warn("记录商品同步失败状态时出错: {}", stateError.getMessage());
+                }
+            }
             return ResultObject.failed("刷新商品数据异常: " + e.getMessage());
         }
     }

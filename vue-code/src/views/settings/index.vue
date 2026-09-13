@@ -2117,8 +2117,8 @@ async function saveMenuLayout() {
 }
 
 .settings__menu-item--active {
-  background: #eef4ff;
-  color: #155eef;
+  background: #fff8d9;
+  color: #9a6200;
   font-weight: 500;
 }
 
@@ -2428,9 +2428,9 @@ async function saveMenuLayout() {
 }
 
 .settings__menu-sort-group--dragging {
-  border-color: #84adff;
+  border-color: #efc852;
   opacity: .52;
-  box-shadow: 0 8px 24px rgba(21, 94, 239, .12);
+  box-shadow: 0 8px 24px rgba(214, 155, 0, .12);
 }
 
 .settings__menu-sort-group-header {
@@ -2463,7 +2463,7 @@ async function saveMenuLayout() {
 
 .settings__menu-sort-handle:hover,
 .settings__menu-sort-handle:focus-visible {
-  background: #eef4ff;
+  background: #fff8d9;
   outline: none;
 }
 
@@ -2516,9 +2516,9 @@ async function saveMenuLayout() {
 
 .settings__menu-sort-controls button:hover:not(:disabled),
 .settings__menu-sort-controls button:focus-visible {
-  border-color: #84adff;
-  color: #155eef;
-  background: #eef4ff;
+  border-color: #efc852;
+  color: #9a6200;
+  background: #fff8d9;
   outline: none;
 }
 
@@ -2545,7 +2545,7 @@ async function saveMenuLayout() {
 }
 
 .settings__menu-sort-item--dragging {
-  background: #eef4ff;
+  background: #fff8d9;
   opacity: .5;
 }
 
@@ -2806,14 +2806,14 @@ async function saveMenuLayout() {
 }
 
 .settings__provider-card:hover {
-  border-color: #b2ccff;
+  border-color: #efd77f;
   box-shadow: 0 6px 18px rgba(16,24,40,.07);
   transform: translateY(-1px);
 }
 
 .settings__provider-card--active {
   border-color: #528bff;
-  background: #f5f8ff;
+  background: #fffdf2;
   box-shadow: 0 0 0 3px rgba(21,94,239,.08);
 }
 
@@ -2873,7 +2873,7 @@ async function saveMenuLayout() {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #155eef;
+  background: #9a6200;
   color: #fff;
   font-size: 12px;
 }
@@ -2923,7 +2923,7 @@ async function saveMenuLayout() {
 }
 
 .settings__advanced-trigger span:last-child {
-  color: #155eef;
+  color: #9a6200;
   font-size: 12px;
 }
 
@@ -2957,7 +2957,7 @@ async function saveMenuLayout() {
 .settings__protocol-tabs button.active {
   border-color: #528bff;
   background: #eff4ff;
-  color: #155eef;
+  color: #9a6200;
   font-weight: 600;
 }
 
@@ -3005,7 +3005,7 @@ async function saveMenuLayout() {
   padding: 0 17px;
   border: 0;
   border-radius: 9px;
-  background: #155eef;
+  background: #9a6200;
   color: #fff;
   cursor: pointer;
   font-family: inherit;
@@ -3078,7 +3078,7 @@ async function saveMenuLayout() {
   display: flex;
   align-items: baseline;
   gap: 3px;
-  color: #155eef;
+  color: #9a6200;
 }
 
 .settings__latency strong { color: inherit; font-size: 24px; }
@@ -3274,7 +3274,7 @@ async function saveMenuLayout() {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #155eef;
+  background: #9a6200;
   color: white;
   display: flex;
   align-items: center;

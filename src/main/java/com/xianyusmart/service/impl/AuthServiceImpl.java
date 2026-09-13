@@ -23,6 +23,8 @@ import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +65,10 @@ public class AuthServiceImpl implements AuthService {
     private TotpService totpService;
 
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private final SecureRandom secureRandom = new SecureRandom();
+
+    @org.springframework.beans.factory.annotation.Value("${jwt.refresh-expiration:2592000000}")
+    private long refreshExpiration;
 
     @Override
     public CheckUserExistsRespBO checkUserExists() {
@@ -152,6 +158,9 @@ public class AuthServiceImpl implements AuthService {
         SysLoginToken loginToken = new SysLoginToken();
         loginToken.setUserId(user.getId());
         loginToken.setToken(hashToken(token));
+        String refreshToken = newRefreshToken();
+        loginToken.setRefreshTokenHash(hashToken(refreshToken));
+        loginToken.setRefreshExpireTime(LocalDateTime.now().plus(Duration.ofMillis(refreshExpiration)).format(FORMATTER));
         loginToken.setDeviceId(reqBO.getDeviceId());
         loginToken.setLoginIp(reqBO.getIp());
         loginToken.setExpireTime(LocalDateTime.now().plus(Duration.ofMillis(jwtUtil.getExpiration())).format(FORMATTER));
@@ -171,8 +180,61 @@ public class AuthServiceImpl implements AuthService {
 
         LoginRespBO respBO = new LoginRespBO();
         respBO.setToken(token);
+        respBO.setRefreshToken(refreshToken);
+        respBO.setAccessTokenExpiresInMs(jwtUtil.getExpiration());
+        respBO.setRefreshTokenExpireTime(loginToken.getRefreshExpireTime());
         respBO.setUsername(user.getUsername());
         return respBO;
+    }
+
+    @Override
+    @Transactional
+    public LoginRespBO refresh(String refreshToken, String ip, String deviceId) {
+        if (refreshToken == null || refreshToken.isBlank()) throw new BusinessException(401, "刷新令牌不能为空");
+        String hash = hashToken(refreshToken.trim());
+        SysLoginToken session = sysLoginTokenMapper.selectOne(new LambdaQueryWrapper<SysLoginToken>()
+                .and(wrapper -> wrapper.eq(SysLoginToken::getRefreshTokenHash, hash)
+                        .or().eq(SysLoginToken::getPreviousRefreshTokenHash, hash)));
+        if (session == null) throw new BusinessException(401, "刷新令牌无效或已撤销");
+        if (hash.equals(session.getPreviousRefreshTokenHash())) {
+            sysLoginTokenMapper.deleteById(session.getId());
+            throw new BusinessException(401, "检测到刷新令牌重复使用，该设备会话已撤销");
+        }
+        LocalDateTime refreshExpiry;
+        try { refreshExpiry = LocalDateTime.parse(session.getRefreshExpireTime(), FORMATTER); }
+        catch (Exception e) { sysLoginTokenMapper.deleteById(session.getId()); throw new BusinessException(401, "刷新令牌状态无效"); }
+        if (refreshExpiry.isBefore(LocalDateTime.now())) {
+            sysLoginTokenMapper.deleteById(session.getId());
+            throw new BusinessException(401, "刷新令牌已过期，请重新登录");
+        }
+        SysUser user = sysUserMapper.selectById(session.getUserId());
+        if (user == null || !Integer.valueOf(1).equals(user.getStatus())) {
+            sysLoginTokenMapper.deleteById(session.getId());
+            throw new BusinessException(401, "用户不存在或已停用");
+        }
+        String newAccess = jwtUtil.generateToken(user.getId(), user.getUsername());
+        String newRefresh = newRefreshToken();
+        String now = LocalDateTime.now().format(FORMATTER);
+        int updated = sysLoginTokenMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<SysLoginToken>()
+                .eq(SysLoginToken::getId, session.getId()).eq(SysLoginToken::getRefreshTokenHash, hash)
+                .set(SysLoginToken::getToken, hashToken(newAccess))
+                .set(SysLoginToken::getPreviousRefreshTokenHash, hash)
+                .set(SysLoginToken::getRefreshTokenHash, hashToken(newRefresh))
+                .set(SysLoginToken::getRefreshRotatedTime, now)
+                .set(SysLoginToken::getExpireTime, LocalDateTime.now().plus(Duration.ofMillis(jwtUtil.getExpiration())).format(FORMATTER))
+                .set(SysLoginToken::getUpdatedTime, now)
+                .set(SysLoginToken::getLoginIp, ip)
+                .set(SysLoginToken::getDeviceId, deviceId));
+        if (updated != 1) throw new BusinessException(409, "刷新令牌已被另一请求轮换，请重新登录");
+        LoginRespBO response = new LoginRespBO();
+        response.setToken(newAccess); response.setRefreshToken(newRefresh); response.setUsername(user.getUsername());
+        response.setAccessTokenExpiresInMs(jwtUtil.getExpiration()); response.setRefreshTokenExpireTime(session.getRefreshExpireTime());
+        return response;
+    }
+
+    private String newRefreshToken() {
+        byte[] bytes = new byte[32]; secureRandom.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     @Override

@@ -2,7 +2,7 @@ server:
   port: 12400
 
 app:
-  version: 2.1.0
+  version: 2.2.0
   update:
     release-api: ${UPDATE_RELEASE_API:https://api.github.com/repos/Evvvvvvvan/XianYuSmart/releases/latest}
     request-dir: ${UPDATE_REQUEST_DIR:/app/update}
@@ -42,7 +42,8 @@ ai:
 # JWT配置
 jwt:
   secret: ${JWT_SECRET}
-  expiration: ${JWT_EXPIRATION_MS:28800000}  # 默认8小时
+  expiration: ${JWT_EXPIRATION_MS:1800000}  # 默认30分钟
+  refresh-expiration: ${JWT_REFRESH_EXPIRATION_MS:2592000000} # 默认30天
 
 
 spring:

@@ -79,7 +79,7 @@ onMounted(load)
 .trend-chart polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .trend-chart__success { stroke: #12b76a; }
 .trend-chart__failed { stroke: #f04438; }
-.trend-chart__reply { stroke: #155eef; }
+.trend-chart__reply { stroke: #9a6200; }
 .trend-chart__labels { display: flex; justify-content: space-between; margin: 6px 0 14px; color: #98a2b3; font-size: 11px; }
 @media (max-width: 767px) { .trend-chart { min-height: 220px; } .trend-chart svg { height: 170px; } }
 </style>

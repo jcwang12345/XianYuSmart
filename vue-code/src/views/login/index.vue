@@ -62,7 +62,7 @@ async function handleLogin() {
   try {
     const res = await login({ username: username.value.trim(), password: password.value, totpCode: totpCode.value.trim() || undefined })
     if (res.code === 200 && res.data && res.data.token) {
-      setAuthToken(res.data.token, res.data.username)
+      setAuthToken(res.data.token, res.data.username, res.data.refreshToken)
       window.location.href = '/dashboard'
     } else {
       console.error('[Login] login response invalid:', res)
@@ -84,7 +84,7 @@ async function handleRegister() {
       confirmPassword: confirmPassword.value
     })
     if (res.code === 200 && res.data && res.data.token) {
-      setAuthToken(res.data.token, res.data.username)
+      setAuthToken(res.data.token, res.data.username, res.data.refreshToken)
       window.location.href = '/dashboard'
     } else {
       console.error('[Login] register response invalid:', res)
@@ -260,26 +260,31 @@ function handleKeydown(e: KeyboardEvent) {
 
 <style scoped>
 .login-page {
+  box-sizing: border-box;
   height: 100vh;
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f5f6f8;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 218, 68, .34), transparent 28rem),
+    radial-gradient(circle at 86% 86%, rgba(255, 198, 42, .16), transparent 24rem),
+    #f6f6f3;
   padding: 16px;
   overflow-y: auto;
 }
 
 .login-card {
+  box-sizing: border-box;
   width: 100%;
-  max-width: 400px;
+  max-width: 430px;
   background: #ffffff;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  border: 1px solid #e4e7ec;
-  border-radius: 8px;
-  box-shadow: none;
-  padding: 40px 32px;
+  border: 1px solid rgba(230, 221, 190, .86);
+  border-radius: 20px;
+  box-shadow: 0 28px 70px rgba(35, 30, 13, .12);
+  padding: 42px 36px;
   position: relative;
   overflow: hidden;
 }
@@ -300,19 +305,21 @@ function handleKeydown(e: KeyboardEvent) {
 .login-logo-icon {
   width: 40px;
   height: 40px;
-  background: #155eef;
-  border-radius: 6px;
+  background: linear-gradient(145deg, #ffe873, #ffda44);
+  border: 1px solid #efbd20;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: #171717;
   font-size: 22px;
   font-weight: bold;
 }
 
 .login-logo-text {
   font-size: 20px;
-  font-weight: 600;
+  font-weight: 750;
+  letter-spacing: -.025em;
   color: #1c1c1e;
 }
 
@@ -346,7 +353,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 .login-title {
   font-size: 22px;
-  font-weight: 600;
+  font-weight: 750;
   color: #1c1c1e;
   margin: 0;
   text-align: center;
@@ -384,16 +391,17 @@ function handleKeydown(e: KeyboardEvent) {
   font-size: 15px;
   color: #101828;
   background: #ffffff;
-  border: 1px solid #d0d5dd;
-  border-radius: 6px;
+  border: 1px solid #d9d6cc;
+  border-radius: 11px;
   outline: none;
   transition: all 0.2s;
   box-sizing: border-box;
 }
 
 .login-input:focus {
-  border-color: #155eef;
+  border-color: #d69b00;
   background: #ffffff;
+  box-shadow: 0 0 0 4px rgba(255, 198, 42, .20);
 }
 
 .login-input::placeholder {
@@ -489,12 +497,12 @@ function handleKeydown(e: KeyboardEvent) {
 .login-btn {
   width: 100%;
   height: 48px;
-  background: #155eef;
-  color: #fff;
-  border: none;
-  border-radius: 6px;
+  background: linear-gradient(180deg, #ffe36a, #ffda44);
+  color: #171717;
+  border: 1px solid #ffc62a;
+  border-radius: 11px;
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 750;
   cursor: pointer;
   transition: all 0.2s;
   display: flex;
@@ -502,10 +510,12 @@ function handleKeydown(e: KeyboardEvent) {
   justify-content: center;
   gap: 8px;
   margin-top: 4px;
+  box-shadow: 0 8px 18px rgba(214, 151, 0, .18);
 }
 
 .login-btn:hover {
-  background: #004eeb;
+  background: #ffc62a;
+  transform: translateY(-1px);
 }
 
 .login-btn:active {
@@ -520,7 +530,7 @@ function handleKeydown(e: KeyboardEvent) {
 .login-mode-btn {
   border: 0;
   background: transparent;
-  color: #155eef;
+  color: #795000;
   cursor: pointer;
   font-size: 14px;
 }
@@ -528,8 +538,8 @@ function handleKeydown(e: KeyboardEvent) {
 .login-btn-spinner {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top-color: #fff;
+  border: 2px solid rgba(23, 23, 23, 0.2);
+  border-top-color: #171717;
   border-radius: 50%;
   animation: login-spin 0.6s linear infinite;
 }
@@ -547,9 +557,15 @@ function handleKeydown(e: KeyboardEvent) {
 
 /* Responsive: Small phone */
 @media (max-width: 480px) {
+  .login-page {
+    align-items: flex-start;
+    padding: 12px;
+  }
+
   .login-card {
-    padding: 24px 20px;
-    border-radius: 12px;
+    margin-block: auto;
+    padding: 28px 20px;
+    border-radius: 18px;
   }
 
   .login-logo-icon {
@@ -567,12 +583,12 @@ function handleKeydown(e: KeyboardEvent) {
   }
 
   .login-input {
-    height: 42px;
-    font-size: 14px;
+    height: 46px;
+    font-size: 16px;
   }
 
   .login-btn {
-    height: 44px;
+    height: 48px;
     font-size: 15px;
   }
 }

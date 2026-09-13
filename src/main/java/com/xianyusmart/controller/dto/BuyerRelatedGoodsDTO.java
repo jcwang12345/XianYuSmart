@@ -23,5 +23,7 @@ public class BuyerRelatedGoodsDTO {
 
     private BigDecimal totalAmount;
 
+    private Long amountKnownOrderCount;
+
     private LocalDateTime lastOrderTime;
 }

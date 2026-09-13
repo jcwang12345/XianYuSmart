@@ -31,6 +31,8 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             "/api/order/list", "/api/order/detail", "/api/order/ratedetails");
     private static final Set<String> AI_READ_PATHS = Set.of(
             "/ai/status", "/ai/queryragdata", "/ai/getfixedmaterial", "/ai/chat", "/ai/chattest");
+    private static final Set<String> ADMIN_USER_READ_PATHS = Set.of(
+            "/api/admin/users/list", "/api/admin/users/permissions");
 
     private final PlatformPermissionService permissionService;
     private final Gson gson = new Gson();
@@ -47,7 +49,15 @@ public class AccessControlInterceptor implements HandlerInterceptor {
                 && Integer.valueOf(1).equals(currentUser.getStatus())
                 && SysUser.ROLE_ADMIN.equalsIgnoreCase(currentUser.getRole());
         if (uri.startsWith("/api/admin/users") && isTenantManager(currentUser)) {
-            return true;
+            if (ADMIN_USER_READ_PATHS.contains(uri) || "GET".equalsIgnoreCase(request.getMethod()) || isAdmin) {
+                return true;
+            }
+            if (permissionService.getPermissionCodeSet(currentUser)
+                    .contains(PermissionCatalog.ACTION_MEMBER_PERMISSION_WRITE)) {
+                return true;
+            }
+            writeForbidden(response, "当前账号没有修改成员权限的功能权限");
+            return false;
         }
         if (uri.startsWith("/api/admin")) {
             if (!isAdmin) {
@@ -89,6 +99,13 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveMenuPermission(String uri) {
+        if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
+        if (uri.startsWith("/api/account-groups")) return PermissionCatalog.MENU_ACCOUNTS;
+        if (uri.startsWith("/api/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
+        if (uri.startsWith("/api/order-matrix")) return PermissionCatalog.MENU_ORDERS;
+        if (uri.startsWith("/api/publishing")) return PermissionCatalog.MENU_OPERATIONS;
+        if (uri.startsWith("/api/product-matrix")) return PermissionCatalog.MENU_GOODS;
+        if (uri.startsWith("/api/account-matrix")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/automation-assist/reply-preference")) return PermissionCatalog.MENU_AUTO_REPLY;
         if (uri.startsWith("/api/automation-assist/skus")) return PermissionCatalog.MENU_AUTO_DELIVERY;
         if (uri.startsWith("/api/automation-assist/")) return PermissionCatalog.MENU_ORDERS;
@@ -159,20 +176,92 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (uri.equals("/api/business-analytics/refresh-local") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
+        if (uri.startsWith("/api/account-groups") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_ACCOUNT_WRITE;
+        }
+        if (uri.startsWith("/api/message-workspace/send/")
+                || uri.equals("/api/message-workspace/conversation/takeover")) return PermissionCatalog.ACTION_MESSAGE_SEND;
+        if (uri.equals("/api/message-workspace/conversation/update")) return PermissionCatalog.ACTION_BUYER_WRITE;
+        if (uri.startsWith("/api/order-matrix/refunds/") && uri.contains("/approve/")
+                && uri.endsWith("/execute")) return PermissionCatalog.ACTION_REFUND_APPROVE;
+        if (uri.startsWith("/api/order-matrix/refunds/") && uri.contains("/reject/")
+                && uri.endsWith("/execute")) return PermissionCatalog.ACTION_REFUND_REJECT;
+        if (uri.startsWith("/api/order-matrix/") && !"GET".equalsIgnoreCase(method)
+                && !uri.endsWith("/query") && !uri.endsWith("/preview")) {
+            return PermissionCatalog.ACTION_ORDER_WRITE;
+        }
+        if (uri.equals("/api/publishing/execute")) return PermissionCatalog.ACTION_OPERATIONS_WRITE;
+        if (uri.startsWith("/api/product-matrix/batches/delete/")) {
+            return PermissionCatalog.ACTION_GOODS_DELETE;
+        }
+        if (uri.startsWith("/api/product-matrix/batches/change-price/")
+                || uri.startsWith("/api/product-matrix/batches/change_price/")) {
+            return PermissionCatalog.ACTION_GOODS_BATCH_PRICE;
+        }
+        if (uri.startsWith("/api/product-matrix/batches/")
+                && (uri.endsWith("/create") || uri.endsWith("/retry"))) {
+            return PermissionCatalog.ACTION_GOODS_WRITE;
+        }
+        if (uri.startsWith("/api/product-matrix/filters") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_GOODS_WRITE;
+        }
+        if (uri.equals("/api/product-matrix/products/export")) return PermissionCatalog.ACTION_GOODS_WRITE;
+        if (uri.equals("/api/account/delete")) {
+            return PermissionCatalog.ACTION_ACCOUNT_DELETE;
+        }
+        if (uri.startsWith("/api/account-matrix/batch")) {
+            return PermissionCatalog.ACTION_ACCOUNT_BATCH;
+        }
+        if (uri.startsWith("/api/account-matrix/") && uri.endsWith("/risks/export")) {
+            return PermissionCatalog.ACTION_RISK_EXPORT;
+        }
+        if (uri.startsWith("/api/account-matrix/risks/") && uri.endsWith("/handling")) {
+            return PermissionCatalog.ACTION_RISK_HANDLE;
+        }
+        if (uri.startsWith("/api/account-matrix/") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_ACCOUNT_WRITE;
+        }
+        if (uri.equals("/api/items/delete")) {
+            return PermissionCatalog.ACTION_GOODS_DELETE;
+        }
+        if (uri.startsWith("/api/items/batch-price")) {
+            return PermissionCatalog.ACTION_GOODS_BATCH_PRICE;
+        }
+        if (uri.equals("/api/kami-config/item/export")) {
+            return PermissionCatalog.ACTION_KAMI_EXPORT;
+        }
+        if (uri.startsWith("/api/operation-log/export")) {
+            return PermissionCatalog.ACTION_AUDIT_EXPORT;
+        }
+        if (uri.startsWith("/api/order/refunds/") && uri.endsWith("/approve")) {
+            return PermissionCatalog.ACTION_REFUND_APPROVE;
+        }
+        if (uri.startsWith("/api/order/refunds/") && uri.endsWith("/reject")) {
+            return PermissionCatalog.ACTION_REFUND_REJECT;
+        }
         if (!"GET".equalsIgnoreCase(method) && uri.startsWith("/api/automation-assist/")) {
             if (uri.endsWith("reply-preference")) return PermissionCatalog.ACTION_AUTOMATION_WRITE;
             if (uri.contains("/skus")) return PermissionCatalog.ACTION_GOODS_WRITE;
             return PermissionCatalog.ACTION_ORDER_WRITE;
         }
-        if (uri.startsWith("/api/account")
+        if (uri.startsWith("/api/account/")
                 && !uri.equals("/api/account/list") && !uri.equals("/api/account/detail")) {
             return PermissionCatalog.ACTION_ACCOUNT_WRITE;
         }
         if (uri.startsWith("/api/qrlogin")) {
-            return PermissionCatalog.ACTION_ACCOUNT_WRITE;
+            return PermissionCatalog.ACTION_CREDENTIAL_WRITE;
         }
         if (uri.equals("/api/websocket/sendmessage") || uri.equals("/api/websocket/sendimagemessage")) {
             return PermissionCatalog.ACTION_MESSAGE_SEND;
+        }
+        if ((uri.startsWith("/api/websocket/updatecookie")
+                || uri.startsWith("/api/websocket/refreshtoken")
+                || uri.startsWith("/api/websocket/updatetoken")
+                || uri.startsWith("/api/websocket/refreshcookie"))) {
+            return PermissionCatalog.ACTION_CREDENTIAL_WRITE;
         }
         if (uri.startsWith("/api/websocket")
                 && !uri.equals("/api/websocket/status") && !uri.equals("/api/websocket/checklogin")) {

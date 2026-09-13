@@ -25,8 +25,8 @@ public class JwtUtil {
     @Value("${jwt.secret}")
     private String secret;
 
-    @Value("${jwt.expiration:28800000}")
-    private long expiration; // 默认8小时（毫秒）
+    @Value("${jwt.expiration:1800000}")
+    private long expiration; // 默认30分钟（毫秒），由轮换 refresh token 延续会话
 
     @PostConstruct
     public void validateSecret() {

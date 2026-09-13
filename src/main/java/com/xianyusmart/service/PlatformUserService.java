@@ -34,16 +34,19 @@ public class PlatformUserService {
     private final SysLoginTokenMapper loginTokenMapper;
     private final PlatformPermissionService permissionService;
     private final AccountAccessService accountAccessService;
+    private final OperationLogService operationLogService;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     public PlatformUserService(SysUserMapper userMapper,
                                SysLoginTokenMapper loginTokenMapper,
                                PlatformPermissionService permissionService,
-                               AccountAccessService accountAccessService) {
+                               AccountAccessService accountAccessService,
+                               OperationLogService operationLogService) {
         this.userMapper = userMapper;
         this.loginTokenMapper = loginTokenMapper;
         this.permissionService = permissionService;
         this.accountAccessService = accountAccessService;
+        this.operationLogService = operationLogService;
     }
 
     public Map<String, Object> list() {
@@ -62,6 +65,7 @@ public class PlatformUserService {
 
     @Transactional
     public PlatformUserRespDTO save(PlatformUserSaveReqDTO request) {
+        String requestId=requireRequestId(request==null?null:request.getRequestId());
         assertPlatformRoleChangeAllowed(request.getId(), request.getRole());
         String role = normalizeRole(request.getRole());
         String memberRole = normalizeMemberRole(request.getMemberRole(), role);
@@ -80,12 +84,15 @@ public class PlatformUserService {
         } else {
             permissionService.replacePermissions(user.getId(), permissions);
         }
-        accountAccessService.replaceScope(user.getId(), user.getTenantId(), scopeMode, request.getAccountIds());
+        accountAccessService.replaceScope(user.getId(), user.getTenantId(), scopeMode,
+                request.getAccountIds(), request.getAccountGroupIds());
+        audit("TEAM_MEMBER_SAVE","保存团队成员",user.getId(),requestId);
         return toResponse(userMapper.selectById(user.getId()));
     }
 
     @Transactional
     public void resetPassword(PlatformUserPasswordReqDTO request) {
+        String requestId=requireRequestId(request==null?null:request.getRequestId());
         if (request.getUserId() == null) {
             throw new BusinessException(400, "账号ID不能为空");
         }
@@ -103,6 +110,7 @@ public class PlatformUserService {
         user.setUpdatedTime(now());
         userMapper.updateById(user);
         revokeTokens(user.getId());
+        audit("TEAM_MEMBER_PASSWORD_RESET","重置团队成员密码并撤销设备会话",user.getId(),requestId);
     }
 
     public List<PermissionCatalog.PermissionOption> permissionOptions() {
@@ -278,6 +286,7 @@ public class PlatformUserService {
         response.setMemberRole(user.getMemberRole());
         response.setAccountScopeMode(user.getAccountScopeMode());
         response.setAccountIds(accountAccessService.getAccountIds(user.getId()));
+        response.setAccountGroupIds(accountAccessService.getGroupIds(user.getId()));
         response.setStatus(user.getStatus());
         response.setPermissions(permissionService.getPermissionCodes(user.getId()));
         response.setLastLoginTime(user.getLastLoginTime());
@@ -296,5 +305,18 @@ public class PlatformUserService {
             throw new BusinessException(401, "登录状态已失效");
         }
         return tenantId;
+    }
+
+    private String requireRequestId(String value){
+        if(value==null||value.trim().isEmpty())throw new BusinessException(400,"requestId不能为空");
+        String text=value.trim();if(text.length()>80)throw new BusinessException(400,"requestId不能超过80个字符");return text;
+    }
+
+    private void audit(String type,String description,Long targetId,String requestId){
+        com.xianyusmart.entity.XianyuOperationLog event=new com.xianyusmart.entity.XianyuOperationLog();
+        event.setOperationType(type);event.setOperationModule("团队与权限");event.setOperationDesc(description);
+        event.setOperationStatus(1);event.setTargetType("SYS_USER");event.setTargetId(String.valueOf(targetId));
+        event.setRequestId(requestId);event.setIdempotencyKey(requestId);event.setOutcomeState("LOCAL_SUCCESS");event.setDataSource("LOCAL");
+        operationLogService.log(event);
     }
 }

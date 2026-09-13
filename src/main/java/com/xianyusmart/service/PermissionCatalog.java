@@ -35,6 +35,18 @@ public final class PermissionCatalog {
     public static final String ACTION_ORDER_WRITE = "action:order-write";
     public static final String ACTION_AUTOMATION_WRITE = "action:automation-write";
     public static final String ACTION_SYSTEM_WRITE = "action:system-write";
+    public static final String ACTION_ACCOUNT_DELETE = "action:account-delete";
+    public static final String ACTION_CREDENTIAL_WRITE = "action:credential-write";
+    public static final String ACTION_ACCOUNT_BATCH = "action:account-batch";
+    public static final String ACTION_RISK_EXPORT = "action:risk-export";
+    public static final String ACTION_RISK_HANDLE = "action:risk-handle";
+    public static final String ACTION_GOODS_DELETE = "action:goods-delete";
+    public static final String ACTION_GOODS_BATCH_PRICE = "action:goods-batch-price";
+    public static final String ACTION_REFUND_APPROVE = "action:refund-approve";
+    public static final String ACTION_REFUND_REJECT = "action:refund-reject";
+    public static final String ACTION_KAMI_EXPORT = "action:kami-export";
+    public static final String ACTION_AUDIT_EXPORT = "action:audit-export";
+    public static final String ACTION_MEMBER_PERMISSION_WRITE = "action:member-permission-write";
 
     private static final List<PermissionOption> OPTIONS = List.of(
             menu(MENU_DASHBOARD, "经营面板", "经营"),
@@ -62,7 +74,19 @@ public final class PermissionCatalog {
             action(ACTION_DELIVERY_WRITE, "配置及执行发货", "履约"),
             action(ACTION_ORDER_WRITE, "处理订单与评价", "履约"),
             action(ACTION_AUTOMATION_WRITE, "配置回复与知识库", "自动化"),
-            action(ACTION_SYSTEM_WRITE, "修改系统与通知设置", "系统")
+            action(ACTION_SYSTEM_WRITE, "修改系统与通知设置", "系统"),
+            action(ACTION_ACCOUNT_DELETE, "删除闲鱼账号", "高风险账号操作"),
+            action(ACTION_CREDENTIAL_WRITE, "更新登录凭据", "高风险账号操作"),
+            action(ACTION_ACCOUNT_BATCH, "批量操作闲鱼账号", "高风险账号操作"),
+            action(ACTION_RISK_EXPORT, "导出账号风险", "账号风险"),
+            action(ACTION_RISK_HANDLE, "标记风险处理进度", "账号风险"),
+            action(ACTION_GOODS_DELETE, "删除商品", "高风险商品操作"),
+            action(ACTION_GOODS_BATCH_PRICE, "批量调整商品价格", "高风险商品操作"),
+            action(ACTION_REFUND_APPROVE, "同意退款", "高风险履约操作"),
+            action(ACTION_REFUND_REJECT, "拒绝退款", "高风险履约操作"),
+            action(ACTION_KAMI_EXPORT, "导出卡密", "敏感数据"),
+            action(ACTION_AUDIT_EXPORT, "导出操作审计", "敏感数据"),
+            action(ACTION_MEMBER_PERMISSION_WRITE, "修改成员权限", "高风险系统操作")
     );
 
     private static final Set<String> CODES = OPTIONS.stream()

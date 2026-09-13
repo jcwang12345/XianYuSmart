@@ -28,6 +28,10 @@ public class NotificationChannelRespDTO {
 
     private List<String> eventTypes;
 
+    private String scopeType;
+
+    private List<Long> scopeIds;
+
     private Boolean enabled;
 
     private LocalDateTime lastSuccessTime;

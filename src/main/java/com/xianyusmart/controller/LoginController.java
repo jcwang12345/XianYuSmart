@@ -79,6 +79,9 @@ public class LoginController {
 
             LoginRespDTO respDTO = new LoginRespDTO();
             respDTO.setToken(respBO.getToken());
+            respDTO.setRefreshToken(respBO.getRefreshToken());
+            respDTO.setAccessTokenExpiresInMs(respBO.getAccessTokenExpiresInMs());
+            respDTO.setRefreshTokenExpireTime(respBO.getRefreshTokenExpireTime());
             respDTO.setUsername(respBO.getUsername());
             return ResultObject.success(respDTO);
         } catch (Exception e) {
@@ -127,6 +130,9 @@ public class LoginController {
 
             LoginRespDTO respDTO = new LoginRespDTO();
             respDTO.setToken(respBO.getToken());
+            respDTO.setRefreshToken(respBO.getRefreshToken());
+            respDTO.setAccessTokenExpiresInMs(respBO.getAccessTokenExpiresInMs());
+            respDTO.setRefreshTokenExpireTime(respBO.getRefreshTokenExpireTime());
             respDTO.setUsername(respBO.getUsername());
             return ResultObject.success(respDTO);
         } catch (Exception e) {
@@ -135,6 +141,22 @@ public class LoginController {
             String ip = getClientIp(request);
             authService.recordLoginFailure(ip);
             return ResultObject.failed(e.getMessage());
+        }
+    }
+
+    @PostMapping("/refresh")
+    public ResultObject<LoginRespDTO> refresh(@RequestBody RefreshRequest body, HttpServletRequest request) {
+        try {
+            String deviceId = request.getHeader("User-Agent");
+            if (deviceId != null && deviceId.length() > 100) deviceId = deviceId.substring(0, 100);
+            LoginRespBO result = authService.refresh(body == null ? null : body.refreshToken(), getClientIp(request), deviceId);
+            LoginRespDTO response = new LoginRespDTO();
+            response.setToken(result.getToken()); response.setRefreshToken(result.getRefreshToken());
+            response.setAccessTokenExpiresInMs(result.getAccessTokenExpiresInMs());
+            response.setRefreshTokenExpireTime(result.getRefreshTokenExpireTime()); response.setUsername(result.getUsername());
+            return ResultObject.success(response);
+        } catch (Exception e) {
+            return ResultObject.failed(401, e.getMessage());
         }
     }
 
@@ -176,4 +198,6 @@ public class LoginController {
         }
         return ip;
     }
+
+    public record RefreshRequest(String refreshToken) {}
 }

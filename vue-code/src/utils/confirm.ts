@@ -14,8 +14,8 @@ export function showConfirm(message: string, title: string = '确认'): Promise<
     dialog.setAttribute('aria-labelledby', 'confirm-title')
     dialog.setAttribute('aria-describedby', 'confirm-message')
     dialog.style.cssText = `
-      width:380px;max-width:100%;overflow:hidden;background:#fff;border:1px solid #e4e7ec;
-      border-radius:10px;box-shadow:0 20px 48px rgba(16,24,40,.18);font-family:inherit;
+      width:400px;max-width:100%;overflow:hidden;background:#fff;border:1px solid #e8e6df;
+      border-radius:16px;box-shadow:0 24px 64px rgba(28,25,15,.22);font-family:inherit;
     `
 
     const content = document.createElement('div')
@@ -31,15 +31,15 @@ export function showConfirm(message: string, title: string = '确认'): Promise<
     content.append(titleElement, messageElement)
 
     const actions = document.createElement('div')
-    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid #eaecf0;background:#f9fafb;'
+    actions.style.cssText = 'display:flex;justify-content:flex-end;gap:10px;padding:14px 22px;border-top:1px solid #e8e6df;background:#faf9f5;'
     const cancelButton = document.createElement('button')
     cancelButton.type = 'button'
     cancelButton.textContent = '取消'
-    cancelButton.style.cssText = 'height:36px;padding:0 14px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#344054;cursor:pointer;font-weight:500;'
+    cancelButton.style.cssText = 'height:40px;padding:0 16px;border:1px solid #d9d6cc;border-radius:10px;background:#fff;color:#3f3d38;cursor:pointer;font-weight:600;'
     const confirmButton = document.createElement('button')
     confirmButton.type = 'button'
     confirmButton.textContent = '确定'
-    confirmButton.style.cssText = 'height:36px;padding:0 14px;border:1px solid #155eef;border-radius:6px;background:#155eef;color:#fff;cursor:pointer;font-weight:600;'
+    confirmButton.style.cssText = 'height:40px;padding:0 16px;border:1px solid #ffc62a;border-radius:10px;background:#ffda44;color:#171717;cursor:pointer;font-weight:700;box-shadow:0 5px 14px rgba(214,151,0,.16);'
     actions.append(cancelButton, confirmButton)
     dialog.append(content, actions)
     overlay.appendChild(dialog)

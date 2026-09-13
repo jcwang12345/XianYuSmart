@@ -44,12 +44,16 @@ public class UserSessionService {
         if (deleted == 0) throw new BusinessException(404, "会话不存在");
     }
 
-    public void revokeOthers(Long keepSessionId) {
+    public int revokeOthers(Long keepSessionId) {
         Long userId = requireUserId();
+        if (keepSessionId == null) throw new BusinessException(400, "必须指定要保留的当前会话");
+        Long own = tokenMapper.selectCount(new LambdaQueryWrapper<SysLoginToken>()
+                .eq(SysLoginToken::getId, keepSessionId).eq(SysLoginToken::getUserId, userId));
+        if (own == null || own == 0) throw new BusinessException(404, "要保留的会话不存在");
         LambdaQueryWrapper<SysLoginToken> wrapper = new LambdaQueryWrapper<SysLoginToken>()
                 .eq(SysLoginToken::getUserId, userId);
-        if (keepSessionId != null) wrapper.ne(SysLoginToken::getId, keepSessionId);
-        tokenMapper.delete(wrapper);
+        wrapper.ne(SysLoginToken::getId, keepSessionId);
+        return tokenMapper.delete(wrapper);
     }
 
     private Long requireUserId() {

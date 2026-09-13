@@ -32,9 +32,19 @@ public interface OperationLogService {
      */
     Map<String, Object> queryLogs(Long accountId, String operationType, String operationModule,
                                    Integer operationStatus, Integer page, Integer pageSize);
+
+    Map<String, Object> queryLogs(AuditLogQuery query);
+
+    String exportCsv(AuditLogQuery query);
     
     /**
      * 删除指定天数之前的日志
      */
     int deleteOldLogs(int days);
+
+    record AuditLogQuery(Long accountId, String operationType, String operationModule,
+                         Integer operationStatus, String outcomeState, String operatorUsername,
+                         String requestId, Long startTime, Long endTime, String keyword,
+                         Integer page, Integer pageSize) {
+    }
 }

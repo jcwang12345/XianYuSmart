@@ -352,6 +352,14 @@ public class XianyuApiCallUtils {
             return tokenExpired;
         }
 
+        /** 写请求无平台响应时不能判断“未执行”，调用方必须进入人工查询结果状态。 */
+        public boolean isOutcomeUnknown() {
+            if (success || response != null) return false;
+            String message = errorMessage == null ? "" : errorMessage.toLowerCase(java.util.Locale.ROOT);
+            return message.contains("响应为空") || message.contains("调用异常")
+                    || message.contains("timeout") || message.contains("timed out") || message.contains("超时");
+        }
+
         public boolean isGuardBlocked() {
             return guardState == RiskControlService.GuardState.RATE_WAIT
                     || guardState == RiskControlService.GuardState.CIRCUIT_OPEN;

@@ -17,6 +17,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.time.Duration;
 import java.util.List;
@@ -33,6 +34,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 
 @ExtendWith(MockitoExtension.class)
 class NotificationCenterServiceOutboxTest {
@@ -48,6 +50,14 @@ class NotificationCenterServiceOutboxTest {
     private XianyuAccountMapper accountMapper;
     @Mock
     private PinnedHttpsClient httpsClient;
+    @Mock
+    private NotificationInboxService inboxService;
+    @Mock
+    private JdbcTemplate jdbcTemplate;
+    @Mock
+    private AccountAccessService accountAccessService;
+    @Mock
+    private OperationLogService operationLogService;
 
     private NotificationCenterService service;
     private XianyuNotificationChannel channel;
@@ -55,7 +65,7 @@ class NotificationCenterServiceOutboxTest {
     @BeforeEach
     void setUp() {
         service = new NotificationCenterService(channelMapper, logMapper, outboxMapper,
-                accountMapper, httpsClient, new ObjectMapper());
+                accountMapper, httpsClient, inboxService, jdbcTemplate, accountAccessService, operationLogService, new ObjectMapper());
         ReflectionTestUtils.setField(service, "maxAttempts", 5);
         ReflectionTestUtils.setField(service, "leaseSeconds", 60);
 
@@ -66,6 +76,7 @@ class NotificationCenterServiceOutboxTest {
         channel.setChannelName("企业微信");
         channel.setEnabled(1);
         channel.setEventTypes("ORDER_CREATED,DELIVERY_SUCCESS");
+        channel.setScopeType("ALL");
         channel.setConfigJson("{\"webhookUrl\":\"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test\"}");
     }
 
@@ -107,6 +118,17 @@ class NotificationCenterServiceOutboxTest {
         List<XianyuNotificationOutbox> tasks = captor.getAllValues();
         assertEquals(tasks.get(0).getDedupeKey(), tasks.get(1).getDedupeKey());
         assertTrue(tasks.get(0).getDedupeKey().startsWith("account:4:reminder-window:"));
+    }
+
+    @Test
+    void accountScopedChannelDoesNotReceiveAnotherStoresEvent() {
+        TenantContext.set(7L);
+        channel.setScopeType("ACCOUNTS");
+        channel.setScopeIdsJson("[99]");
+        when(channelMapper.selectEnabled()).thenReturn(List.of(channel));
+        service.dispatch("ORDER_CREATED",1L,"新订单","待发货",Map.of("orderId","order-1"));
+        verify(inboxService).record(eq("ORDER_CREATED"),eq(1L),anyString(),anyString(),anyMap());
+        verify(outboxMapper,never()).insert(any());
     }
 
     @Test

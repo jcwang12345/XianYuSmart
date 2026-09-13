@@ -5,6 +5,7 @@ import com.xianyusmart.controller.dto.NotificationChannelReqDTO;
 import com.xianyusmart.controller.dto.NotificationChannelRespDTO;
 import com.xianyusmart.entity.XianyuNotificationLog;
 import com.xianyusmart.service.NotificationCenterService;
+import com.xianyusmart.service.NotificationInboxService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,9 +27,12 @@ import java.util.Map;
 public class NotificationCenterController {
 
     private final NotificationCenterService notificationCenterService;
+    private final NotificationInboxService notificationInboxService;
 
-    public NotificationCenterController(NotificationCenterService notificationCenterService) {
+    public NotificationCenterController(NotificationCenterService notificationCenterService,
+                                        NotificationInboxService notificationInboxService) {
         this.notificationCenterService = notificationCenterService;
+        this.notificationInboxService = notificationInboxService;
     }
 
     @GetMapping("/channels")
@@ -47,9 +51,9 @@ public class NotificationCenterController {
     }
 
     @DeleteMapping("/channels/{id}")
-    public ResultObject<Void> deleteChannel(@PathVariable Long id) {
+    public ResultObject<Void> deleteChannel(@PathVariable Long id,@RequestParam String requestId) {
         try {
-            notificationCenterService.deleteChannel(id);
+            notificationCenterService.deleteChannel(id,requestId);
             return ResultObject.success(null);
         } catch (Exception e) {
             return ResultObject.failed(e.getMessage());
@@ -70,4 +74,28 @@ public class NotificationCenterController {
             @RequestParam(required = false) Integer limit) {
         return ResultObject.success(notificationCenterService.listLogs(limit));
     }
+
+    @GetMapping("/inbox")
+    public ResultObject<Map<String, Object>> inbox(
+            @RequestParam(required = false) String view,
+            @RequestParam(required = false) Long accountId,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) Integer page,
+            @RequestParam(required = false) Integer pageSize) {
+        return ResultObject.success(notificationInboxService.list(view, accountId, search, page, pageSize));
+    }
+
+    @PostMapping("/inbox/{id}/read")
+    public ResultObject<Void> read(@PathVariable Long id) {
+        notificationInboxService.markRead(id);
+        return ResultObject.success(null);
+    }
+
+    @PostMapping("/inbox/{id}/handling")
+    public ResultObject<Void> handle(@PathVariable Long id, @RequestBody HandlingRequest request) {
+        notificationInboxService.handle(id, request.status(), request.note());
+        return ResultObject.success(null);
+    }
+
+    public record HandlingRequest(String status, String note) {}
 }

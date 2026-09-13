@@ -22,6 +22,14 @@ public class SysLoginToken {
     /** JWT Token */
     private String token;
 
+    private String refreshTokenHash;
+
+    private String previousRefreshTokenHash;
+
+    private String refreshExpireTime;
+
+    private String refreshRotatedTime;
+
     /** 设备标识 */
     private String deviceId;
 

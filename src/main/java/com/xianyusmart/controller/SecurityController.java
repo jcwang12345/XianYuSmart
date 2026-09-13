@@ -63,5 +63,12 @@ public class SecurityController {
         return ResultObject.success(null);
     }
 
+    @PostMapping("/sessions/revoke-others")
+    public ResultObject<Map<String,Object>> revokeOthers(@Valid @RequestBody RevokeOthersRequest request) {
+        int revoked = sessionService.revokeOthers(request.keepSessionId());
+        return ResultObject.success(Map.of("revokedCount", revoked, "keptSessionId", request.keepSessionId()));
+    }
+
     public record CodeRequest(@NotBlank String code) { }
+    public record RevokeOthersRequest(@NotNull @Positive Long keepSessionId) { }
 }

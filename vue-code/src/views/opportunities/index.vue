@@ -7,6 +7,7 @@ import MediaUploader from '@/components/MediaUploader.vue'
 import type { PublishAddress } from '@/data/publish-address'
 import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
+import { MATERIAL_CATEGORY_OPTIONS } from '@/constants/productOptions'
 import '@/styles/merchant-workbench.css'
 
 const accounts = ref<Account[]>([])
@@ -266,7 +267,7 @@ onMounted(loadAccounts)
         <div class="workbench__grid workbench__grid--two">
           <label class="workbench__field">价格<input v-model.number="draft.amount" class="workbench__input" type="number" min="0.01" step="0.01"></label>
           <label class="workbench__field">库存<input v-model.number="draft.stock" class="workbench__input" type="number" min="1"></label>
-          <label class="workbench__field">素材分类<input v-model="draft.category" class="workbench__input"><small>仅用于站内整理，真实类目由闲鱼发布接口识别。</small></label>
+          <label class="workbench__field">素材分类<select v-model="draft.category" class="workbench__select"><option v-for="item in MATERIAL_CATEGORY_OPTIONS" :key="item.value" :value="item.value">{{ item.label }}</option></select><small>仅用于站内整理，真实类目由闲鱼发布接口识别。</small></label>
           <label class="workbench__field">交付方式<select v-model="draft.deliveryMethod" class="workbench__select"><option>线上交付</option><option>快递发货</option><option>当面交易</option></select></label>
           <PublishAddressFields v-model="publishAddress" />
           <label class="workbench__field">或粘贴图片地址（每行一张）<textarea :value="draft.images.join('\n')" class="workbench__textarea" placeholder="支持 HTTPS 图片地址或上一步上传" @input="draft.images = ($event.target as HTMLTextAreaElement).value.split('\n').map(v => v.trim()).filter(Boolean)"></textarea></label>
@@ -300,7 +301,7 @@ onMounted(loadAccounts)
 .opportunity__result { width: 100%; min-width: 0; grid-template-columns: auto 56px minmax(0, 1fr) auto; color: inherit; text-align: left; cursor: pointer; }
 .opportunity__result-copy { min-width: 0; }
 .opportunity__result > strong { white-space: nowrap; }
-.opportunity__result--active { border-color: #84adff; background: #f5f8ff; }
+.opportunity__result--active { border-color: #efc852; background: #fffdf2; }
 .opportunity__preview { position: sticky; top: 16px; align-self: start; }
 .opportunity__preview > img { width: 100%; aspect-ratio: 4 / 3; border-radius: 8px; object-fit: cover; }
 .opportunity__preview h2 { display: -webkit-box; overflow: hidden; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }

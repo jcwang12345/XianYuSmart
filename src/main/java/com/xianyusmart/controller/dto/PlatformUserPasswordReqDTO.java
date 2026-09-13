@@ -11,4 +11,6 @@ public class PlatformUserPasswordReqDTO {
     private Long userId;
 
     private String newPassword;
+
+    private String requestId;
 }

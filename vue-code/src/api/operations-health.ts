@@ -36,6 +36,8 @@ export interface NotificationChannel {
   config: Record<string, string>
   messageTemplate?: string
   eventTypes: string[]
+  scopeType: 'ALL' | 'GROUPS' | 'ACCOUNTS'
+  scopeIds: number[]
   enabled: boolean
   lastSuccessTime?: string
   lastErrorMessage?: string
@@ -100,17 +102,31 @@ export const saveNotificationChannel = (data: {
   config: Record<string, string>
   messageTemplate: string
   eventTypes: string[]
+  scopeType: 'ALL' | 'GROUPS' | 'ACCOUNTS'
+  scopeIds: number[]
   enabled: boolean
+  requestId: string
 }) => request<NotificationChannel>({
   url: '/notifications/channels',
   method: 'POST',
   data
 })
 
-export const deleteNotificationChannel = (id: number) => request<void>({
+export const deleteNotificationChannel = (id: number, requestId: string) => request<void>({
   url: `/notifications/channels/${id}`,
-  method: 'DELETE'
+  method: 'DELETE',
+  params: { requestId }
 })
+
+export interface InboxNotification {
+  id: number; eventId: string; eventType: string; accountId?: number; accountName?: string;
+  severity: string; title: string; contentSummary: string; targetRoute: string;
+  readTime?: string; handlingStatus: string; handlingNote?: string; occurredTime: string
+}
+
+export const getNotificationInbox = (params: Record<string, unknown> = {}) => request<{ records: InboxNotification[]; total: number; page: number; pageSize: number; totalPages: number }>({ url: '/notifications/inbox', method: 'GET', params })
+export const markNotificationRead = (id: number) => request<void>({ url: `/notifications/inbox/${id}/read`, method: 'POST' })
+export const updateNotificationHandling = (id: number, status: string, note = '') => request<void>({ url: `/notifications/inbox/${id}/handling`, method: 'POST', data: { status, note } })
 
 export const testNotificationChannel = (id: number) => request<{ httpStatus: number; message: string }>({
   url: `/notifications/channels/${id}/test`,

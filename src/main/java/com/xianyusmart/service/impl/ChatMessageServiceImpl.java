@@ -11,6 +11,8 @@ import com.xianyusmart.controller.dto.MsgListReqDTO;
 import com.xianyusmart.controller.dto.MsgListRespDTO;
 import com.xianyusmart.service.ChatMessageService;
 import com.xianyusmart.service.PlatformHistoryMessageParser;
+import com.xianyusmart.service.ConversationAssignmentService;
+import com.xianyusmart.service.ConversationAssignmentService;
 import com.xianyusmart.service.WebSocketService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +43,9 @@ public class ChatMessageServiceImpl implements ChatMessageService {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private ConversationAssignmentService conversationAssignmentService;
     
     @Override
     public List<XianyuChatMessage> getMessagesByAccountId(Long accountId, int page, int pageSize) {
@@ -186,15 +191,25 @@ public class ChatMessageServiceImpl implements ChatMessageService {
         }
         int maxMessages = reqDTO.getMaxMessages() == null ? 500
                 : Math.max(20, Math.min(reqDTO.getMaxMessages(), 500));
-        List<java.util.Map<String, Object>> history = webSocketService.listConversationHistory(
-                reqDTO.getXianyuAccountId(), reqDTO.getSid(), maxMessages);
-        List<XianyuChatMessage> messages = new PlatformHistoryMessageParser(objectMapper).parse(
-                reqDTO.getXianyuAccountId(), reqDTO.getSid(), history);
-        int saved = 0;
-        for (XianyuChatMessage message : messages) {
-            chatMessageMapper.insert(message);
-            saved++;
+        try {
+            List<java.util.Map<String, Object>> history = webSocketService.listConversationHistory(
+                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), maxMessages);
+            List<XianyuChatMessage> messages = new PlatformHistoryMessageParser(objectMapper).parse(
+                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), history);
+            int saved = 0;
+            for (XianyuChatMessage message : messages) {
+                chatMessageMapper.insert(message);
+                saved++;
+            }
+            conversationAssignmentService.markHistorySync(
+                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), history.size(), maxMessages, null);
+            return ResultObject.success(java.util.Map.of(
+                    "received", history.size(), "saved", saved,
+                    "coverageStatus", history.size() < maxMessages ? "FULL" : "PARTIAL"));
+        } catch (Exception e) {
+            conversationAssignmentService.markHistorySync(
+                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), 0, maxMessages, e.getMessage());
+            throw new IllegalStateException("平台历史消息同步失败: " + e.getMessage(), e);
         }
-        return ResultObject.success(java.util.Map.of("received", history.size(), "saved", saved));
     }
 }

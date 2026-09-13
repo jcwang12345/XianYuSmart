@@ -238,7 +238,7 @@ select, input { height: 38px; padding: 0 11px; }
 textarea { padding: 10px 11px; line-height: 1.55; resize: vertical; }
 .fixed-template-actions select { width: 180px; }
 button { border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color: #344054; cursor: pointer; height: 34px; padding: 0 12px; }
-.primary-btn { border-color: #155eef; background: #155eef; color: #fff; }
+.primary-btn { border-color: #9a6200; background: #9a6200; color: #fff; }
 .fixed-template-panel { min-height: 240px; padding: 18px; border: 1px solid #e4e7ec; border-radius: 10px; background: #fff; }
 .empty-state { padding: 72px 20px; color: #98a2b3; text-align: center; }
 .template-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
@@ -257,7 +257,7 @@ dd { margin: 5px 0 0; color: #344054; font-size: 13px; line-height: 1.55; white-
 .template-dialog label { display: grid; gap: 7px; margin-top: 14px; color: #344054; font-size: 13px; font-weight: 600; }
 .template-label-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .template-label-row > span { display: flex; flex-wrap: wrap; gap: 5px; }
-.template-label-row button { height: 27px; padding: 0 8px; color: #155eef; font-size: 12px; }
+.template-label-row button { height: 27px; padding: 0 8px; color: #9a6200; font-size: 12px; }
 .template-field-count { color: #667085; font-size: 12px; font-weight: 400; text-align: right; }
 .template-preview { margin-top: 14px; padding: 12px; border: 1px solid #e4e7ec; border-radius: 7px; background: #f9fafb; }
 .template-preview strong { font-size: 12px; }

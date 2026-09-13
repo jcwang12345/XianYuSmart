@@ -1,98 +1,50 @@
 <script setup lang="ts">
-import { useAccountManager } from './useAccountManager'
-import AccountTable from './components/AccountTable.vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AddAccountDialog from './components/AddAccountDialog.vue'
 import ManualAddDialog from './components/ManualAddDialog.vue'
 import QRLoginDialog from './components/QRLoginDialog.vue'
-import DeleteConfirmDialog from './components/DeleteConfirmDialog.vue'
+import { getAccountGroups, getAccountMatrixDetail, getAccountMatrixSummary, queryAccountMatrix, replaceAccountGroupMembers, saveAccountGroup, newRequestId, type AccountGroup, type AccountMatrixSummary, type MatrixAccount } from '@/api/matrix'
+import { showError, showSuccess } from '@/utils'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
-import IconQrCode from '@/components/icons/IconQrCode.vue'
-import IconPlus from '@/components/icons/IconPlus.vue'
-import IconSync from '@/components/icons/IconSync.vue'
-
-const {
-  loading,
-  accounts,
-  dialogs,
-  currentAccount,
-  deleteAccountId,
-  loadAccounts,
-  showAddDialog,
-  showManualAddDialog,
-  showQRLoginDialog,
-  editAccount,
-  deleteAccount
-} = useAccountManager();
-
-loadAccounts();
+const route=useRoute(),router=useRouter()
+const loading=ref(false),summary=ref<AccountMatrixSummary|null>(null),accounts=ref<MatrixAccount[]>([]),allAccounts=ref<MatrixAccount[]>([]),groups=ref<AccountGroup[]>([]),total=ref(0),page=ref(1)
+const filter=reactive({search:'',connectionStatus:'',riskSeverity:'',groupId:undefined as number|undefined})
+const selected=ref<MatrixAccount|null>(null),detailLoading=ref(false),showQr=ref(false),showManual=ref(false),showEdit=ref(false)
+const groupDialog=ref(false),groupSaving=ref(false),groupForm=reactive({id:undefined as number|undefined,groupName:'',color:'#ffda44',description:'',accountIds:[] as number[]})
+useModalFocusTrap(groupDialog,()=>document.querySelector<HTMLElement>('.account-matrix .modal-card'))
+const totalPages=computed(()=>Math.max(1,Math.ceil(total.value/20)))
+const unknown=(v:unknown)=>v===null||v===undefined||v===''?'—':String(v)
+const statusLabel=(v?:string)=>({CONNECTED:'正常',DEGRADED:'波动',EXPIRED:'已过期',DISCONNECTED:'离线',UNKNOWN:'待检测',AUTHORIZED:'已授权',REVOKED:'已撤销',FULL:'完整',PARTIAL:'部分',UNSYNCED:'未同步',CRITICAL:'严重',HIGH:'高',WARNING:'提醒',INFO:'信息'}[v||'']||v||'未知')
+const tone=(v?:string)=>['CONNECTED','AUTHORIZED','FULL'].includes(v||'')?'good':['CRITICAL','HIGH','EXPIRED','DISCONNECTED','REVOKED'].includes(v||'')?'bad':['DEGRADED','WARNING','PARTIAL'].includes(v||'')?'warn':'muted'
+const formatTime=(v?:string)=>v?new Date(v).toLocaleString('zh-CN'):'—'
+const load=async()=>{loading.value=true;try{const [a,all,s,g]=await Promise.all([queryAccountMatrix({...filter,page:page.value,pageSize:20}),queryAccountMatrix({page:1,pageSize:100}),getAccountMatrixSummary(),getAccountGroups()]);accounts.value=a.data?.records||[];allAccounts.value=all.data?.records||[];total.value=a.data?.total||0;summary.value=s.data||null;groups.value=g.data||[]}catch(e:any){showError(e.message||'账号矩阵加载失败')}finally{loading.value=false}}
+const openDetail=async(account:MatrixAccount)=>{selected.value=account;detailLoading.value=true;await router.replace({query:{...route.query,accountId:String(account.accountId)}});try{const res=await getAccountMatrixDetail(account.accountId);selected.value=res.data||account}catch(e:any){showError(e.message||'账号详情加载失败')}finally{detailLoading.value=false}}
+const closeDetail=()=>{selected.value=null;void router.replace({query:{...route.query,accountId:undefined}})}
+const apply=()=>{page.value=1;void load()}
+const openGroup=(g?:AccountGroup)=>{groupForm.id=g?.id;groupForm.groupName=g?.groupName||'';groupForm.color=g?.color||'#ffda44';groupForm.description=g?.description||'';groupForm.accountIds=(g?.accountIdsCsv||'').split(',').map(Number).filter(Boolean);groupDialog.value=true}
+const saveGroup=async()=>{if(!groupForm.groupName.trim())return showError('请输入分组名称');groupSaving.value=true;try{const saved=await saveAccountGroup({...groupForm,requestId:newRequestId('group')});if(saved.data?.id)await replaceAccountGroupMembers(saved.data.id,groupForm.accountIds,newRequestId('group-members'));groupDialog.value=false;showSuccess('店铺分组已保存');await load()}finally{groupSaving.value=false}}
+onMounted(async()=>{await load();const id=Number(route.query.accountId);const item=accounts.value.find(a=>a.accountId===id);if(item)await openDetail(item)})
 </script>
 
 <template>
-  <div class="accounts">
-    <!-- Page Header -->
-    <header class="accounts__header">
-      <div class="accounts__title-row">
-        <h1 class="accounts__title mobile-hidden">闲鱼账号</h1>
-      </div>
-      <div class="accounts__actions desktop-only">
-        <button class="btn btn--primary" @click="showQRLoginDialog">
-          <IconQrCode />
-          <span>扫码添加</span>
-        </button>
-        <button class="btn btn--secondary" @click="showManualAddDialog">
-          <IconPlus />
-          <span>手动添加</span>
-        </button>
-        <button
-          class="btn btn--ghost"
-          :class="{ 'btn--loading': loading }"
-          @click="loadAccounts"
-          :disabled="loading"
-        >
-          <IconSync />
-          <span>刷新</span>
-        </button>
-      </div>
-    </header>
-
-    <!-- Content Card -->
-    <section class="accounts__content">
-      <div class="accounts__table-wrap">
-        <AccountTable
-          :accounts="accounts"
-          :loading="loading"
-          @edit="editAccount"
-          @delete="deleteAccount"
-        />
-      </div>
-    </section>
-
-    <!-- Mobile Bottom Actions -->
-    <footer class="accounts__footer mobile-only">
-      <button class="btn btn--primary btn--full" @click="showQRLoginDialog">
-        <IconQrCode />
-        <span>扫码添加</span>
-      </button>
-      <button class="btn btn--secondary btn--full" @click="showManualAddDialog">
-        <IconPlus />
-        <span>手动添加</span>
-      </button>
-    </footer>
-
-    <!-- Dialogs -->
-    <AddAccountDialog
-      v-model="dialogs.add"
-      :account="currentAccount"
-      @success="loadAccounts"
-    />
-    <ManualAddDialog v-model="dialogs.manualAdd" @success="loadAccounts" />
-    <QRLoginDialog v-model="dialogs.qrLogin" @success="loadAccounts" />
-    <DeleteConfirmDialog
-      v-model="dialogs.deleteConfirm"
-      :account-id="deleteAccountId"
-      @success="loadAccounts"
-    />
-  </div>
+  <main class="workbench account-matrix" :aria-busy="loading">
+    <header class="workbench__header"><div><h1>账号矩阵</h1><p>统一查看连接、授权、店铺画像、风险证据和分组范围。</p></div><div class="workbench__actions"><button class="workbench__btn" @click="openGroup()">新建分组</button><button class="workbench__btn" @click="showManual=true">手动接入</button><button class="workbench__btn workbench__btn--primary" @click="showQr=true">扫码接入</button></div></header>
+    <section class="account-matrix__metrics" aria-label="账号概览"><article><span>可见店铺</span><strong>{{ summary?.accountCount ?? '—' }}</strong><small>按成员授权范围</small></article><article><span>连接正常</span><strong>{{ summary?.connectedCount ?? '—' }}</strong><small>通道最近检测</small></article><article><span>需要关注</span><strong>{{ summary?.attentionAccountCount ?? '—' }}</strong><small>高风险或严重风险</small></article><article><span>画像未同步</span><strong>{{ summary?.unsyncedProfileCount ?? '—' }}</strong><small>不以 0 补齐字段</small></article><article><span>已知活跃风险</span><strong>{{ summary?.knownActiveRiskCount ?? '—' }}</strong><small>{{ statusLabel(summary?.riskCoverage) }}</small></article></section>
+    <div class="account-matrix__notice"><strong>数据边界</strong><span>店铺画像和处罚以最近一次同步快照为准；“—”表示未知或未同步，不代表 0。</span><time>{{ summary?.generatedAt?`生成于 ${formatTime(summary.generatedAt)}`:'等待读取' }}</time></div>
+    <section class="workbench__card account-matrix__panel"><div class="account-matrix__toolbar"><input v-model="filter.search" class="workbench__input" placeholder="搜索账号 ID、备注或店铺名" @keyup.enter="apply"><select v-model="filter.groupId" class="workbench__select" @change="apply"><option :value="undefined">全部分组</option><option v-for="g in groups" :key="g.id" :value="g.id">{{ g.groupName }}（{{ g.accountCount||0 }}）</option></select><select v-model="filter.connectionStatus" class="workbench__select" @change="apply"><option value="">全部连接状态</option><option value="CONNECTED">正常</option><option value="DEGRADED">波动</option><option value="EXPIRED">凭据过期</option><option value="DISCONNECTED">离线</option><option value="UNKNOWN">待检测</option></select><select v-model="filter.riskSeverity" class="workbench__select" @change="apply"><option value="">全部风险</option><option value="CRITICAL">严重</option><option value="HIGH">高</option><option value="WARNING">提醒</option><option value="INFO">信息</option></select><button class="workbench__btn" @click="apply">查询</button></div>
+      <div class="account-matrix__groups"><button :class="{active:filter.groupId===undefined}" @click="filter.groupId=undefined;apply()">全部店铺</button><button v-for="g in groups" :key="g.id" :class="{active:filter.groupId===g.id}" @click="filter.groupId=g.id;apply()"><i :style="{background:g.color||'#ffda44'}"></i>{{ g.groupName }}<span>{{ g.accountCount||0 }}</span><em @click.stop="openGroup(g)">编辑</em></button></div>
+      <div class="account-matrix__table-wrap"><table><thead><tr><th>店铺</th><th>分组</th><th>连接 / 授权</th><th>店铺画像</th><th>风险</th><th>最近证据</th><th></th></tr></thead><tbody><tr v-for="item in accounts" :key="item.accountId" @click="openDetail(item)"><td><strong>{{ item.accountNote||item.shopNickname||`账号 ${item.accountId}` }}</strong><small>ID {{ item.accountId }} · UNB {{ item.unb||'—' }}</small></td><td><div class="tag-row"><span v-for="g in item.groups" :key="g.id" class="mini-tag"><i :style="{background:g.color||'#ffda44'}"></i>{{ g.groupName }}</span><span v-if="!item.groups.length" class="muted">未分组</span></div></td><td><span :class="['status',tone(item.connectionStatus)]">{{ statusLabel(item.connectionStatus) }}</span><small>{{ statusLabel(item.authorizationStatus) }} · {{ item.credentialExpireTime?formatTime(item.credentialExpireTime):'到期未知' }}</small></td><td><strong>{{ unknown(item.shopNickname) }}</strong><small>{{ statusLabel(item.profileCoverageStatus) }} · {{ item.profileSource==='NONE'?'无来源':item.profileSource }}</small></td><td><span :class="['status',tone(item.highestRiskSeverity)]">{{ item.highestRiskSeverity?statusLabel(item.highestRiskSeverity):item.riskCoverageStatus==='UNSYNCED'?'未同步':'无活跃风险' }}</span><small>数量 {{ item.knownActiveRiskCount ?? '—' }}</small></td><td><small>{{ formatTime(item.profileSyncedAt||item.riskSyncedAt) }}</small></td><td><button class="row-action" @click.stop="openDetail(item)">查看详情</button></td></tr></tbody></table><div v-if="!loading&&!accounts.length" class="account-matrix__empty">当前筛选范围没有账号。</div></div><footer class="account-matrix__pagination"><span>共 {{ total }} 个店铺</span><div><button :disabled="page<=1" @click="page--;load()">上一页</button><b>{{ page }} / {{ totalPages }}</b><button :disabled="page>=totalPages" @click="page++;load()">下一页</button></div></footer></section>
+    <div v-if="selected" class="matrix-drawer__backdrop" @click.self="closeDetail"><aside class="matrix-drawer" role="dialog" aria-modal="true" aria-labelledby="account-detail-title"><header><div><p>账号 360° 档案</p><h2 id="account-detail-title">{{ selected.accountNote||selected.shopNickname||`账号 ${selected.accountId}` }}</h2><small>ID {{ selected.accountId }} · {{ selected.unb||'UNB 未知' }}</small></div><button aria-label="关闭详情" @click="closeDetail">×</button></header><div class="matrix-drawer__body" :aria-busy="detailLoading"><section class="drawer-status-grid"><div><span>连接</span><strong :class="tone(selected.connectionStatus)">{{ statusLabel(selected.connectionStatus) }}</strong></div><div><span>授权</span><strong :class="tone(selected.authorizationStatus)">{{ statusLabel(selected.authorizationStatus) }}</strong></div><div><span>画像覆盖</span><strong :class="tone(selected.profileCoverageStatus)">{{ statusLabel(selected.profileCoverageStatus) }}</strong></div><div><span>风险覆盖</span><strong :class="tone(selected.riskCoverageStatus)">{{ statusLabel(selected.riskCoverageStatus) }}</strong></div></section><section class="drawer-card"><h3>店铺画像</h3><dl><div v-for="(label,key) in {shopNickname:'店铺昵称',region:'地区',shopLevel:'店铺等级',shopScore:'店铺评分',onSaleCount:'在售商品',soldCount:'已售商品',followerCount:'粉丝数',positiveRate:'好评率'}" :key="key"><dt>{{ label }}</dt><dd>{{ unknown(selected.profile?.[key]) }}</dd></div></dl><p>来源 {{ selected.profileSource||'NONE' }} · {{ statusLabel(selected.profileCoverageStatus) }} · {{ formatTime(selected.profileSyncedAt) }}</p></section><section class="drawer-card"><h3>接入通道</h3><div v-if="selected.accessChannels?.length" class="channel-list"><article v-for="(channel,index) in selected.accessChannels" :key="index"><strong>{{ channel.channelName||channel.channelCode }}</strong><span :class="['status',tone(String(channel.connectionStatus))]">{{ statusLabel(String(channel.connectionStatus)) }}</span><small>{{ channel.authorizationScope||'授权范围未记录' }} · 最近成功 {{ formatTime(String(channel.lastSuccessTime||'')) }}</small><em v-if="channel.lastErrorMessage">{{ channel.lastErrorMessage }}</em></article></div><p v-else>暂无接入通道证据。</p></section><section class="drawer-card"><h3>风险与处理</h3><div v-if="selected.risks?.length" class="risk-list"><article v-for="(risk,index) in selected.risks" :key="index"><div><strong>{{ risk.riskName||'未命名风险' }}</strong><span :class="['status',tone(String(risk.severity))]">{{ statusLabel(String(risk.severity)) }}</span></div><p>{{ risk.impactSummary||'暂无影响说明' }}</p><small>平台 {{ risk.riskStatus }} · 本地 {{ risk.localHandlingStatus }} · 申诉截止 {{ formatTime(String(risk.appealDeadline||'')) }}</small><em>{{ risk.recommendedAction||risk.operationAdvice||'暂无建议动作' }}</em></article></div><p v-else-if="selected.riskCoverageStatus==='UNSYNCED'">处罚数据尚未同步，不能判断为无风险。</p><p v-else>已同步范围内暂无活跃风险。</p></section></div><footer><button class="workbench__btn" @click="showEdit=true">编辑账号备注</button><button class="workbench__btn workbench__btn--primary" @click="router.push(`/connection/${selected.accountId}`)">管理连接</button></footer></aside></div>
+    <div v-if="groupDialog" class="modal-backdrop" @click.self="groupDialog=false"><section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="group-title"><header><div><h2 id="group-title">{{ groupForm.id?'编辑分组':'新建分组' }}</h2><p>分组用于筛选、成员授权和通知范围，不会移动或删除店铺。</p></div><button aria-label="关闭" @click="groupDialog=false">×</button></header><label>分组名称<input v-model="groupForm.groupName" class="workbench__input" maxlength="100"></label><label>说明<textarea v-model="groupForm.description" class="workbench__textarea" maxlength="500"></textarea></label><fieldset><legend>包含店铺</legend><label v-for="a in allAccounts" :key="a.accountId"><input v-model="groupForm.accountIds" type="checkbox" :value="a.accountId"><span>{{ a.accountNote||a.shopNickname||`账号 ${a.accountId}` }}</span></label></fieldset><footer><button class="workbench__btn" @click="groupDialog=false">取消</button><button class="workbench__btn workbench__btn--primary" :disabled="groupSaving" @click="saveGroup">保存分组</button></footer></section></div>
+    <QRLoginDialog v-model="showQr" @success="load"/><ManualAddDialog v-model="showManual" @success="load"/><AddAccountDialog v-model="showEdit" :account="selected?({id:selected.accountId,accountNote:selected.accountNote,unb:selected.unb} as any):null" @success="load"/>
+  </main>
 </template>
-
 <style scoped src="./accounts.css"></style>
+<style scoped>
+@media (max-width: 767px) {
+  .account-matrix__metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; scroll-snap-type: none; }
+  .account-matrix__metrics article { min-width: 0; }
+}
+</style>

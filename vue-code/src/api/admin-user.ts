@@ -11,6 +11,7 @@ export interface PlatformUser {
   memberRole: TeamMemberRole
   accountScopeMode: 'ALL' | 'SELECTED'
   accountIds: number[]
+  accountGroupIds: number[]
   status: number
   permissions: string[]
   lastLoginTime?: string
@@ -54,8 +55,10 @@ export function savePlatformUser(data: {
   memberRole: TeamMemberRole
   accountScopeMode: 'ALL' | 'SELECTED'
   accountIds: number[]
+  accountGroupIds: number[]
   status: number
   permissions: string[]
+  requestId: string
 }) {
   return request<PlatformUser>({
     url: '/admin/users/save',
@@ -64,7 +67,7 @@ export function savePlatformUser(data: {
   })
 }
 
-export function resetPlatformUserPassword(data: { userId: number; newPassword: string }) {
+export function resetPlatformUserPassword(data: { userId: number; newPassword: string; requestId: string }) {
   return request<null>({
     url: '/admin/users/resetPassword',
     method: 'POST',

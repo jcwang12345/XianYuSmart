@@ -1,44 +1,60 @@
 :root {
-  --ab: #155eef;
+  /* Xianyu-inspired merchant palette: warm yellow, ink and calm neutral surfaces. */
+  --xy-yellow: #ffda44;
+  --xy-yellow-strong: #ffc62a;
+  --xy-yellow-soft: #fff8d9;
+  --xy-yellow-muted: #fff1a8;
+  --xy-ink: #171717;
+  --xy-ink-soft: #2d2d2d;
+  --xy-coral: #ff5a5f;
+  --xy-canvas: #f6f6f3;
+
+  --ab: #9a6200;
   --ar: #d92d20;
   --ag: #079455;
   --ao: #dc6803;
   --ap: #6941c6;
-  --apple-gray: #667085;
+  --apple-gray: #6b6b66;
 
   --glass-bg: #ffffff;
-  --glass-bg-deep: #f8f9fb;
+  --glass-bg-deep: #fafaf7;
   --glass-bg-float: #ffffff;
-  --glass-border: #e5e7eb;
-  --glass-border-in: #eef0f2;
-  --glass-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --glass-shadow-float: 0 8px 24px rgba(16, 24, 40, 0.10);
+  --glass-border: #e8e6df;
+  --glass-border-in: #f0eee7;
+  --glass-shadow: 0 1px 2px rgba(28, 25, 15, 0.04);
+  --glass-shadow-float: 0 14px 36px rgba(28, 25, 15, 0.12);
   --glass-blur: none;
   --glass-blur-sm: none;
 
-  --bg-gradient: #f5f6f8;
-  --apple-text: #1f2329;
-  --apple-text2: #667085;
-  --apple-sep: #e5e7eb;
+  --bg-gradient: #f6f6f3;
+  --apple-text: #171717;
+  --apple-text2: #6b6b66;
+  --apple-sep: #e8e6df;
 
-  --r: 8px;
-  --r-sm: 6px;
+  --r: 12px;
+  --r-sm: 9px;
   --r-pill: 999px;
-  --r-lg: 10px;
+  --r-lg: 16px;
 
-  --color-background: #f5f6f8;
+  --color-background: #f6f6f3;
   --color-background-soft: #ffffff;
-  --color-background-mute: #f8f9fb;
-  --color-border: #e5e7eb;
-  --color-border-hover: #98a2b3;
-  --color-heading: #1f2329;
-  --color-text: #344054;
-  --color-primary: #155eef;
-  --color-primary-hover: #004eeb;
+  --color-background-mute: #fafaf7;
+  --color-border: #e8e6df;
+  --color-border-hover: #a7a49b;
+  --color-heading: #171717;
+  --color-text: #3f3f3b;
+  --color-primary: #171717;
+  --color-primary-hover: #2d2d2d;
   --color-success: #079455;
   --color-warning: #dc6803;
   --color-danger: #d92d20;
-  --color-info: #155eef;
+  --color-info: #9a6200;
+
+  --page-max-width: 1920px;
+  --page-gutter: clamp(16px, 1.5vw, 28px);
+  --control-height: 42px;
+  --surface-radius: 14px;
+  --surface-shadow: 0 1px 2px rgba(28, 25, 15, .04), 0 8px 24px rgba(28, 25, 15, .035);
 
   font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
   color-scheme: light;
@@ -48,8 +64,8 @@
 }
 
 body {
-  background: #f5f6f8;
-  color: #1f2329;
+  background: var(--xy-canvas);
+  color: var(--xy-ink);
 }
 
 .table-action-btn,
@@ -57,13 +73,13 @@ body {
   min-height: 28px;
   padding: 4px 10px;
   border: 1px solid #d0d5dd;
-  border-radius: 6px;
+  border-radius: 9px;
   background: #ffffff;
   font-size: 12px;
   font-weight: 600;
 }
 
-.table-action-btn { color: #155eef; }
+.table-action-btn { color: #7a5000; }
 .table-action-btn-danger { color: #d92d20; }
 
 .table-action-btn:hover,

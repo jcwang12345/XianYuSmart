@@ -118,6 +118,18 @@ public class GoodsAutomationService {
         });
     }
 
+    /** 批量任务复用与自动擦亮相同的平台调用、限流和风险熔断。 */
+    public boolean polishOne(Long accountId, String goodsId) {
+        if (accountId == null || goodsId == null || goodsId.isBlank()) return false;
+        XianyuGoodsConfig config = goodsConfigMapper.selectByAccountAndGoodsId(accountId, goodsId);
+        if (config == null) {
+            config = new XianyuGoodsConfig();
+            config.setXianyuAccountId(accountId);
+            config.setXyGoodsId(goodsId);
+        }
+        return polishGoods(config);
+    }
+
     public void runReceiptFollowUps() {
         List<XianyuGoodsOrder> orders = goodsOrderMapper.selectDueReceiptFollowUps(100).stream()
                 .filter(order -> goodsOrderMapper.claimReceiptFollowUp(order.getId(),
@@ -596,7 +608,9 @@ public class GoodsAutomationService {
                 accountId, "mtop.taobao.idle.item.polish", request, cookie, sellerHeaders(), query);
         boolean completed = result.isSuccess() || isAlreadyPolished(result.getErrorMessage());
         if (completed) {
-            goodsConfigMapper.updateLastPolishTime(config.getId(), clock.millis());
+            if (config.getId() != null) {
+                goodsConfigMapper.updateLastPolishTime(config.getId(), clock.millis());
+            }
         }
         operationLogService.log(accountId, OperationConstants.Type.UPDATE, OperationConstants.Module.AUTO_POLISH,
                 completed ? "商品自动擦亮完成" : "商品自动擦亮失败",

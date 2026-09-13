@@ -43,9 +43,12 @@ public interface XianyuBuyerProfileMapper extends BaseMapper<XianyuBuyerProfile>
             "AND orders.buyer_user_id = profile.buyer_user_id AND orders.sid IS NOT NULL))) AS message_count, " +
             "(SELECT COUNT(*) FROM xianyu_goods_order orders WHERE orders.xianyu_account_id = profile.xianyu_account_id " +
             "AND orders.buyer_user_id = profile.buyer_user_id) AS order_count, " +
-            "(SELECT COALESCE(SUM(CAST(orders.total_price AS DECIMAL(12,2))), 0) FROM xianyu_goods_order orders " +
+            "(SELECT SUM(orders.order_amount) FROM xianyu_goods_order orders " +
             "WHERE orders.xianyu_account_id = profile.xianyu_account_id AND orders.buyer_user_id = profile.buyer_user_id " +
-            "AND orders.state = 1) AS total_amount " +
+            "AND orders.state = 1) AS total_amount, " +
+            "(SELECT COUNT(orders.order_amount) FROM xianyu_goods_order orders " +
+            "WHERE orders.xianyu_account_id = profile.xianyu_account_id AND orders.buyer_user_id = profile.buyer_user_id " +
+            "AND orders.state = 1) AS amount_known_order_count " +
             "FROM xianyu_buyer_profile profile WHERE 1 = 1 " +
             "<if test='accountId != null'>AND profile.xianyu_account_id = #{accountId} </if>" +
             "<if test='blocked != null'>AND profile.automation_blocked = #{blocked} </if>" +
@@ -80,9 +83,12 @@ public interface XianyuBuyerProfileMapper extends BaseMapper<XianyuBuyerProfile>
             "AND orders.buyer_user_id = profile.buyer_user_id AND orders.sid IS NOT NULL))) AS message_count, " +
             "(SELECT COUNT(*) FROM xianyu_goods_order orders WHERE orders.xianyu_account_id = profile.xianyu_account_id " +
             "AND orders.buyer_user_id = profile.buyer_user_id) AS order_count, " +
-            "(SELECT COALESCE(SUM(CAST(orders.total_price AS DECIMAL(12,2))), 0) FROM xianyu_goods_order orders " +
+            "(SELECT SUM(orders.order_amount) FROM xianyu_goods_order orders " +
             "WHERE orders.xianyu_account_id = profile.xianyu_account_id AND orders.buyer_user_id = profile.buyer_user_id " +
-            "AND orders.state = 1) AS total_amount " +
+            "AND orders.state = 1) AS total_amount, " +
+            "(SELECT COUNT(orders.order_amount) FROM xianyu_goods_order orders " +
+            "WHERE orders.xianyu_account_id = profile.xianyu_account_id AND orders.buyer_user_id = profile.buyer_user_id " +
+            "AND orders.state = 1) AS amount_known_order_count " +
             "FROM xianyu_buyer_profile profile WHERE profile.xianyu_account_id = #{accountId} " +
             "AND profile.buyer_user_id = #{buyerUserId} LIMIT 1")
     BuyerProfileRespDTO selectDetail(@Param("accountId") Long accountId,
@@ -90,7 +96,8 @@ public interface XianyuBuyerProfileMapper extends BaseMapper<XianyuBuyerProfile>
 
     @Select("SELECT orders.xy_goods_id, COALESCE(MAX(goods.title), MAX(orders.goods_title)) AS title, " +
             "MAX(goods.cover_pic) AS cover_pic, MAX(goods.sold_price) AS sold_price, COUNT(*) AS order_count, " +
-            "COALESCE(SUM(CASE WHEN orders.state = 1 THEN CAST(orders.total_price AS DECIMAL(12,2)) ELSE 0 END), 0) AS total_amount, " +
+            "SUM(CASE WHEN orders.state = 1 THEN orders.order_amount END) AS total_amount, " +
+            "COUNT(CASE WHEN orders.state = 1 THEN orders.order_amount END) AS amount_known_order_count, " +
             "MAX(orders.create_time) AS last_order_time FROM xianyu_goods_order orders " +
             "LEFT JOIN xianyu_goods goods ON goods.xianyu_account_id = orders.xianyu_account_id " +
             "AND goods.xy_good_id = orders.xy_goods_id WHERE orders.xianyu_account_id = #{accountId} " +
