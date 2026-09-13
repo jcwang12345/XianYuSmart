@@ -79,6 +79,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveMenuPermission(String uri) {
+        if (uri.startsWith("/api/automation-assist/reply-preference")) return PermissionCatalog.MENU_AUTO_REPLY;
+        if (uri.startsWith("/api/automation-assist/skus")) return PermissionCatalog.MENU_AUTO_DELIVERY;
+        if (uri.startsWith("/api/automation-assist/")) return PermissionCatalog.MENU_ORDERS;
         // 账号选择器、商品基础资料和连接状态被多个页面复用，由各业务页面权限决定是否可见。
         if (uri.equals("/api/account/list") || uri.equals("/api/websocket/status")
                 || uri.equals("/api/items/list") || uri.equals("/api/items/detail")
@@ -140,6 +143,11 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (!"GET".equalsIgnoreCase(method) && uri.startsWith("/api/automation-assist/")) {
+            if (uri.endsWith("reply-preference")) return PermissionCatalog.ACTION_AUTOMATION_WRITE;
+            if (uri.contains("/skus")) return PermissionCatalog.ACTION_GOODS_WRITE;
+            return PermissionCatalog.ACTION_ORDER_WRITE;
+        }
         if (uri.startsWith("/api/account")
                 && !uri.equals("/api/account/list") && !uri.equals("/api/account/detail")) {
             return PermissionCatalog.ACTION_ACCOUNT_WRITE;

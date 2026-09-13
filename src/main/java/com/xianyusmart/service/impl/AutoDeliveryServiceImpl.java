@@ -51,6 +51,14 @@ import java.util.concurrent.Executor;
 @Slf4j
 @Service
 public class AutoDeliveryServiceImpl implements AutoDeliveryService {
+    @Autowired
+    private com.xianyusmart.service.delivery.OrderRecipientVerifier recipientVerifier;
+    @Autowired
+    private com.xianyusmart.service.delivery.DeliveryLeaseService leaseService;
+    @Autowired
+    private com.xianyusmart.mapper.DeliveryExecutionMapper executionMapper;
+    @Autowired
+    private com.xianyusmart.service.OrderConfirmationService confirmationService;
     
     @Autowired
     private XianyuGoodsConfigMapper goodsConfigMapper;
@@ -179,50 +187,10 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
     }
     
     public void handleAutoDelivery(Long accountId, String xyGoodsId, String sId, String buyerUserId, String buyerUserName, String orderId) {
-        try {
-            log.info("【账号{}】处理自动发货: xyGoodsId={}, sId={}, buyerUserId={}, buyerUserName={}, orderId={}", 
-                    accountId, xyGoodsId, sId, buyerUserId, buyerUserName, orderId);
-            
-            XianyuGoodsConfig goodsConfig = getGoodsConfig(accountId, xyGoodsId);
-            if (goodsConfig == null || goodsConfig.getXianyuAutoDeliveryOn() != 1) {
-                log.info("【账号{}】商品未开启自动发货: xyGoodsId={}", accountId, xyGoodsId);
-                return;
-            }
-            
-            XianyuGoodsAutoDeliveryConfig deliveryConfig = getAutoDeliveryConfig(accountId, xyGoodsId);
-            if (deliveryConfig == null || deliveryConfig.getAutoDeliveryContent() == null || 
-                    deliveryConfig.getAutoDeliveryContent().isEmpty()) {
-                log.warn("【账号{}】商品未配置自动发货内容: xyGoodsId={}", accountId, xyGoodsId);
-                recordAutoDelivery(accountId, xyGoodsId, buyerUserId, buyerUserName, null, 0, null, orderId);
-                return;
-            }
-            
-            String content = deliveryConfig.getAutoDeliveryContent();
-            log.info("【账号{}】准备发送自动发货消息: content={}", accountId, content);
-
-            HumanLikeDelayUtils.mediumDelay();
-            HumanLikeDelayUtils.thinkingDelay();
-            HumanLikeDelayUtils.typingDelay(content.length());
-            
-            String cid = sId.replace("@goofish", "");
-            String toId = cid;
-            
-            boolean success = webSocketService.sendMessage(accountId, cid, toId, content);
-            
-            recordAutoDelivery(accountId, xyGoodsId, buyerUserId, buyerUserName, content, success ? 1 : 0, null, orderId);
-            
-            if (success) {
-                log.info("【账号{}】自动发货成功: xyGoodsId={}, buyerUserName={}, content={}", 
-                        accountId, xyGoodsId, buyerUserName, content);
-                sentMessageSaveService.saveAiAssistantReply(accountId, cid, toId, content, xyGoodsId);
-            } else {
-                log.error("【账号{}】自动发货失败: xyGoodsId={}", accountId, xyGoodsId);
-            }
-            
-        } catch (Exception e) {
-            log.error("【账号{}】自动发货异常: xyGoodsId={}", accountId, xyGoodsId, e);
-            recordAutoDelivery(accountId, xyGoodsId, buyerUserId, buyerUserName, null, 0, null, orderId);
-        }
+        if (orderId == null || orderId.isBlank()) throw new IllegalArgumentException("缺少平台订单号，不能核验买家或执行发货");
+        XianyuGoodsOrder order = orderMapper.selectByAccountIdAndOrderId(accountId, orderId);
+        if (order == null) throw new IllegalArgumentException("请先同步平台订单");
+        executeDelivery(order.getId(), accountId, order.getXyGoodsId(), order.getSid(), orderId, order.getBuyerUserName(), true);
     }
     
     @Override
@@ -368,6 +336,17 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
     @Override
     public void executeDelivery(Long recordId, Long accountId, String xyGoodsId, String sId, String orderId, String buyerUserName, boolean needHumanLikeDelay) {
+        if (com.xianyusmart.service.delivery.DeliveryExecution.token() == null) {
+            XianyuGoodsOrder task = orderMapper.selectById(recordId);
+            if (task == null || !accountId.equals(task.getXianyuAccountId())) throw new IllegalArgumentException("订单不存在");
+            task.setLeaseOwner(null);
+            leaseService.run(task, () -> executeDelivery(recordId, accountId, xyGoodsId, sId, orderId, buyerUserName, needHumanLikeDelay));
+            return;
+        }
+        executeClaimedDelivery(recordId, accountId, xyGoodsId, sId, orderId, buyerUserName, needHumanLikeDelay);
+    }
+
+    private void executeClaimedDelivery(Long recordId, Long accountId, String xyGoodsId, String sId, String orderId, String buyerUserName, boolean needHumanLikeDelay) {
         boolean cardDelivery = false;
         boolean cardDeliveryAttempted = false;
         boolean cardReservationCommitted = false;
@@ -393,7 +372,14 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                 emailNotifyService.sendAutoDeliveryFailEmail(null, xyGoodsId, orderId, failReason);
                 return;
             }
-            String orderSkuId = orderDetail != null ? orderDetail.skuId : null;
+            XianyuGoodsOrder verifiedOrder = orderMapper.selectById(recordId);
+            String verifiedBuyer = recipientVerifier.verify(verifiedOrder, orderDetail);
+            sId = verifiedBuyer + "@goofish";
+            verifiedOrder.setBuyerUserId(verifiedBuyer);
+            verifiedOrder.setSid(sId);
+            orderMapper.updateVerifiedBuyer(recordId, verifiedBuyer, sId);
+            com.xianyusmart.service.delivery.DeliveryExecution.check();
+            String orderSkuId = orderDetail.skuId != null ? orderDetail.skuId : verifiedOrder.getSkuId();
             int buyNum = (orderDetail != null && orderDetail.buyNum != null && orderDetail.buyNum > 0) ? orderDetail.buyNum : 1;
             log.info("【账号{}】订单SKU: orderId={}, skuId={}, buyNum={}", accountId, orderId, orderSkuId, buyNum);
 
@@ -497,6 +483,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
             // 两个渠道共用同一次渲染结果，开启双渠道时严格先写凭证再发私聊。
             if (voucherDeliveryEnabled) {
+                com.xianyusmart.service.delivery.DeliveryExecution.beforeExternal();
                 cardDeliveryAttempted = cardDelivery;
                 String deliveryResult = orderService.consignDummyDelivery(
                         accountId, orderId, finalDeliveryContent, imageUrls);
@@ -572,6 +559,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             }
 
             if (cardDelivery) {
+                com.xianyusmart.service.delivery.DeliveryExecution.check();
                 try {
                     // 私聊内容已处于不可调度状态，卡密提交成功后再激活发送。
                     kamiConfigService.commitReservation(orderId, accountId, xyGoodsId, cid, resolvedBuyerName);
@@ -598,7 +586,9 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                 if (messageSent) {
                     sendDeliveryImages(accountId, xyGoodsId, cid, cid, deliveryConfig, needHumanLikeDelay);
                 } else {
-                    log.info("【账号{}】发货私聊已进入重试队列: orderId={}", accountId, orderId);
+                    executionMapper.finish(recordId, com.xianyusmart.service.delivery.DeliveryExecution.token(),
+                            0, "AWAITING_MESSAGE", finalDeliveryContent, "内容已准备，等待私聊送达");
+                    return;
                 }
             }
             log.info("【账号{}】✅ 自动发货渠道处理完成: recordId={}, deliveryMode={}, voucher={}, chat={}",
@@ -614,6 +604,17 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             }
 
         } catch (Exception e) {
+            if (e instanceof com.xianyusmart.service.delivery.DeliveryExecution.LeaseLostException) {
+                log.warn("旧发货执行者停止: taskId={}", recordId);
+                return;
+            }
+            if (e instanceof com.xianyusmart.exception.DeliveryUncertainException
+                    || com.xianyusmart.service.delivery.DeliveryExecution.started()) {
+                if (cardDelivery && !cardReservationCommitted) kamiConfigService.markReservationReviewRequired(orderId);
+                executionMapper.finish(recordId, com.xianyusmart.service.delivery.DeliveryExecution.token(), -1,
+                        "REVIEW_REQUIRED", allContent.toString(), "外发结果待核对: " + e.getMessage());
+                return;
+            }
             if (deliveryMessageHeld && !anySuccess && !cardReservationCommitted) {
                 buyerMessageService.cancelHeldDeliveryMessage(deliveryOrder);
             }
@@ -674,15 +675,16 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                         try { Thread.sleep(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
                     }
                 }
-                boolean imgSuccess = webSocketService.sendImageMessage(accountId, cid, toId, url, 800, 800);
+                com.xianyusmart.service.delivery.DeliveryExecution.beforeExternal();
+                boolean imgSuccess = webSocketService.sendImageMessageWithResult(accountId, cid, toId, url, 800, 800);
                 if (imgSuccess) {
                     log.info("【账号{}】自动发货图片[{}/{}]发送成功: xyGoodsId={}", accountId, i + 1, imageUrls.length, xyGoodsId);
                     sentMessageSaveService.saveManualImageReply(accountId, cid, toId, url, xyGoodsId);
                 } else {
-                    log.warn("【账号{}】自动发货图片[{}/{}]发送失败: xyGoodsId={}", accountId, i + 1, imageUrls.length, xyGoodsId);
+                    throw new com.xianyusmart.exception.DeliveryUncertainException("发货图片未全部送达，请核对后补发图片");
                 }
             } catch (Exception e) {
-                log.error("【账号{}】自动发货图片[{}/{}]发送异常: xyGoodsId={}", accountId, i + 1, imageUrls.length, xyGoodsId, e);
+                throw new com.xianyusmart.exception.DeliveryUncertainException("发货图片结果待核对: " + e.getMessage());
             }
         }
     }
@@ -711,30 +713,17 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
     }
 
     private void executeAutoConfirmShipment(Long accountId, String orderId) {
-        if (orderId == null || orderId.isEmpty()) {
-            log.warn("【账号{}】订单ID为空，无法自动确认发货", accountId);
-            return;
-        }
-        log.info("【账号{}】提交异步自动确认发货: orderId={}", accountId, orderId);
-        taskExecutor.execute(() -> {
-            try {
-                HumanLikeDelayUtils.longDelay();
-                String result = orderService.confirmShipment(accountId, orderId);
-                if (OrderService.CONSIGN_DEFERRED.equals(result)) {
-                    log.info("【账号{}】自动确认发货等待平台恢复: orderId={}", accountId, orderId);
-                } else if (result != null) {
-                    log.info("【账号{}】✅ 自动确认发货成功: orderId={}", accountId, orderId);
-                    orderMapper.updateConfirmState(accountId, orderId);
-                } else {
-                    log.error("【账号{}】❌ 自动确认发货失败: orderId={}", accountId, orderId);
-                }
-            } catch (Exception e) {
-                log.error("【账号{}】自动确认发货异常: orderId={}", accountId, orderId, e);
-            }
-        });
+        confirmationService.enqueue(accountId, orderId);
     }
 
+
     private void updateRecordState(Long recordId, Integer state, String content, String failReason) {
+        if (com.xianyusmart.service.delivery.DeliveryExecution.token() != null) {
+            if (executionMapper.finish(recordId, com.xianyusmart.service.delivery.DeliveryExecution.token(), state,
+                    state == 1 ? "COMPLETED" : "FAILED", content, failReason) != 1)
+                throw new com.xianyusmart.service.delivery.DeliveryExecution.LeaseLostException();
+            return;
+        }
         try {
             orderMapper.updateStateContentAndFailReason(recordId, state, content, failReason);
         } catch (Exception e) {
@@ -787,21 +776,27 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                 return com.xianyusmart.common.ResultObject.failed("订单记录不存在");
             }
 
-            String sId = record.getSid() != null ? record.getSid() : record.getBuyerUserId() + "@goofish";
-            String cid = sId.replace("@goofish", "");
-            String toId = cid;
-
-            boolean success = webSocketService.sendMessage(xianyuAccountId, cid, toId, content);
-            if (success) {
-                updateRecordState(record.getId(), 1, content, null);
-                sentMessageSaveService.saveAiAssistantReply(xianyuAccountId, cid, toId, content, record.getXyGoodsId());
-                log.info("【账号{}】自定义发货成功: orderId={}", xianyuAccountId, orderId);
-                return com.xianyusmart.common.ResultObject.success("自定义发货成功");
-            } else {
-                updateRecordState(record.getId(), -1, content, "消息发送失败");
-                log.error("【账号{}】自定义发货失败: orderId={}", xianyuAccountId, orderId);
-                return com.xianyusmart.common.ResultObject.failed("消息发送失败");
-            }
+            record.setLeaseOwner(null);
+            java.util.concurrent.atomic.AtomicBoolean sent = new java.util.concurrent.atomic.AtomicBoolean();
+            leaseService.run(record, () -> {
+                try {
+                    String buyer = recipientVerifier.verify(record);
+                    if (!webSocketService.ensureConnected(xianyuAccountId)) throw new IllegalStateException("账号连接未就绪");
+                    com.xianyusmart.service.delivery.DeliveryExecution.beforeExternal();
+                    if (!webSocketService.sendMessageWithResult(xianyuAccountId, buyer, buyer, content))
+                        throw new com.xianyusmart.exception.DeliveryUncertainException("未确认私聊送达，请核对后处理");
+                    updateRecordState(record.getId(), 1, content, null);
+                    sent.set(true);
+                    sentMessageSaveService.saveAiAssistantReply(xianyuAccountId,buyer,buyer,content,record.getXyGoodsId());
+                } catch (Exception e) {
+                    executionMapper.finish(record.getId(), com.xianyusmart.service.delivery.DeliveryExecution.token(), -1,
+                            com.xianyusmart.service.delivery.DeliveryExecution.started()?"REVIEW_REQUIRED":"FAILED",content,
+                            "自定义发货未完成，请核对订单和聊天后处理");
+                    throw e;
+                }
+            });
+            return sent.get() ? com.xianyusmart.common.ResultObject.success("自定义发货成功")
+                    : com.xianyusmart.common.ResultObject.failed("消息尚未确认送达");
         } catch (Exception e) {
             log.error("【账号{}】自定义发货异常: orderId={}", xianyuAccountId, orderId, e);
             return com.xianyusmart.common.ResultObject.failed("自定义发货异常: " + e.getMessage());

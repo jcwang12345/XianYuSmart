@@ -5,6 +5,9 @@ package com.xianyusmart.service;
  */
 public interface EmailNotifyService {
 
+    /** Synchronous private renewal message; null means accepted by SMTP, otherwise an error. */
+    String sendCredentialRenewalMail(String subject, String content, byte[] png);
+
     /**
      * 发送WebSocket断开连接且无法重连通知邮件
      *

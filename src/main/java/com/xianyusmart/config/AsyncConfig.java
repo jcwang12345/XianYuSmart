@@ -134,10 +134,19 @@ public class AsyncConfig {
     @Bean(name = "taskScheduler")
     public ThreadPoolTaskScheduler taskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
-        scheduler.setPoolSize(2);
+        scheduler.setPoolSize(6);
         scheduler.setThreadNamePrefix("xys-schedule-");
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(30);
+        return scheduler;
+    }
+
+    @Bean(name = "deliveryLeaseScheduler")
+    public ThreadPoolTaskScheduler deliveryLeaseScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(2);
+        scheduler.setThreadNamePrefix("xys-delivery-lease-");
+        scheduler.setRemoveOnCancelPolicy(true);
         return scheduler;
     }
 
@@ -145,6 +154,26 @@ public class AsyncConfig {
         ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(poolSize, namedThreadFactory(threadNamePrefix));
         executor.setRemoveOnCancelPolicy(true);
         executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        return executor;
+    }
+
+    @Bean(name = "qrLoginExecutor")
+    public ThreadPoolTaskExecutor qrLoginExecutor() {
+        // Waiting for QR confirmation must not occupy AI/delivery workers.
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(64);
+        executor.setQueueCapacity(0);
+        executor.setKeepAliveSeconds(30);
+        executor.setThreadNamePrefix("xys-qr-login-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.setTaskDecorator(task -> {
+            Long tenant = TenantContext.get();
+            return () -> {
+                try { if (tenant != null) TenantContext.set(tenant); task.run(); }
+                finally { TenantContext.clear(); }
+            };
+        });
         return executor;
     }
 

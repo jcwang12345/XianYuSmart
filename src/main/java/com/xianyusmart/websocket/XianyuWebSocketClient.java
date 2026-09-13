@@ -778,6 +778,8 @@ public class XianyuWebSocketClient extends WebSocketClient {
             return false;
         }
         
+        boolean attempted = false;
+        String pendingMid = null;
         try {
             String cleanCid = cid.replace("@goofish", "");
             String cleanToId = toId.replace("@goofish", "");
@@ -848,9 +850,11 @@ public class XianyuWebSocketClient extends WebSocketClient {
             
             CompletableFuture<Integer> future = new CompletableFuture<>();
             pendingResponses.put(mid, future);
+            pendingMid = mid;
             
             String messageJson = objectMapper.writeValueAsString(message);
             log.debug("【账号{}】发送消息JSON: {}", accountId, messageJson);
+            attempted = true;
             send(messageJson);
             log.info("【账号{}】消息已发送到WebSocket，等待响应: mid={}", accountId, mid);
             
@@ -864,18 +868,22 @@ public class XianyuWebSocketClient extends WebSocketClient {
                 }
                 return success;
             } catch (java.util.concurrent.TimeoutException e) {
-                log.warn("【账号{}】消息发送超时(10秒)，视为发送成功: mid={}", accountId, mid);
-                return true;
+                throw new com.xianyusmart.exception.DeliveryUncertainException("文本消息回执超时，送达结果未知");
             } finally {
                 pendingResponses.remove(mid);
             }
             
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            throw e;
         } catch (Exception e) {
+            if (pendingMid != null) pendingResponses.remove(pendingMid);
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            if (attempted) throw new com.xianyusmart.exception.DeliveryUncertainException("消息发送后连接或等待中断，送达结果未知");
             log.error("【账号{}】❌ 发送消息失败: cid={}, toId={}", accountId, cid, toId, e);
             return false;
         }
     }
-    
+
     /**
      * 发送图片消息
      * 
@@ -988,6 +996,8 @@ public class XianyuWebSocketClient extends WebSocketClient {
             return false;
         }
 
+        boolean attempted = false;
+        String pendingMid = null;
         try {
             String cleanCid = cid.replace("@goofish", "");
             String cleanToId = toId.replace("@goofish", "");
@@ -1064,8 +1074,10 @@ public class XianyuWebSocketClient extends WebSocketClient {
 
             CompletableFuture<Integer> future = new CompletableFuture<>();
             pendingResponses.put(mid, future);
+            pendingMid = mid;
 
             String messageJson = objectMapper.writeValueAsString(message);
+            attempted = true;
             send(messageJson);
             log.info("{}图片消息已发送，等待响应: mid={}", logPrefix(), mid);
 
@@ -1079,18 +1091,22 @@ public class XianyuWebSocketClient extends WebSocketClient {
                 }
                 return success;
             } catch (java.util.concurrent.TimeoutException e) {
-                log.warn("{}图片消息发送超时(10秒)，视为发送成功: mid={}", logPrefix(), mid);
-                return true;
+                throw new com.xianyusmart.exception.DeliveryUncertainException("图片消息回执超时，送达结果未知");
             } finally {
                 pendingResponses.remove(mid);
             }
 
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            throw e;
         } catch (Exception e) {
+            if (pendingMid != null) pendingResponses.remove(pendingMid);
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            if (attempted) throw new com.xianyusmart.exception.DeliveryUncertainException("消息发送后连接或等待中断，送达结果未知");
             log.error("{}❌ 发送图片消息失败: cid={}, toId={}", logPrefix(), cid, toId, e);
             return false;
         }
     }
-    
+
     /**
      * 生成消息ID (mid)
      * 格式: 随机数(0-999) + 时间戳(毫秒) + " 0"

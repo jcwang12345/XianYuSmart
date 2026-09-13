@@ -635,67 +635,33 @@ public class WebSocketServiceImpl implements WebSocketService {
      * - 记录Token获取时间（而非刷新时间），确保1小时后刷新
      * - Token有效期20小时，但每1小时主动刷新一次，保持连接活跃
      */
-    private void startTokenRefresh(Long accountId) {
-        // 初始化Token刷新时间为当前时间（秒级时间戳）
-        long currentTime = System.currentTimeMillis() / 1000;
-        lastTokenRefreshTimes.put(accountId, currentTime);
-        
-        log.info("【账号{}】Token刷新任务已启动: 刷新间隔{}秒({}小时), 首次刷新将在{}小时后", 
-                accountId, config.getTokenRefreshInterval(), 
-                config.getTokenRefreshInterval() / 3600,
-                config.getTokenRefreshInterval() / 3600);
-        
-        // Token刷新任务（每分钟检查一次，参考Python）
-        ScheduledFuture<?> tokenRefreshTask = webSocketScheduler.scheduleAtFixedRate(
-            () -> runWithAccountTenant(accountId, () -> {
-                try {
-                    Long lastRefreshTime = lastTokenRefreshTimes.get(accountId);
-                    if (lastRefreshTime == null) {
-                        return;
-                    }
-                    
-                    long now = System.currentTimeMillis() / 1000;
-                    long elapsedSeconds = now - lastRefreshTime;
-                    
-                    // 参考Python: 检查是否需要刷新Token（每1小时刷新一次）
-                    if (elapsedSeconds >= config.getTokenRefreshInterval()) {
-                        long elapsedHours = elapsedSeconds / 3600;
-                        log.info("【账号{}】Token已使用{}小时（刷新间隔{}小时），准备刷新并重连...", 
-                                accountId, elapsedHours, config.getTokenRefreshInterval() / 3600);
-                        
-                        // 参考Python: 设置连接重启标志
-                        connectionRestartFlags.put(accountId, true);
-                        
-                        // 参考Python: 刷新Token并重连（成功后关闭旧连接）
-                        refreshTokenAndReconnect(accountId);
-                    } else {
-                        // 每10分钟打印一次剩余时间（避免日志过多）
-                        if (elapsedSeconds % 600 == 0) {
-                            long remainingSeconds = config.getTokenRefreshInterval() - elapsedSeconds;
-                            log.debug("【账号{}】Token刷新倒计时: 还有{}分钟", accountId, remainingSeconds / 60);
-                        }
-                    }
-                } catch (Exception e) {
-                    log.error("【账号{}】Token刷新检查失败", accountId, e);
-                }
-            }),
-            60, 60, TimeUnit.SECONDS  // 参考Python: 每分钟检查一次
-        );
-        
-        tokenRefreshTasks.put(accountId, tokenRefreshTask);
+    private final java.util.Map<Long, Integer> renewalFailures = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<Long, Long> nextRenewalAt = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<Long> renewalsRunning = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private boolean canRenew(Long accountId) {
+        var account = xianyuAccountMapper.selectById(accountId);
+        return account != null && Integer.valueOf(1).equals(account.getStatus())
+                && tokenService.getPendingCaptchaUrl(accountId) == null;
     }
-    
-    /**
-     * 刷新Token并重连
-     * 参考Python的refresh_token和重连逻辑
-     * 
-     * Python逻辑：
-     * 1. 刷新Token
-     * 2. 设置connection_restart_flag = True
-     * 3. 关闭当前WebSocket连接（触发重连）
-     * 4. Token刷新失败时，在token_retry_interval后重试
-     */
+
+    private void startTokenRefresh(Long accountId) {
+        var previous = tokenRefreshTasks.remove(accountId);
+        if (previous != null) previous.cancel(false);
+        if (!canRenew(accountId)) return;
+        long now = System.currentTimeMillis();
+        Long expires = tokenService.getTokenExpireTime(accountId);
+        long lead = java.util.concurrent.ThreadLocalRandom.current().nextLong(65,81) * 60_000L;
+        long delay = expires == null ? 300_000L : Math.max(30_000L, expires - now - lead);
+        nextRenewalAt.put(accountId, now + delay);
+        tokenRefreshTasks.put(accountId, webSocketScheduler.schedule(
+                () -> runWithAccountTenant(accountId, () -> {
+                    tokenRefreshTasks.remove(accountId);
+                    if (canRenew(accountId)) refreshTokenAndReconnect(accountId);
+                }), delay, TimeUnit.MILLISECONDS));
+    }
     private void refreshTokenAndReconnect(Long accountId) {
+        if (!canRenew(accountId) || !renewalsRunning.add(accountId)) return;
         try {
             log.info("【账号{}】开始刷新Token并重连...", accountId);
             
@@ -720,16 +686,20 @@ public class WebSocketServiceImpl implements WebSocketService {
                 log.warn("【账号{}】刷新Token前Cookie检查/兜底刷新异常，继续尝试重连: {}", accountId, e.getMessage());
             }
             
+            // Obtain a replacement before closing a still-usable connection.
+            String replacement = tokenService.refreshToken(accountId);
+            if (replacement == null || replacement.isBlank()) {
+                scheduleTokenRefreshRetry(accountId);
+                return;
+            }
             // 停止当前连接
             stopWebSocketInternal(accountId, false);
-            
-            // 清除旧Token
-            tokenService.clearToken(accountId);
             
             // 重新启动连接（会自动获取新Token）
             boolean success = startWebSocket(accountId);
             
             if (success) {
+                renewalFailures.remove(accountId);
                 // 更新Token刷新时间
                 lastTokenRefreshTimes.put(accountId, System.currentTimeMillis() / 1000);
                 // 重置重连计数
@@ -751,6 +721,8 @@ public class WebSocketServiceImpl implements WebSocketService {
             
             // 参考Python: 异常后也要重试
             scheduleTokenRefreshRetry(accountId);
+        } finally {
+            renewalsRunning.remove(accountId);
         }
     }
 
@@ -758,6 +730,10 @@ public class WebSocketServiceImpl implements WebSocketService {
      * 调度Token刷新重试
      */
     private void scheduleTokenRefreshRetry(Long accountId) {
+        if (!canRenew(accountId)) return;
+        int failures = renewalFailures.merge(accountId, 1, Integer::sum);
+        long delaySeconds = failures == 1 ? 300 : failures == 2 ? 900 : 1800;
+        nextRenewalAt.put(accountId,System.currentTimeMillis()+delaySeconds*1000);
         // 同一账号只保留一个任务，凭证更新或连接停止时可立即取消
         tokenRetryTasks.compute(accountId, (id, existingTask) -> {
             if (existingTask != null && !existingTask.isDone()) {
@@ -767,7 +743,7 @@ public class WebSocketServiceImpl implements WebSocketService {
                 tokenRetryTasks.remove(id);
                 log.info("【账号{}】Token刷新重试间隔已到，开始重试...", id);
                 refreshTokenAndReconnect(id);
-            }), config.getTokenRetryInterval(), TimeUnit.SECONDS);
+            }), delaySeconds, TimeUnit.SECONDS);
         });
     }
     
@@ -1002,6 +978,8 @@ public class WebSocketServiceImpl implements WebSocketService {
             
             return client.sendMessageWithResult(cid, toId, text);
             
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            throw e;
         } catch (Exception e) {
             log.error("发送消息失败: accountId={}, cid={}, toId={}", accountId, cid, toId, e);
             return false;
@@ -1070,6 +1048,8 @@ public class WebSocketServiceImpl implements WebSocketService {
 
             return client.sendImageMessageWithResult(cid, toId, imageUrl, width, height);
 
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            throw e;
         } catch (Exception e) {
             log.error("发送图片消息失败: accountId={}, cid={}, toId={}", accountId, cid, toId, e);
             return false;
@@ -1088,7 +1068,7 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     private void triggerWsDisconnectNotify(Long accountId) {
         try {
-            if (emailNotifyService == null || !emailNotifyService.isWsDisconnectNotifyEnabled()) {
+            if (emailNotifyService == null) {
                 return;
             }
             // 防抖：10分钟内只发送一次

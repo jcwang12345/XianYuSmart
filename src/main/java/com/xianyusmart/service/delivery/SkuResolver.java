@@ -77,17 +77,22 @@ public class SkuResolver {
             String normalizedInput = normalize(skuValueText);
             log.info("【账号{}】SKU匹配: 输入={}, 标准化={}", accountId, skuValueText, normalizedInput);
 
+            String matched = null;
             for (XianyuGoodsSku sku : skus) {
                 String dbValueText = sku.getValueText();
                 if (dbValueText == null || dbValueText.isEmpty()) continue;
                 if (normalizedInput.equals(normalize(dbValueText))) {
                     log.info("【账号{}】SKU文本匹配成功: input={}, dbValueText={}, skuId={}", accountId, skuValueText, dbValueText, sku.getSkuId());
-                    return sku.getSkuId();
+                    if (matched != null && !matched.equals(sku.getSkuId())) {
+                        log.warn("【账号{}】多个规格文本相同，停止猜测 SKU", accountId);
+                        return null;
+                    }
+                    matched = sku.getSkuId();
                 }
             }
 
             log.info("【账号{}】SKU文本未匹配到skuId: xyGoodsId={}, valueText={}", accountId, xyGoodsId, skuValueText);
-            return null;
+            return matched;
         } catch (Exception e) {
             log.warn("【账号{}】解析SKU ID异常: xyGoodsId={}", accountId, xyGoodsId, e);
             return null;

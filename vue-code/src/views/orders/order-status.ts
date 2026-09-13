@@ -1,6 +1,6 @@
 export const deliveryStatusOptions = [
   { value: '', label: '全部状态' },
-  { value: 'PENDING,PROCESSING,RETRY_WAIT', label: '等待履约' },
+  { value: 'PENDING,PROCESSING,RETRY_WAIT,AWAITING_MESSAGE', label: '等待履约' },
   { value: 'REVIEW_REQUIRED', label: '需要人工核对' },
   { value: 'FAILED', label: '履约失败' },
   { value: 'DELIVERED', label: '已交付' },
@@ -13,6 +13,7 @@ const statusMeta: Record<string, { text: string; color: string; background: stri
   PENDING: { text: '等待处理', color: '#0A84FF', background: 'rgba(10,132,255,.14)' },
   PROCESSING: { text: '正在处理', color: '#0A84FF', background: 'rgba(10,132,255,.14)' },
   RETRY_WAIT: { text: '等待重试', color: '#FF9F0A', background: 'rgba(255,159,10,.18)' },
+  AWAITING_MESSAGE: { text: '等待私聊送达', color: '#FF9F0A', background: 'rgba(255,159,10,.18)' },
   DELIVERED: { text: '已交付', color: '#30D158', background: 'rgba(48,209,88,.2)' },
   CONFIRMING: { text: '确认中', color: '#0A84FF', background: 'rgba(10,132,255,.14)' },
   COMPLETED: { text: '已完成', color: '#30D158', background: 'rgba(48,209,88,.2)' },

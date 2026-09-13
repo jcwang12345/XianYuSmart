@@ -36,6 +36,9 @@ public class DeliveryTaskScheduler {
     private final Executor taskExecutor;
     private final String workerId = buildWorkerId();
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.delivery.DeliveryLeaseService leaseService;
+
     @Value("${app.delivery.claim-batch-size:20}")
     private int claimBatchSize;
 
@@ -107,13 +110,14 @@ public class DeliveryTaskScheduler {
                 String receiverId = task.getBuyerUserId() != null ? task.getBuyerUserId() : task.getOrderId();
                 sId = receiverId + "@goofish";
             }
-            autoDeliveryService.executeDelivery(
-                    task.getId(), task.getXianyuAccountId(), task.getXyGoodsId(), sId,
-                    task.getOrderId(), task.getBuyerUserName(), false);
+            final String sessionId = sId;
+            leaseService.run(task, () -> autoDeliveryService.executeDelivery(
+                    task.getId(), task.getXianyuAccountId(), task.getXyGoodsId(), sessionId,
+                    task.getOrderId(), task.getBuyerUserName(), false));
 
             XianyuGoodsOrder result = orderMapper.selectById(task.getId());
             if (result != null && Integer.valueOf(1).equals(result.getState())) {
-                deliveryTaskService.complete(task.getId());
+                // The executing claim settles its own result with a token-checked update.
             } else if (result != null && DeliveryStatus.RETRY_WAIT.name().equals(result.getDeliveryStatus())
                     && "RISK_GUARD_WAIT".equals(result.getLastErrorCode())) {
                 // 风控等待已经设置准确恢复时间，不能再按普通失败增加次数。
@@ -123,11 +127,11 @@ public class DeliveryTaskScheduler {
             } else if (kamiItemMapper.countByOrderAndStatus(task.getOrderId(), KamiStatus.REVIEW_REQUIRED.getCode()) > 0) {
                 deliveryTaskService.markReviewRequired(task.getId(), result != null ? result.getFailReason() : null);
             } else {
-                deliveryTaskService.retryOrFail(task.getId(), result != null ? result.getFailReason() : null);
+                log.debug("发货结果由执行租约持有者结算: taskId={}", task.getId());
             }
         } catch (Exception e) {
             log.error("订单任务执行异常: taskId={}, orderId={}", task.getId(), task.getOrderId(), e);
-            deliveryTaskService.retryOrFail(task.getId(), e.getMessage());
+            log.warn("发货异常保留持久化任务供租约恢复处理: taskId={}", task.getId());
         } finally {
             TenantContext.clear();
         }

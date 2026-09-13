@@ -17,6 +17,9 @@ import com.xianyusmart.mapper.XianyuNotificationLogMapper;
 import com.xianyusmart.mapper.XianyuNotificationOutboxMapper;
 import com.xianyusmart.service.notification.PinnedHttpsClient;
 import com.xianyusmart.service.notification.NotificationTemplateRenderer;
+import com.xianyusmart.service.notification.NotificationGuide;
+import com.xianyusmart.service.notification.RenewalImageStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.xianyusmart.service.notification.WebhookSecurity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -55,7 +58,7 @@ public class NotificationCenterService {
 
     public static final Set<String> EVENT_TYPES = Set.of(
             "ORDER_CREATED", "DELIVERY_SUCCESS", "DELIVERY_EXCEPTION",
-            "ACCOUNT_OFFLINE", "CREDENTIAL_EXPIRED", "KAMI_STOCK_LOW"
+            "ACCOUNT_OFFLINE", "CREDENTIAL_EXPIRED", "KAMI_STOCK_LOW", "ACCOUNT_RECOVERED", "ACCOUNT_VERIFICATION_REQUIRED"
     );
 
     private final XianyuNotificationChannelMapper channelMapper;
@@ -65,6 +68,14 @@ public class NotificationCenterService {
     private final ObjectMapper objectMapper;
     private final PinnedHttpsClient httpsClient;
     private final String workerId = "notification-" + UUID.randomUUID().toString().substring(0, 8);
+
+    @Autowired
+    private RenewalImageStore renewalImages;
+
+    public boolean hasRenewalImageChannel() {
+        return channelMapper.selectEnabled().stream().anyMatch(c -> "WECHAT_WORK".equals(c.getChannelType())
+                && splitEvents(c.getEventTypes()).contains("CREDENTIAL_EXPIRED"));
+    }
 
     @Value("${app.notification.max-attempts:5}")
     private int maxAttempts;
@@ -161,7 +172,13 @@ public class NotificationCenterService {
         }
         try {
             for (XianyuNotificationChannel channel : channelMapper.selectEnabled()) {
-                if (!splitEvents(channel.getEventTypes()).contains(eventType)) {
+                Set<String> subscriptions = splitEvents(channel.getEventTypes());
+                boolean inherited = ("ACCOUNT_RECOVERED".equals(eventType) || "ACCOUNT_VERIFICATION_REQUIRED".equals(eventType))
+                        && subscriptions.contains("CREDENTIAL_EXPIRED");
+                if (!subscriptions.contains(eventType) && !inherited) {
+                    continue;
+                }
+                if (data != null && data.containsKey("_renewalImage") && !"WECHAT_WORK".equals(channel.getChannelType())) {
                     continue;
                 }
                 try {
@@ -213,6 +230,11 @@ public class NotificationCenterService {
                 throw new IllegalStateException("通知渠道不存在或已停用");
             }
             Map<String, Object> data = new LinkedHashMap<>(readData(task.getDataJson()));
+            if (data.containsKey("_renewalImage") && renewalImages.get(data.get("_renewalImage").toString(),
+                    task.getTenantId(), task.getXianyuAccountId()) == null) {
+                outboxMapper.retryOrFail(task.getId(), workerId, "FAILED", null, "二维码已失效或服务已重启，不再发送旧二维码");
+                return;
+            }
             data.put("_eventId", task.getEventId());
             send(channel, task.getEventType(), task.getXianyuAccountId(),
                     task.getTitle(), task.getContent(), data);
@@ -373,6 +395,10 @@ public class NotificationCenterService {
         Map<String, String> config = readConfig(channel);
         String message = NotificationTemplateRenderer.render(
                 channel.getMessageTemplate(), eventName(eventType), title, content, accountId);
+        if (accountId != null) message += "\n账号 ID：" + accountId;
+        if (data.get("orderId") != null) message += "\n订单：" + data.get("orderId");
+        if (data.get("xyGoodsId") != null) message += "\n商品：" + data.get("xyGoodsId");
+        if (!"TEST".equals(eventType)) message += "\n" + NotificationGuide.advice(eventType);
         String url = resolveWebhookUrl(channelType, config);
         Map<String, Object> payload = new LinkedHashMap<>();
         Map<String, String> headers = new LinkedHashMap<>();
@@ -395,8 +421,16 @@ public class NotificationCenterService {
                 payload.put("content", Map.of("text", message));
             }
             case "WECHAT_WORK" -> {
-                payload.put("msgtype", "text");
-                payload.put("text", Map.of("content", message));
+                if (data.containsKey("_renewalImage")) {
+                    var entry = renewalImages.get(data.get("_renewalImage").toString(), channel.getTenantId(), accountId);
+                    if (entry == null) throw new IllegalStateException("二维码已失效，不发送过期图片");
+                    payload.put("msgtype", "image");
+                    payload.put("image", Map.of("base64", Base64.getEncoder().encodeToString(entry.png()),
+                            "md5", java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("MD5").digest(entry.png()))));
+                } else {
+                    payload.put("msgtype", "text");
+                    payload.put("text", Map.of("content", message));
+                }
             }
             case "BARK" -> {
                 payload.put("device_key", config.get("deviceKey"));
@@ -508,13 +542,17 @@ public class NotificationCenterService {
 
     private String notificationDedupeKey(String eventType, Long accountId,
                                          Map<String, Object> data, String eventId) {
+        if (data.get("_renewalBatch") != null) {
+            return "account:" + accountId + ":renewal:" + data.get("_renewalBatch")
+                    + (data.containsKey("_renewalImage") ? ":image" : ":text");
+        }
         if ("ORDER_CREATED".equals(eventType) || "DELIVERY_SUCCESS".equals(eventType)) {
             Object orderId = data.get("orderId");
             if (orderId != null && !orderId.toString().isBlank()) {
                 return "account:" + accountId + ":order:" + orderId;
             }
         }
-        if ("CREDENTIAL_EXPIRED".equals(eventType) || "ACCOUNT_OFFLINE".equals(eventType)) {
+        if ("CREDENTIAL_EXPIRED".equals(eventType) || "ACCOUNT_OFFLINE".equals(eventType) || "ACCOUNT_VERIFICATION_REQUIRED".equals(eventType)) {
             // 首次立即提醒；持续异常每6小时最多提醒一次。数据库唯一键负责并发去重。
             long reminderWindow = System.currentTimeMillis() / CREDENTIAL_REMINDER_WINDOW_MS;
             return "account:" + accountId + ":reminder-window:" + reminderWindow;
@@ -580,6 +618,8 @@ public class NotificationCenterService {
             case "DELIVERY_EXCEPTION" -> "发货异常";
             case "ACCOUNT_OFFLINE" -> "账号离线";
             case "CREDENTIAL_EXPIRED" -> "凭证失效";
+            case "ACCOUNT_RECOVERED" -> "账号已恢复";
+            case "ACCOUNT_VERIFICATION_REQUIRED" -> "平台安全验证";
             case "KAMI_STOCK_LOW" -> "卡密低库存";
             case "TEST" -> "测试通知";
             default -> eventType;

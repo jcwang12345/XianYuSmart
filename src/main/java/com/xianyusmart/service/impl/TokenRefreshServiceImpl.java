@@ -497,7 +497,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
      * 1. 保持每分钟检查一次（与Python一致）
      * 2. 添加随机间隔（3-8秒），避免多账号同时请求
      */
-    @Scheduled(fixedDelay = 60 * 1000, initialDelay = 60 * 1000)
+    // WebSocketService now owns the per-account expiry schedule; do not run a second refresher.
     public void scheduledRefreshWebSocketToken() {
         try {
             // 与Python完全一致：每分钟检查一次，判断是否需要刷新（1小时）

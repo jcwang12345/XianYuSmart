@@ -48,4 +48,5 @@ public interface WebSocketTokenService {
      * @return 新的token，失败返回null
      */
     String refreshToken(Long accountId);
+    Long getTokenExpireTime(Long accountId);
 }

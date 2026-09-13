@@ -10,6 +10,38 @@ import java.util.List;
  */
 @Mapper
 public interface XianyuGoodsAutoReplyRecordMapper {
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=#{state},reply_content=#{content},reply_type=COALESCE(#{replyType},reply_type)," +
+            "matched_keyword=#{keyword},trigger_context=#{context},lease_owner=NULL,lease_expire_time=NULL," +
+            "exception_revision=exception_revision+IF(#{state}<0,1,0) WHERE id=#{id} AND state=2 AND lease_owner=#{token}")
+    int finishClaim(@Param("id") Long id,@Param("token") String token,@Param("state") int state,
+                    @Param("content") String content,@Param("replyType") Integer replyType,@Param("keyword") String keyword,@Param("context") String context);
+
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=IF(external_attempt_started=1,3,IF(attempt_count<3,0,-1))," +
+            "next_retry_time=DATE_ADD(NOW(3),INTERVAL 60 SECOND),lease_owner=NULL,lease_expire_time=NULL," +
+            "last_error_code=IF(external_attempt_started=1,'REPLY_UNCERTAIN','REPLY_PREPARATION_FAILED')," +
+            "last_error_message=#{reason},exception_revision=exception_revision+1 WHERE id=#{id} AND state=2 AND lease_owner=#{token}")
+    int failClaim(@Param("id") Long id,@Param("token") String token,@Param("reason") String reason);
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=3,lease_owner=NULL,lease_expire_time=NULL," +
+            "last_error_code='REPLY_UNCERTAIN',last_error_message='发送结果未知，请核对聊天',exception_revision=exception_revision+1 " +
+            "WHERE state=2 AND lease_expire_time<NOW(3) AND external_attempt_started=1")
+    int recoverUncertain();
+
+    @Update("UPDATE xianyu_goods_auto_reply_record SET external_attempt_started=1 WHERE id=#{id} " +
+            "AND state=2 AND lease_expire_time>NOW(3) AND lease_owner=#{token}")
+    int beginSend(@Param("id") Long id,@Param("token") String token);
+
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=IF(attempt_count<3,0,-1)," +
+            "next_retry_time=DATE_ADD(NOW(3),INTERVAL 60 SECOND),lease_owner=NULL,lease_expire_time=NULL," +
+            "last_error_code='REPLY_PREPARATION_FAILED',last_error_message=#{reason},exception_revision=exception_revision+1 " +
+            "WHERE id=#{id} AND external_attempt_started=0 AND state IN (0,2,-1)")
+    int retryBeforeSend(@Param("id") Long id,@Param("reason") String reason);
+
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=3,lease_owner=NULL,lease_expire_time=NULL," +
+            "last_error_code='REPLY_UNCERTAIN',last_error_message=#{reason},exception_revision=exception_revision+1 WHERE id=#{id} AND state=2")
+    int markUncertain(@Param("id") Long id,@Param("reason") String reason);
+
+    @Select("SELECT COUNT(*) FROM xianyu_goods_auto_reply_record WHERE xianyu_account_id=#{account} AND pnm_id=#{pnm}")
+    int existsMessage(@Param("account") Long account,@Param("pnm") String pnm);
     
     /**
      * 插入记录
@@ -60,12 +92,13 @@ public interface XianyuGoodsAutoReplyRecordMapper {
 
     @Select("SELECT * FROM xianyu_goods_auto_reply_record WHERE " +
             "(state = 0 AND scheduled_time <= NOW(3) AND (next_retry_time IS NULL OR next_retry_time <= NOW(3))) " +
-            "OR (state = 2 AND lease_expire_time < NOW(3)) ORDER BY scheduled_time ASC LIMIT #{limit}")
+            "OR (state = 2 AND external_attempt_started=0 AND lease_expire_time < NOW(3)) ORDER BY scheduled_time ASC LIMIT #{limit}")
     List<XianyuGoodsAutoReplyRecord> findDue(@Param("limit") int limit);
 
     @Update("UPDATE xianyu_goods_auto_reply_record SET state = 2, lease_owner = #{workerId}, " +
             "lease_expire_time = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND), attempt_count = attempt_count + 1 " +
-            "WHERE id = #{id} AND (state = 0 OR (state = 2 AND lease_expire_time < NOW(3)))")
+            "WHERE id = #{id} AND external_attempt_started=0 AND ((state = 0 AND scheduled_time<=NOW(3) " +
+            "AND (next_retry_time IS NULL OR next_retry_time<=NOW(3))) OR (state = 2 AND lease_expire_time < NOW(3)))")
     int claim(@Param("id") Long id, @Param("workerId") String workerId, @Param("leaseSeconds") int leaseSeconds);
 
     @Update("UPDATE xianyu_goods_auto_reply_record SET state = -2, lease_owner = NULL, lease_expire_time = NULL " +

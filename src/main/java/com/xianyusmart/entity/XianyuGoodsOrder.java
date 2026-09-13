@@ -10,6 +10,9 @@ import java.time.LocalDateTime;
  */
 @Data
 public class XianyuGoodsOrder {
+    private Integer externalAttemptStarted;
+    private String platformTradeStatus;
+    private java.time.LocalDateTime platformStatusCheckedAt;
     
     private Long id;
 

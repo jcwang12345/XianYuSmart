@@ -60,6 +60,12 @@ public class AutoReplyServiceImpl implements AutoReplyService {
 
     @Autowired
     private ReplyStrategyResolver replyStrategyResolver;
+    @Autowired
+    private com.xianyusmart.service.reply.ReplyEnhancementService enhancements;
+    @Autowired
+    private com.xianyusmart.service.reply.HumanTakeoverManager takeoverManager;
+    @Autowired
+    private com.xianyusmart.mapper.XianyuAccountMapper accounts;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -89,6 +95,8 @@ public class AutoReplyServiceImpl implements AutoReplyService {
         String xyGoodsId = lastMessage.getXyGoodsId();
         String sId = lastMessage.getSId();
         String pnmId = lastMessage.getPnmId();
+        Long workingRecordId = existingRecordId;
+        String claimToken = null;
         
         String buyerMessage = messageList.stream()
                 .map(ChatMessageData::getMsgContent)
@@ -99,9 +107,15 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 accountId, xyGoodsId, sId, messageList.size(), buyerMessage);
         
         try {
+            if (existingRecordId != null) {
+                var claimed = autoReplyRecordMapper.selectById(existingRecordId);
+                if (claimed == null || !Integer.valueOf(2).equals(claimed.getState()) || claimed.getLeaseOwner() == null) return;
+                claimToken = claimed.getLeaseOwner();
+            }
             // 1. 检查是否有任何回复开关开启
             if (!isAnyReplyEnabled(accountId, xyGoodsId)) {
                 log.info("【账号{}】商品未开启任何回复开关: xyGoodsId={}", accountId, xyGoodsId);
+                if (workingRecordId != null) autoReplyRecordMapper.finishClaim(workingRecordId,claimToken,-2,null,null,null,null);
                 return;
             }
             
@@ -112,14 +126,20 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                             .eq(XianyuGoodsInfo::getXianyuAccountId, accountId)
             );
             if (goodsInfo == null) {
-                log.warn("【账号{}】未找到商品信息: xyGoodsId={}", accountId, xyGoodsId);
+                // 商品配置足以生成回复，尚未同步详情不能导致询问被静默丢弃。
+                log.info("【账号{}】商品详情未同步，按现有回复配置处理", accountId);
+            }
+            if (!webSocketService.isConnected(accountId) && !webSocketService.ensureConnected(accountId)) {
+                if (workingRecordId != null) autoReplyRecordMapper.failClaim(workingRecordId,claimToken,"账号连接未就绪");
                 return;
             }
             
             // 3. 解析回复策略
             ReplyStrategy strategy = replyStrategyResolver.resolve(messageList);
-            if (strategy == null) {
+            ReplyStrategy.ReplyResult welcomeResult = enhancements.welcome(lastMessage);
+            if (strategy == null && welcomeResult == null) {
                 log.info("【账号{}】无可用回复策略: xyGoodsId={}", accountId, xyGoodsId);
+                if (workingRecordId != null) autoReplyRecordMapper.finishClaim(workingRecordId,claimToken,-2,null,null,null,null);
                 return;
             }
             
@@ -140,7 +160,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             // 5. 创建回复记录（状态=0，待回复）
             XianyuGoodsAutoReplyRecord record = new XianyuGoodsAutoReplyRecord();
             record.setXianyuAccountId(accountId);
-            record.setXianyuGoodsId(goodsInfo.getId());
+            record.setXianyuGoodsId(goodsInfo == null ? null : goodsInfo.getId());
             record.setXyGoodsId(xyGoodsId);
             record.setSId(sId);
             record.setPnmId(pnmId);
@@ -148,6 +168,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             record.setBuyerUserName(lastMessage.getSenderUserName());
             record.setBuyerMessage(buyerMessage);
             record.setState(0);
+            record.setScheduledTime(java.time.LocalDateTime.now());
             
             if (existingRecordId == null) {
                 int insertResult = autoReplyRecordMapper.insert(record);
@@ -155,21 +176,33 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                     log.info("【账号{}】该消息已处理过，跳过自动回复: sId={}, pnmId={}", accountId, sId, pnmId);
                     return;
                 }
+                workingRecordId=record.getId();
+                claimToken=java.util.UUID.randomUUID().toString();
+                if(autoReplyRecordMapper.claim(workingRecordId,claimToken,600)!=1) return;
             } else {
                 record.setId(existingRecordId);
             }
+            record.setLeaseOwner(claimToken);
             
             // 6. 执行回复策略
-            ReplyStrategy.ReplyResult replyResult = strategy.execute(messageList);
+            ReplyStrategy.ReplyResult replyResult = strategy == null ? welcomeResult : strategy.execute(messageList);
+            if (welcomeResult != null && strategy != null && replyResult != null && replyResult.isSuccess()) {
+                var combined = new java.util.ArrayList<>(welcomeResult.getItems());
+                if (replyResult.getItems() != null) combined.addAll(replyResult.getItems());
+                replyResult.setItems(combined);
+            }
             
-            if (!replyResult.isSuccess() || replyResult.getItems() == null || replyResult.getItems().isEmpty()) {
+            if (replyResult == null || !replyResult.isSuccess() || replyResult.getItems() == null || replyResult.getItems().isEmpty()) {
                 log.warn("【账号{}】回复策略未生成有效内容", accountId);
-                updateRecordState(record.getId(), -1, null);
+                autoReplyRecordMapper.failClaim(record.getId(),claimToken,"回复策略未产生有效内容，请检查 AI 配置或关键词规则");
                 return;
             }
             
             if (replyResult.getMatchedKeyword() != null) {
                 record.setMatchedKeyword(replyResult.getMatchedKeyword());
+            }
+            for (var item : replyResult.getItems()) {
+                item.setTextContent(enhancements.guard(accountId,xyGoodsId,item.getTextContent(),"PRICE".equals(replyResult.getAiIntent())));
             }
             
             String allReplyText = replyResult.getItems().stream()
@@ -227,7 +260,16 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             boolean sendSuccess = true;
             boolean hasReplyContent = false;
             String cid = sId.replace("@goofish", "");
-            String toId = cid;
+            String toId = lastMessage.getSenderUserId();
+            if (toId == null || toId.isBlank() || toId.equals(accountService.getXianyuUserId(accountId))) {
+                autoReplyRecordMapper.cancelById(record.getId());
+                return;
+            }
+            var account=accounts.selectById(accountId);
+            if(account==null || !Integer.valueOf(1).equals(account.getStatus()) || takeoverManager.isTakenOver(accountId,sId)) {
+                autoReplyRecordMapper.finishClaim(record.getId(),claimToken,-2,null,null,null,null);return;
+            }
+            if (autoReplyRecordMapper.beginSend(record.getId(),claimToken) != 1) return;
             
             for (ReplyStrategy.ReplyResult.ReplyItem item : replyResult.getItems()) {
                 if (item.getImageUrl() != null && !item.getImageUrl().isEmpty()) {
@@ -242,13 +284,14 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 }
                 if (item.getTextContent() != null && !item.getTextContent().trim().isEmpty()) {
                     hasReplyContent = true;
-                    boolean textSent = webSocketService.sendMessage(accountId, cid, toId, item.getTextContent());
+                    boolean textSent = webSocketService.sendMessageWithResult(accountId, cid, toId, item.getTextContent());
                     if (!textSent) {
                         sendSuccess = false;
                     }
                 }
             }
             sendSuccess = hasReplyContent && sendSuccess;
+            if(welcomeResult!=null) enhancements.finishWelcome(lastMessage,sendSuccess);
             
             // 9. 更新记录状态
             if (sendSuccess) {
@@ -263,8 +306,11 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 updateReplyResult(record, -1, allReplyText);
             }
             
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            if(workingRecordId!=null) autoReplyRecordMapper.failClaim(workingRecordId,claimToken,"消息回执未知，请核对聊天");
         } catch (Exception e) {
             log.error("【账号{}】执行自动回复异常: xyGoodsId={}, sId={}", accountId, xyGoodsId, sId, e);
+            if(workingRecordId!=null) autoReplyRecordMapper.failClaim(workingRecordId,claimToken,"回复执行中断，请检查账号、AI 配置或核对聊天");
         }
     }
     
@@ -278,6 +324,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             return false;
         }
         try {
+            if(enhancements.welcomeEnabled(accountId,xyGoodsId)) return true;
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
             if (goodsConfig == null) {
                 return false;
@@ -301,7 +348,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
 
     private void updateReplyResult(XianyuGoodsAutoReplyRecord record, Integer state, String replyContent) {
         try {
-            autoReplyRecordMapper.updateReplyResult(record.getId(), state, replyContent,
+            autoReplyRecordMapper.finishClaim(record.getId(),record.getLeaseOwner(), state, replyContent,
                     record.getReplyType(), record.getMatchedKeyword(), record.getTriggerContext());
         } catch (Exception e) {
             log.error("更新完整回复结果失败: recordId={}, state={}", record.getId(), state, e);

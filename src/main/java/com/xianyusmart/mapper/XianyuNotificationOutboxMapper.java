@@ -41,7 +41,7 @@ public interface XianyuNotificationOutboxMapper {
             "WHERE id = #{id} AND status = 'PROCESSING' AND lease_owner = #{workerId}")
     int markSent(@Param("id") Long id, @Param("workerId") String workerId);
 
-    @Update("UPDATE xianyu_notification_outbox SET status = #{status}, next_retry_time = #{nextRetryTime}, " +
+    @Update("UPDATE xianyu_notification_outbox SET status = #{status}, next_retry_time = COALESCE(#{nextRetryTime}, NOW(3)), " +
             "lease_owner = NULL, lease_expire_time = NULL, last_error_message = #{errorMessage} " +
             "WHERE id = #{id} AND status = 'PROCESSING' AND lease_owner = #{workerId}")
     int retryOrFail(@Param("id") Long id, @Param("workerId") String workerId,

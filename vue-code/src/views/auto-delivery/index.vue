@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SkuAliases from '@/components/SkuAliases.vue'
 import { inject, defineComponent, h, onMounted, ref, computed } from 'vue'
 import { useAutoDelivery } from './useAutoDelivery'
 import './auto-delivery.css'
@@ -371,6 +372,7 @@ onMounted(() => {
           </div>
 
           <!-- SKU Selector -->
+          <SkuAliases v-if="selectedAccountId && selectedGoods" :account-id="selectedAccountId" :goods-id="selectedGoods.item.xyGoodId" @updated="retrySkuLoad" />
           <div class="ad__config-section ad__config-section--no-pad-bottom">
             <div class="ad__sku-heading">
               <div class="ad__config-section-title">{{ hasSku ? '选择规格' : '配置状态' }}</div>

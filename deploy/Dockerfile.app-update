@@ -1,0 +1,6 @@
+# Incremental local deployment only: the base must be a tested XianYuSmart image
+# with the SAME pom.xml dependencies and Playwright version. For dependency or
+# runtime upgrades, use the root multi-stage Dockerfile instead.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY --chown=xianyusmart:xianyusmart xianyusmart-2.0.7.jar /app/app.jar

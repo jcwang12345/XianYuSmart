@@ -135,6 +135,8 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
         }
         
         Long accountId = messageData.getXianyuAccountId();
+        // A replay must not cancel the pending reply before discovering its duplicate key.
+        if (messageData.getPnmId() != null && autoReplyRecordMapper.existsMessage(accountId, messageData.getPnmId()) > 0) return;
         String sId = messageData.getSId();
         String taskKey = buildTaskKey(accountId, sId);
         
@@ -228,6 +230,7 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
 
     @Scheduled(fixedDelay = 1000, initialDelay = 5000)
     public void recoverDueTasks() {
+        autoReplyRecordMapper.recoverUncertain();
         for (XianyuGoodsAutoReplyRecord record : autoReplyRecordMapper.findDue(20)) {
             try {
                 List<ChatMessageData> messages = objectMapper.readValue(
@@ -274,21 +277,23 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
         String taskKey = buildTaskKey(lastMessage.getXianyuAccountId(), lastMessage.getSId());
         pendingTasks.remove(taskKey);
         pendingMessages.remove(taskKey);
-        if (autoReplyRecordMapper.claim(recordId, workerId, 120) == 0) {
-            return;
-        }
-        taskExecutor.execute(() -> executeClaimedTask(recordId, messages));
+        taskExecutor.execute(() -> {
+            String token=java.util.UUID.randomUUID().toString();
+            if (autoReplyRecordMapper.claim(recordId, token, 600) == 1)
+                executeClaimedTask(recordId, messages, token);
+        });
     }
 
-    private void executeClaimedTask(Long recordId, List<ChatMessageData> messages) {
+    private void executeClaimedTask(Long recordId, List<ChatMessageData> messages, String token) {
         ChatMessageData lastMessage = messages.getLast();
         Long accountId = lastMessage.getXianyuAccountId();
         String sId = lastMessage.getSId();
         try {
             // 后台回复按账号恢复租户上下文，确保AI配置和业务数据保持隔离。
             var account = accountMapper.selectById(accountId);
-            if (account == null) {
-                throw new IllegalStateException("闲鱼账号不存在");
+            if (account == null || !Integer.valueOf(1).equals(account.getStatus())) {
+                autoReplyRecordMapper.failClaim(recordId,token,"账号不可用，恢复后可重试");
+                return;
             }
             TenantContext.set(account.getTenantId());
             if (takeoverManager.isTakenOver(accountId, sId)) {
@@ -306,11 +311,11 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
             autoReplyService.executeAutoReply(messages, recordId);
             XianyuGoodsAutoReplyRecord result = autoReplyRecordMapper.selectById(recordId);
             if (result != null && Integer.valueOf(2).equals(result.getState())) {
-                autoReplyRecordMapper.updateStateAndContent(recordId, -1, null);
+                autoReplyRecordMapper.failClaim(recordId,token,"未生成回复或账号未连接");
             }
         } catch (Exception e) {
             log.error("【账号{}】执行持久化延时回复异常: sId={}", accountId, sId, e);
-            autoReplyRecordMapper.updateStateAndContent(recordId, -1, null);
+            autoReplyRecordMapper.failClaim(recordId,token,"回复准备失败，请检查账号与 AI 配置");
         } finally {
             TenantContext.clear();
         }

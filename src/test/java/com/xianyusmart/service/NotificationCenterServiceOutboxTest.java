@@ -29,12 +29,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class NotificationCenterServiceOutboxTest {
+    static { System.setProperty("java.awt.headless","true"); }
 
     @Mock
     private XianyuNotificationChannelMapper channelMapper;
@@ -138,6 +140,35 @@ class NotificationCenterServiceOutboxTest {
         verify(logMapper).insert(any());
     }
 
+    @Test
+    void wecomQrUsesImagePayloadWithoutPersistingQrBytes() throws Exception {
+        var images=new com.xianyusmart.service.notification.RenewalImageStore();
+        ReflectionTestUtils.setField(service,"renewalImages",images);
+        String ref=images.put(7L,1L,CredentialRenewalServiceTest.png(),System.currentTimeMillis()+60000);
+        var task=task();task.setEventType("CREDENTIAL_EXPIRED");task.setDataJson(new ObjectMapper().writeValueAsString(Map.of("_renewalImage",ref)));
+        when(outboxMapper.selectDue(50)).thenReturn(List.of(task));
+        when(outboxMapper.claim(eq(101L),anyString(),eq(60))).thenReturn(1);
+        when(channelMapper.selectById(11L)).thenReturn(channel);
+        when(httpsClient.post(anyString(),anyMap(),anyString(),any(Duration.class))).thenReturn(new PinnedHttpsClient.Response(200,"{\"errcode\":0}"));
+        when(outboxMapper.markSent(eq(101L),anyString())).thenReturn(1);
+        service.dispatchOutbox();
+        ArgumentCaptor<String> body=ArgumentCaptor.forClass(String.class);
+        verify(httpsClient).post(anyString(),anyMap(),body.capture(),any(Duration.class));
+        var json=new ObjectMapper().readTree(body.getValue());
+        assertEquals("image",json.path("msgtype").asText());assertEquals(32,json.path("image").path("md5").asText().length());
+        assertTrue(!task.getDataJson().contains("base64"));
+    }
+    @Test
+    void expiredQrIsTerminalAndNeverSentToProvider() {
+        ReflectionTestUtils.setField(service,"renewalImages",new com.xianyusmart.service.notification.RenewalImageStore());
+        var task=task();task.setDataJson("{\"_renewalImage\":\"expired\"}");
+        when(outboxMapper.selectDue(50)).thenReturn(List.of(task));
+        when(outboxMapper.claim(eq(101L),anyString(),eq(60))).thenReturn(1);
+        when(channelMapper.selectById(11L)).thenReturn(channel);
+        service.dispatchOutbox();
+        org.mockito.Mockito.verifyNoInteractions(httpsClient);
+        verify(outboxMapper).retryOrFail(eq(101L),anyString(),eq("FAILED"),org.mockito.ArgumentMatchers.isNull(),contains("二维码已失效"));
+    }
     private XianyuNotificationOutbox task() {
         XianyuNotificationOutbox task = new XianyuNotificationOutbox();
         task.setId(101L);

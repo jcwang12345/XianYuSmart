@@ -19,6 +19,9 @@ public class DeliveryTaskServiceImpl implements DeliveryTaskService {
 
     private final XianyuGoodsOrderMapper orderMapper;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.mapper.DeliveryExecutionMapper executionMapper;
+
     @Value("${app.delivery.lease-seconds:120}")
     private int leaseSeconds;
 
@@ -61,16 +64,19 @@ public class DeliveryTaskServiceImpl implements DeliveryTaskService {
     @Override
     @Transactional
     public List<XianyuGoodsOrder> claimDueTasks(String workerId, int limit) {
+        executionMapper.recoverUncertain();
         int batchSize = Math.max(1, Math.min(limit, 100));
         List<XianyuGoodsOrder> tasks = orderMapper.lockDueTasks(batchSize);
         if (tasks.isEmpty()) {
             return tasks;
         }
         List<Long> taskIds = tasks.stream().map(XianyuGoodsOrder::getId).toList();
-        if (orderMapper.claimTasks(taskIds, workerId, leaseSeconds) != taskIds.size()) {
+        String claimToken = java.util.UUID.randomUUID().toString();
+        if (orderMapper.claimTasks(taskIds, claimToken, Math.max(120, leaseSeconds)) != taskIds.size()) {
             throw new IllegalStateException("订单任务租约领取冲突");
         }
         tasks.forEach(task -> {
+            task.setLeaseOwner(claimToken);
             task.setDeliveryStatus(DeliveryStatus.PROCESSING.name());
             task.setAttemptCount((task.getAttemptCount() != null ? task.getAttemptCount() : 0) + 1);
         });

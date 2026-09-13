@@ -40,6 +40,35 @@ public class EmailNotifyServiceImpl implements EmailNotifyService {
     @Autowired
     private NotificationCenterService notificationCenterService;
 
+    @Autowired
+    private org.springframework.beans.factory.ObjectProvider<com.xianyusmart.service.CredentialRenewalService> credentialRenewal;
+    private final java.util.concurrent.ConcurrentHashMap<String,Long> emailReminders=new java.util.concurrent.ConcurrentHashMap<>();
+    private boolean shouldSendReminder(String event,Long accountId) {
+        long now=System.currentTimeMillis();
+        String key=TenantContext.get()+":"+event+":"+accountId;
+        java.util.concurrent.atomic.AtomicBoolean send=new java.util.concurrent.atomic.AtomicBoolean();
+        emailReminders.compute(key,(k,last)->{if(last==null || now-last>=21600000L){send.set(true);return now;}return last;});
+        return send.get();
+    }
+
+    @Override
+    public String sendCredentialRenewalMail(String subject, String content, byte[] png) {
+        if (!isEmailConfigured() || !isCookieExpireNotifyEnabled()) return "邮件通知未启用";
+        try {
+            JavaMailSenderImpl sender=buildMailSender();
+            MimeMessage message=sender.createMimeMessage();
+            MimeMessageHelper helper=new MimeMessageHelper(message,true,"UTF-8");
+            helper.setFrom(getSettingValue(KEY_SMTP_USERNAME));helper.setTo(getSettingValue(KEY_SMTP_FROM));
+            helper.setSubject("【XianYuSmart】"+subject);
+            String safe=org.springframework.web.util.HtmlUtils.htmlEscape(content).replace("\n","<br>");
+            helper.setText("<div style='font-family:sans-serif;line-height:1.7'>"+safe
+                    +(png==null?"":"<p><img src='cid:renewal-qr' alt='请显示邮件图片以查看续期二维码'></p>")+"</div>",true);
+            if(png!=null)helper.addInline("renewal-qr",new org.springframework.core.io.ByteArrayResource(png),"image/png");
+            sender.send(message);
+            return null;
+        } catch(Exception e) { log.warn("续期邮件发送失败: type={}",e.getClass().getSimpleName());return "SMTP发送失败"; }
+    }
+
     @Override
     @Async
     public void sendWsDisconnectNotifyEmail(Long accountId, String accountNote) {
@@ -55,6 +84,7 @@ public class EmailNotifyServiceImpl implements EmailNotifyService {
             log.debug("WebSocket断开连接邮件通知未启用，跳过");
             return;
         }
+        if (!shouldSendReminder("ACCOUNT_OFFLINE",accountId)) return;
 
         try {
             JavaMailSenderImpl mailSender = buildMailSender();
@@ -89,42 +119,9 @@ public class EmailNotifyServiceImpl implements EmailNotifyService {
     @Async
     public void sendCookieExpireNotifyEmail(Long accountId, String accountNote) {
         setTenantByAccount(accountId);
-        String displayName = accountNote == null || accountNote.isBlank() ? "账号" + accountId : accountNote;
-        String detectedAt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date());
-        notificationCenterService.dispatch("CREDENTIAL_EXPIRED", accountId, "闲鱼账号登录凭证已失效",
-                displayName + " 自动续期与浏览器恢复均失败，请重新扫码登录。检测时间：" + detectedAt,
-                Map.of("accountNote", displayName, "detectedAt", detectedAt));
-        if (!isEmailConfigured()) {
-            log.warn("邮箱未配置，跳过发送Cookie过期通知邮件");
-            return;
-        }
-        if (!isCookieExpireNotifyEnabled()) {
-            log.debug("Cookie过期邮件通知未启用，跳过");
-            return;
-        }
-
-        try {
-            JavaMailSenderImpl mailSender = buildMailSender();
-            String from = getSettingValue(KEY_SMTP_USERNAME);
-            String to = getSettingValue(KEY_SMTP_FROM);
-
-            String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS").format(new Date());
-            String subject = "【XianYuSmart】Cookie已过期 - " + (accountNote != null && !accountNote.isEmpty() ? accountNote : "账号" + accountId);
-            String content = buildCookieExpireEmailContent(accountId, accountNote, time);
-
-            MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-            helper.setFrom(from);
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(content, true);
-
-            mailSender.send(message);
-            log.info("Cookie过期通知邮件发送成功: accountId={}, to={}", accountId, to);
-        } catch (Exception e) {
-            log.error("Cookie过期通知邮件发送失败: accountId={}", accountId, e);
-        }
+        credentialRenewal.getObject().request(accountId);
     }
+
 
     @Override
     public boolean isCookieExpireNotifyEnabled() {
@@ -458,6 +455,8 @@ public class EmailNotifyServiceImpl implements EmailNotifyService {
     @Async
     public void sendCaptchaRequiredEmail(Long accountId, String accountNote, String reason) {
         setTenantByAccount(accountId);
+        notificationCenterService.dispatch("ACCOUNT_VERIFICATION_REQUIRED",accountId,"闲鱼账号需要官方安全验证",
+                "账号："+(accountNote==null?accountId:accountNote)+"\n自动恢复已暂停，请在闲鱼官方页面或 App 完成安全验证，再更新凭证。",Map.of());
         if (!isEmailConfigured()) {
             log.warn("邮箱未配置，跳过发送风控验证通知邮件");
             return;
@@ -466,6 +465,7 @@ public class EmailNotifyServiceImpl implements EmailNotifyService {
             log.debug("Cookie过期邮件通知未启用，跳过风控验证通知");
             return;
         }
+        if (!shouldSendReminder("ACCOUNT_VERIFICATION_REQUIRED",accountId)) return;
 
         try {
             JavaMailSenderImpl mailSender = buildMailSender();

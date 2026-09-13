@@ -55,6 +55,8 @@ public class ChatMessageEventAutoReplyListener {
 
     @Autowired
     private BuyerProfileService buyerProfileService;
+    @Autowired
+    private com.xianyusmart.mapper.XianyuChatMessageMapper chatMessageMapper;
     
     /**
      * 处理聊天消息接收事件 - 判断并触发自动回复
@@ -94,6 +96,12 @@ public class ChatMessageEventAutoReplyListener {
             }
             
             // 3. 检查是否有商品ID和会话ID
+            if ((message.getXyGoodsId() == null || message.getXyGoodsId().isBlank()) && message.getSId() != null) {
+                // Some follow-up messages omit the item. Recover only from this account and conversation.
+                var history = chatMessageMapper.findRecentBySId(message.getXianyuAccountId(),message.getSId(),20,0);
+                if(history!=null) history.stream().filter(m -> m.getXyGoodsId()!=null && !m.getXyGoodsId().isBlank())
+                        .findFirst().ifPresent(m -> message.setXyGoodsId(m.getXyGoodsId()));
+            }
             if (message.getXyGoodsId() == null || message.getSId() == null) {
                 log.debug("【账号{}】消息缺少商品ID或会话ID，跳过自动回复: pnmId={}", 
                         message.getXianyuAccountId(), message.getPnmId());

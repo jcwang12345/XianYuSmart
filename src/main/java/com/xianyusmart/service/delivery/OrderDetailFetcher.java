@@ -34,6 +34,10 @@ public class OrderDetailFetcher {
      * 订单详情信息
      */
     public static class OrderDetailInfo {
+        public String buyerUserId;
+        public String goodsId;
+        public String orderId;
+        public String tradeStatus;
         public String skuId;
         public String skuName;
         public String buyerUserName;
@@ -110,6 +114,8 @@ public class OrderDetailFetcher {
         if (merchantBuyerVO instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> buyer = (Map<String, Object>) merchantBuyerVO;
+            info.buyerUserId = stringValue(buyer.get("userId"));
+            if (info.buyerUserId == null) info.buyerUserId = stringValue(buyer.get("buyerId"));
             Object userNick = buyer.get("userNick");
             if (userNick instanceof String) {
                 info.buyerUserName = (String) userNick;
@@ -136,6 +142,9 @@ public class OrderDetailFetcher {
         if (merchantItemVO instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> merchantItem = (Map<String, Object>) merchantItemVO;
+            info.goodsId = stringValue(merchantItem.get("itemId"));
+            info.skuId = stringValue(merchantItem.get("skuId"));
+            info.skuName = stringValue(merchantItem.get("skuText"));
             Object title = merchantItem.get("title");
             if (title instanceof String) info.goodsTitle = (String) title;
         }
@@ -162,6 +171,12 @@ public class OrderDetailFetcher {
     }
 
     private void parseSkuInfo(Long accountId, String xyGoodsId, Map<String, Object> module, OrderDetailInfo info) {
+        Object common = module.get("merchantCommonData");
+        if (common instanceof Map<?, ?> data) {
+            info.orderId = stringValue(data.get("orderId"));
+            info.tradeStatus = tradeStatus(stringValue(data.get("orderStatus")));
+        }
+        if (info.skuId != null) return;
         // 优先从orderInfoVO解析SKU
         Object orderInfoVO = module.get("orderInfoVO");
         if (orderInfoVO instanceof Map) {
@@ -171,6 +186,8 @@ public class OrderDetailFetcher {
             if (itemInfoObj instanceof Map) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> itemInfo = (Map<String, Object>) itemInfoObj;
+                String rawSku = stringValue(itemInfo.get("skuId"));
+                if (rawSku != null) { info.skuId = rawSku; return; }
                 Object skuInfo = itemInfo.get("skuInfo");
                 if (skuInfo instanceof String && !((String) skuInfo).isEmpty()) {
                     String skuInfoStr = (String) skuInfo;
@@ -211,5 +228,23 @@ public class OrderDetailFetcher {
                 }
             }
         }
+    }
+
+    private static String stringValue(Object value) {
+        return value == null || value.toString().isBlank() ? null : value.toString();
+    }
+
+    public static String tradeStatus(String text) {
+        if (text == null) return null;
+        return switch (text) {
+            case "待付款", "WAIT_BUYER_PAY" -> "UNPAID";
+            case "待发货", "WAIT_SELLER_SEND_GOODS" -> "PAID";
+            case "待收货", "卖家已发货", "WAIT_BUYER_CONFIRM_GOODS" -> "SHIPPED";
+            case "交易成功", "已完成", "已收货", "TRADE_FINISHED" -> "COMPLETED";
+            case "退款中", "退款申请中" -> "REFUNDING";
+            case "退款成功", "已退款" -> "REFUNDED";
+            case "交易关闭", "已关闭", "TRADE_CLOSED" -> "CLOSED";
+            default -> null;
+        };
     }
 }

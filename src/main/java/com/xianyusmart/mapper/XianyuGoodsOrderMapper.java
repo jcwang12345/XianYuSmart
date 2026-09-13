@@ -11,6 +11,24 @@ import java.util.List;
  */
 @Mapper
 public interface XianyuGoodsOrderMapper {
+    @Update("UPDATE xianyu_goods_order SET buyer_user_id=#{buyer}, sid=#{sid} WHERE id=#{id} " +
+            "AND (buyer_user_id IS NULL OR buyer_user_id='' OR buyer_user_id=#{buyer})")
+    int updateVerifiedBuyer(@Param("id") Long id, @Param("buyer") String buyer, @Param("sid") String sid);
+
+    @Update("UPDATE xianyu_goods_order SET delivery_message_state=6, delivery_message_next_retry_time=NULL, " +
+            "delivery_status='REVIEW_REQUIRED', state=-1, last_error_code='MESSAGE_UNCERTAIN', " +
+            "last_error_message=#{reason}, fail_reason=#{reason}, exception_revision=exception_revision+1 WHERE id=#{id}")
+    int markMessageUncertain(@Param("id") Long id, @Param("reason") String reason);
+
+    @Update("UPDATE xianyu_goods_order SET delivery_message_state=6, delivery_message_next_retry_time=NULL, " +
+            "delivery_status='REVIEW_REQUIRED', state=-1, last_error_code='MESSAGE_INTERRUPTED', " +
+            "last_error_message='私聊发送中断，请核对聊天后处理', exception_revision=exception_revision+1 " +
+            "WHERE delivery_message_state=2 AND delivery_message_next_retry_time<NOW(3)")
+    int recoverInterruptedMessages();
+
+    @Update("UPDATE xianyu_goods_order SET state=1, delivery_status='COMPLETED', fail_reason=NULL " +
+            "WHERE id=#{id} AND delivery_status='AWAITING_MESSAGE' AND delivery_message_state=1")
+    int finishAwaitingMessage(@Param("id") Long id);
 
     /**
      * 单次查询聚合经营指标与异常待办，减少首页数据库往返。
@@ -175,7 +193,7 @@ public interface XianyuGoodsOrderMapper {
     List<XianyuGoodsOrder> lockDueTasks(@Param("limit") int limit);
 
     @Update("<script>UPDATE xianyu_goods_order SET delivery_status = 'PROCESSING', lease_owner = #{workerId}, " +
-            "lease_expire_time = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND), attempt_count = attempt_count + 1 " +
+            "lease_expire_time = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND), external_attempt_started=0, attempt_count = attempt_count + 1 " +
             "WHERE id IN <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach></script>")
     int claimTasks(@Param("ids") List<Long> ids, @Param("workerId") String workerId,
                    @Param("leaseSeconds") int leaseSeconds);
@@ -254,22 +272,18 @@ public interface XianyuGoodsOrderMapper {
 
     @Update("UPDATE xianyu_goods_order SET delivery_message_content = #{content}, delivery_message_state = 0, " +
             "delivery_message_attempt_count = 0, delivery_message_next_retry_time = NOW(3), " +
-            "state = 1, content = #{content}, fail_reason = NULL, delivery_status = 'COMPLETED', " +
-            "delivered_quantity = expected_quantity, next_retry_time = NULL, lease_owner = NULL, " +
-            "lease_expire_time = NULL, last_error_code = NULL, last_error_message = NULL WHERE id = #{id}")
+            "content = #{content} WHERE id = #{id} AND delivery_message_state NOT IN (1,2,6)")
     int prepareDeliveryMessage(@Param("id") Long id, @Param("content") String content);
 
     @Update("UPDATE xianyu_goods_order SET delivery_message_content = #{content}, delivery_message_state = #{holdState}, " +
             "delivery_message_attempt_count = 0, delivery_message_next_retry_time = " +
             "DATE_ADD(NOW(3), INTERVAL 30 MINUTE) " +
-            "WHERE id = #{id}")
+            "WHERE id = #{id} AND delivery_message_state NOT IN (1,2,6)")
     int holdDeliveryMessage(@Param("id") Long id, @Param("content") String content,
                             @Param("holdState") int holdState);
 
     @Update("UPDATE xianyu_goods_order SET delivery_message_state = 0, delivery_message_next_retry_time = NOW(3), " +
-            "state = 1, content = delivery_message_content, fail_reason = NULL, delivery_status = 'COMPLETED', " +
-            "delivered_quantity = expected_quantity, next_retry_time = NULL, lease_owner = NULL, " +
-            "lease_expire_time = NULL, last_error_code = NULL, last_error_message = NULL " +
+            "content = delivery_message_content " +
             "WHERE id = #{id} AND delivery_message_content IS NOT NULL AND delivery_message_state IN (3, 5)")
     int activateDeliveryMessage(@Param("id") Long id);
 
@@ -303,7 +317,7 @@ public interface XianyuGoodsOrderMapper {
 
     @Update("UPDATE xianyu_goods_order SET delivery_message_state = 2, " +
             "delivery_message_next_retry_time = DATE_ADD(NOW(3), INTERVAL 2 MINUTE) WHERE id = #{id} " +
-            "AND delivery_message_content IS NOT NULL AND delivery_message_state IN (0, 2) " +
+            "AND delivery_message_content IS NOT NULL AND delivery_message_state=0 " +
             "AND (delivery_message_next_retry_time IS NULL OR delivery_message_next_retry_time <= NOW(3))")
     int claimDeliveryMessage(@Param("id") Long id);
 
@@ -312,7 +326,8 @@ public interface XianyuGoodsOrderMapper {
             "delivery_message_next_retry_time = #{nextRetryTime} WHERE id = #{id} AND delivery_message_state IN (0, 2)")
     int deferDeliveryMessage(@Param("id") Long id, @Param("nextRetryTime") java.time.LocalDateTime nextRetryTime);
 
-    @Select("SELECT * FROM xianyu_goods_order WHERE delivery_message_content IS NOT NULL AND delivery_message_state IN (0, 2) " +
+    @Select("SELECT * FROM xianyu_goods_order WHERE delivery_message_content IS NOT NULL AND delivery_message_state=0 " +
+            "AND delivery_status NOT IN ('PROCESSING','REVIEW_REQUIRED') " +
             "AND (delivery_message_next_retry_time IS NULL OR delivery_message_next_retry_time <= NOW(3)) " +
             "ORDER BY delivery_message_next_retry_time ASC LIMIT #{limit}")
     List<XianyuGoodsOrder> selectDueDeliveryMessages(@Param("limit") int limit);
@@ -321,7 +336,7 @@ public interface XianyuGoodsOrderMapper {
             "(o.delivery_message_state = 3 AND EXISTS (SELECT 1 FROM xianyu_kami_usage_record r " +
             "WHERE r.xianyu_account_id = o.xianyu_account_id " +
             "AND r.order_id = o.order_id AND r.delivery_status = 'DELIVERED')) OR " +
-            "o.delivery_message_state = 5) " +
+            "o.delivery_message_state = 5) AND o.delivery_status NOT IN ('PROCESSING','REVIEW_REQUIRED') " +
             "ORDER BY o.create_time ASC LIMIT #{limit}")
     List<XianyuGoodsOrder> selectCommittedHeldDeliveryMessages(@Param("limit") int limit);
 

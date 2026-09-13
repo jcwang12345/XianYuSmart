@@ -31,6 +31,8 @@ const eventOptions = [
   { value: 'DELIVERY_EXCEPTION', label: '发货异常' },
   { value: 'ACCOUNT_OFFLINE', label: '账号离线' },
   { value: 'CREDENTIAL_EXPIRED', label: '凭证失效' },
+  { value: 'ACCOUNT_RECOVERED', label: '账号恢复' },
+  { value: 'ACCOUNT_VERIFICATION_REQUIRED', label: '平台安全验证' },
   { value: 'KAMI_STOCK_LOW', label: '卡密低库存' }
 ]
 const channelTypes: Array<{

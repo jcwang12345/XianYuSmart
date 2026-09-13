@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ReplyEnhancements from '@/components/ReplyEnhancements.vue'
 import { inject, defineComponent, h, onMounted, ref, computed } from 'vue'
 import { useAutoReply } from './useAutoReply'
 import './auto-reply.css'
@@ -338,6 +339,7 @@ onMounted(() => {
 
         <!-- Config content -->
         <div v-if="selectedGoods" class="ar__config-scroll">
+          <ReplyEnhancements v-if="selectedAccountId" :account-id="selectedAccountId" :goods-id="selectedGoods.item.xyGoodId" />
           <!-- Reply Mode Tabs -->
           <div class="ar__config-section">
             <div class="ar__reply-mode-tabs">
@@ -959,7 +961,7 @@ onMounted(() => {
                       'ar__record-state--pending': record.state === 0
                     }"
                   >
-                    {{ record.state === 1 ? '成功' : record.state === -1 ? '失败' : '待回复' }}
+                    {{ record.state === 1 ? '成功' : record.state === 3 ? '送达未知 · 需核对' : record.state === 2 ? '正在回复' : record.state === -2 ? '已取消' : record.state === -1 ? '失败' : '待回复' }}
                   </span>
                 </div>
 
@@ -1049,7 +1051,7 @@ onMounted(() => {
                   'ar__record-state--fail': recordDetail.state === -1,
                   'ar__record-state--pending': recordDetail.state === 0
                 }"
-              >{{ recordDetail.state === 1 ? '成功' : recordDetail.state === -1 ? '失败' : '待回复' }}</span>
+              >{{ recordDetail.state === 1 ? '成功' : recordDetail.state === 3 ? '送达未知 · 需核对聊天' : recordDetail.state === 2 ? '正在回复' : recordDetail.state === -2 ? '已取消' : recordDetail.state === -1 ? '失败' : '待回复' }}</span>
             </div>
             <div class="ar__detail-row">
               <span class="ar__detail-label">买家</span>

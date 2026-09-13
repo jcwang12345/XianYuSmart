@@ -49,6 +49,12 @@ import java.util.regex.Pattern;
 @Slf4j
 @Service
 public class WebSocketTokenServiceImpl implements WebSocketTokenService {
+    @Override
+    public Long getTokenExpireTime(Long accountId) {
+        XianyuCookie cookie = xianyuCookieMapper.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<XianyuCookie>()
+                .eq(XianyuCookie::getXianyuAccountId, accountId));
+        return cookie == null ? null : cookie.getTokenExpireTime();
+    }
 
     @Autowired
     private XianyuCookieMapper xianyuCookieMapper;

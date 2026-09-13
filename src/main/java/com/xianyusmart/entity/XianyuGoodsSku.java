@@ -15,6 +15,7 @@ public class XianyuGoodsSku {
     private String xyGoodsId;
 
     private String skuId;
+    private String displayName;
 
     private Integer price;
 

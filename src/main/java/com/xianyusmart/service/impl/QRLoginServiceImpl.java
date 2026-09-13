@@ -48,7 +48,7 @@ public class QRLoginServiceImpl implements QRLoginService {
     private com.xianyusmart.service.AccountService accountService;
 
     @Autowired
-    @Qualifier("taskExecutor")
+    @Qualifier("qrLoginExecutor")
     private Executor taskExecutor;
     
     private static final String HOST = "https://passport.goofish.com";
@@ -458,7 +458,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             }
             
             // 超时处理
-            if (session != null && !Arrays.asList("success", "expired", "cancelled", "verification_required").contains(session.getStatus())) {
+            if (session != null && !Arrays.asList("success", "expired", "cancelled", "verification_required", "error").contains(session.getStatus())) {
                 session.setStatus("expired");
                 log.info("二维码监控超时，标记为过期");
             }
@@ -507,7 +507,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                             } else {
                                 // 登录成功，保存Cookie
                                 log.info("🎉 扫码确认成功！开始保存账号信息...");
-                                session.setStatus("success");
+                                session.setStatus("scanned");
                                 
                                 // 保存之前的 _m_h5_tk 和 _m_h5_tk_enc（如果存在）
                                 String existingMh5tk = session.getCookies().get("_m_h5_tk");
@@ -704,6 +704,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             
             if (accountId != null && accountId > 0) {
                 session.setAccountId(accountId);
+                session.setStatus("success");
                 log.info("✅ 扫码登录成功！Cookie已保存到数据库");
                 log.info("   - 账号ID: {}", accountId);
                 log.info("   - Cookie字段数: {}", cookies.size());

@@ -70,10 +70,15 @@ public class GoodsSkuServiceImpl implements GoodsSkuService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void saveSkus(String xyGoodsId, Long xianyuAccountId, List<XianyuGoodsSku> skuList) {
+        var names = new java.util.HashMap<String,String>();
+        for(var old:listByXyGoodsId(xyGoodsId,xianyuAccountId)) {
+            if(old.getDisplayName()!=null) names.put(old.getSkuId(),old.getDisplayName());
+        }
         deleteByXyGoodsId(xyGoodsId, xianyuAccountId);
 
         String now = getCurrentTimeString();
         for (XianyuGoodsSku sku : skuList) {
+            if(sku.getDisplayName()==null) sku.setDisplayName(names.get(sku.getSkuId()));
             sku.setXyGoodsId(xyGoodsId);
             sku.setXianyuAccountId(xianyuAccountId);
             sku.setCreatedTime(now);

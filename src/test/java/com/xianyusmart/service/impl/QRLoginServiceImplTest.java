@@ -11,6 +11,17 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class QRLoginServiceImplTest {
+    @Test void scanWithDifferentAccountCannotOverwriteCredentials() {
+        QRLoginServiceImpl service=new QRLoginServiceImpl();
+        var accounts=org.mockito.Mockito.mock(com.xianyusmart.service.AccountService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"accountService",accounts);
+        org.mockito.Mockito.when(accounts.getXianyuUserId(1L)).thenReturn("expected");
+        QRLoginSession session=new QRLoginSession("mismatch");session.setTenantId(7L);session.setTargetAccountId(1L);session.setUnb("different");
+        session.getCookies().put("unb","different");
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"saveCookieToDatabase",session);
+        assertEquals("error",session.getStatus());
+        org.mockito.Mockito.verify(accounts,org.mockito.Mockito.never()).updateAccountCookie(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
 
     @AfterEach
     void clearTenant() {

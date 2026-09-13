@@ -72,7 +72,7 @@ public class OperationsDiagnosticsService {
         long replyFailed = count("""
                 SELECT COUNT(*)
                 FROM xianyu_goods_auto_reply_record source
-                WHERE source.tenant_id = ? AND source.state = -1
+                WHERE source.tenant_id = ? AND source.state IN (-1,3)
                   AND NOT EXISTS (
                     SELECT 1 FROM xianyu_exception_acknowledgement ack
                     WHERE ack.tenant_id = source.tenant_id
@@ -214,7 +214,7 @@ public class OperationsDiagnosticsService {
                            'FAILED',
                            source.create_time
                     FROM xianyu_goods_auto_reply_record source
-                    WHERE source.tenant_id = ? AND source.state = -1
+                    WHERE source.tenant_id = ? AND source.state IN (-1,3)
                       AND NOT EXISTS (
                         SELECT 1 FROM xianyu_exception_acknowledgement ack
                         WHERE ack.tenant_id = source.tenant_id

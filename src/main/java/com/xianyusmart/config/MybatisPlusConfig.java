@@ -36,6 +36,7 @@ public class MybatisPlusConfig {
             "merchant_resource_account", "xianyu_keyword_reply_rule_account",
             "xianyu_fixed_delivery_template_account", "xianyu_kami_config_account",
             "xianyu_device_profile"
+            ,"xianyu_order_confirmation", "xianyu_reply_preference", "xianyu_welcome_claim"
     );
 
     /**

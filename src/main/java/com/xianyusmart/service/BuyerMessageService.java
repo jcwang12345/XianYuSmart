@@ -21,6 +21,8 @@ import java.util.List;
 @Slf4j
 @Service
 public class BuyerMessageService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.delivery.OrderRecipientVerifier recipientVerifier;
 
     public static final String DEFAULT_DELIVERY_MESSAGE_TEMPLATE = "{deliveryContent}";
     public static final int DEFAULT_RECEIPT_FOLLOW_UP_INTERVAL_SECONDS = 5;
@@ -189,6 +191,7 @@ public class BuyerMessageService {
     }
 
     public void retryPendingDeliveryMessages() {
+        orderMapper.recoverInterruptedMessages();
         // 固定内容在凭证确认前异常退出时只清理暂存消息，不改变历史订单确认状态。
         orderMapper.cancelStaleFixedHeldDeliveryMessages(100);
         // 卡密履约长时间未确认时转人工核对，避免自动重跑造成重复发货。
@@ -250,10 +253,20 @@ public class BuyerMessageService {
         if (orderMapper.claimDeliveryMessage(order.getId()) != 1) {
             return false;
         }
-        boolean success = sendMessage(order, message);
+        boolean success;
+        try {
+            success = sendMessage(order, message);
+        } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            orderMapper.markMessageUncertain(order.getId(), "私聊回执未知，请核对聊天后处理");
+            throw e;
+        } catch (RuntimeException e) {
+            deferDeliveryMessage(order);
+            throw e;
+        }
         if (success) {
             orderMapper.markDeliveryMessageSent(order.getId());
             order.setDeliveryMessageState(1);
+            orderMapper.finishAwaitingMessage(order.getId());
             // 立即发送和重试发送共用成功事件，保证后续平台确认不会遗漏。
             eventPublisher.publishEvent(new DeliveryMessageSentEvent(order));
             return true;
@@ -263,7 +276,7 @@ public class BuyerMessageService {
     }
 
     private boolean sendMessage(XianyuGoodsOrder order, String message) {
-        String recipientId = resolveRecipientId(order);
+        String recipientId = recipientVerifier.verify(order);
         if (recipientId == null) {
             return false;
         }
@@ -273,6 +286,7 @@ public class BuyerMessageService {
                 && (!webSocketService.ensureConnected(accountId) || !webSocketService.isConnected(accountId))) {
             return false;
         }
+        com.xianyusmart.service.delivery.DeliveryExecution.beforeExternal();
         boolean success = webSocketService.sendMessageWithResult(
                 accountId, recipientId, recipientId, message);
         if (success) {

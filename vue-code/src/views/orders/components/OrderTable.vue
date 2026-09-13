@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import OrderTimeline from '@/components/OrderTimeline.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { formatTime } from '@/utils'
 import { showSuccess, showError } from '@/utils'
@@ -37,9 +38,11 @@ const detailLoading = ref(false)
 const detailData = ref<any>(null)
 const detailSkuText = ref('')
 const detailFromServer = ref(false)
+const timelineTarget = ref<{accountId: number; orderId: string} | null>(null)
 
 const handleViewDetail = async (order: DeliveryRecordItem, fromServer: boolean = false) => {
   if (!order.orderId || !order.xianyuAccountId) return
+  timelineTarget.value = { accountId: order.xianyuAccountId, orderId: order.orderId }
   detailLoading.value = true
   detailVisible.value = true
   detailData.value = null
@@ -128,6 +131,8 @@ const getDeliveryMeta = (order: DeliveryRecordItem) => getDeliveryStatusMeta(ord
 const getRateMeta = (order: DeliveryRecordItem) => getRateStatusMeta(order)
 const getChatMeta = (state?: number | null) => state === 1
   ? { text: '私聊已发送', color: '#30D158', background: 'rgba(48,209,88,.2)' }
+  : state === 6 ? { text: '私聊结果未知 · 需核对', color: '#FF453A', background: 'rgba(255,69,58,.15)' }
+  : state === 2 ? { text: '私聊发送中', color: '#0A84FF', background: 'rgba(10,132,255,.14)' }
   : { text: '私聊待重试', color: '#FF9F0A', background: 'rgba(255,159,10,.15)' }
 const showFailReason = (order: DeliveryRecordItem) => Boolean(order.failReason)
   && shouldShowDeliveryError(order.deliveryStatus, order.state)
@@ -432,6 +437,7 @@ const getConfirmBg = (state: number) => {
           <button class="detail-dialog__close" @click="detailVisible = false">&times;</button>
         </div>
         <div class="detail-dialog__body">
+          <OrderTimeline v-if="timelineTarget" :account-id="timelineTarget.accountId" :order-id="timelineTarget.orderId" />
           <div v-if="detailLoading" class="detail-dialog__loading">
             <div class="detail-dialog__spinner"></div>
             <span>加载中...</span>
