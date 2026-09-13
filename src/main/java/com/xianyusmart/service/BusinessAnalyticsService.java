@@ -252,7 +252,8 @@ public class BusinessAnalyticsService {
                   FROM xianyu_shop_metric_daily metric JOIN xianyu_account account ON account.id=metric.xianyu_account_id
                  WHERE metric.tenant_id=:tenant AND metric.xianyu_account_id IN (:accounts)
                    AND metric.metric_date BETWEEN :start AND :end
-                 GROUP BY metric.xianyu_account_id,account.account_note ORDER BY gmv IS NULL,gmv DESC LIMIT 100
+                 GROUP BY metric.xianyu_account_id,account.account_note
+                 ORDER BY SUM(metric.gmv) IS NULL,SUM(metric.gmv) DESC LIMIT 100
                 """, params(start, end, accounts));
     }
 
@@ -271,7 +272,7 @@ public class BusinessAnalyticsService {
                  WHERE metric.tenant_id=:tenant AND metric.xianyu_account_id IN (:accounts)
                    AND metric.metric_date BETWEEN :start AND :end
                  GROUP BY metric.xianyu_account_id,account.account_note,metric.xy_goods_id
-                 ORDER BY paidAmount IS NULL,paidAmount DESC LIMIT 100
+                 ORDER BY SUM(metric.paid_amount) IS NULL,SUM(metric.paid_amount) DESC LIMIT 100
                 """,params(start,end,accounts));
     }
 

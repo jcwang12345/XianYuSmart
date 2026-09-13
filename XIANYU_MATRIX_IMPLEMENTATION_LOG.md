@@ -252,3 +252,36 @@
 - 迁移：正式本地库从 `V25` 顺序执行 `V26` 至 `V34`，Flyway 校验 34 个迁移并成功到达 `V34`。
 - 运行：`xianyusmart-app-1` 使用 `xianyusmart:2.2.0` 且状态为 `healthy`；`https://127.0.0.1:2000/actuator/health` 返回 `UP`，`/api/system/version` 返回 `2.2.0`。
 - 边界：发布后只执行只读健康和版本检查；未对生产店铺执行发布、退款、删除、发货、申诉、改价或通知发送验证。
+
+## 批次 5：独立测试交接门禁与 `QA-001`
+
+### 缺陷与修复
+
+- `QA-001/P0`：大数据量夹具首次覆盖到经营排行 SQL；MySQL 5.7 在 `ONLY_FULL_GROUP_BY` 模式下将 `ORDER BY gmv` 解析为未分组的原始列，导致经营概览失败。
+- 店铺排行改为 `ORDER BY SUM(metric.gmv)`，商品排行改为 `ORDER BY SUM(metric.paid_amount)`，不再依赖可能与原始列冲突的聚合别名。
+- `BusinessAnalyticsServiceTest` 新增 MySQL 5.7 聚合排序形态回归断言。
+
+### 独立 QA 环境
+
+- QA 前端：`http://127.0.0.1:12401/`；QA API：`http://127.0.0.1:12401/api`。
+- 使用全新独立 MySQL、应用数据和日志卷，不挂接正式数据库；关闭 AI 外部调用且无真实闲鱼凭据。
+- Tenant-A 提供 OWNER、TENANT_ADMIN、OPERATOR、SUPPORT、FINANCE、禁用成员；Tenant-B 提供独立 OWNER。
+- 安全对象：Tenant-A 店铺 `101/102/103`、Tenant-B 店铺 `201`；覆盖完整、部分、未同步、失败、UNKNOWN、SELECTED 范围、XSS 文本与跨租户 ID 猜测。
+- 大数据量：Tenant-A 包含 1,000 商品、300 订单、400 消息、30 通知、90 个店铺日指标样本。
+- 版本提升为 `v2.2.1`；迁移版本仍为 `V34`，无新增数据库结构迁移。
+
+### 最终测试与 Product Design QA
+
+- `BusinessAnalyticsServiceTest` 定向回归：2 项通过，0 失败。
+- `JAVA_HOME=/Volumes/Data/codex/xianyu/.tools/jdk21/Contents/Home ./mvnw test`：111 项通过，0 失败，0 错误，0 跳过。
+- `docker run --rm -v /Volumes/Data/codex/xianyu/vue-code:/workspace -v xianyusmart-vite-node-modules:/workspace/node_modules -w /workspace node:22-alpine npm run build`：Vue TypeScript 类型检查通过，Vite 334 个模块生产构建成功。
+- `docker build -t xianyusmart:2.2.1 .`：镜像内再次完成前端类型检查、334 模块生产构建及后端 111 项测试，镜像构建成功。
+- MySQL 5.7 全新库迁移验证保持 `V1` 至 `V34` 全部成功；本批无结构迁移。
+- Chrome 覆盖桌面 1920×1080、1366×768、4K 与 390×844 窄屏；验证空状态、加载状态、持久错误与重试、无权限 API/导航、大数据量和失败/UNKNOWN 数据表达，无页面级横向溢出或控制台错误。
+- Product Design 故障注入发现商品表慢请求时缺少可见反馈；新增保留上下文的加载条、持久错误说明和“重新加载”入口，数据库恢复后原筛选与 1,000 条结果可正常恢复。
+
+### 最终部署
+
+- 正式本地服务与隔离 QA 均使用 `xianyusmart:2.2.1`；应用、QA 应用和两套 MySQL 均健康。
+- 正式地址 `https://127.0.0.1:2000/`，隔离 QA 地址 `http://127.0.0.1:12401/`；两个版本接口均返回 `2.2.1`。
+- 只对隔离 QA 容器执行慢请求、数据库中断与恢复注入；正式本地服务仅进行只读健康和版本检查。
