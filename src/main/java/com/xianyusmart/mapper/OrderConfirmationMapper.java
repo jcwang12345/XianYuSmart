@@ -9,7 +9,7 @@ public interface OrderConfirmationMapper {
     int enqueue(@Param("tenant") Long tenant, @Param("account") Long account, @Param("order") String order);
 
     @Select("SELECT c.* FROM xianyu_order_confirmation c JOIN xianyu_goods_order o " +
-            "ON o.tenant_id=c.tenant_id AND o.xianyu_account_id=c.xianyu_account_id AND BINARY o.order_id=BINARY c.order_id " +
+            "ON o.tenant_id=c.tenant_id AND o.xianyu_account_id=c.xianyu_account_id AND CAST(o.order_id AS BINARY)=CAST(c.order_id AS BINARY) " +
             "WHERE o.state=1 AND ((c.status IN ('PENDING','RETRY_WAIT') AND c.next_retry_time<=NOW(3)) " +
             "OR (c.status='PROCESSING' AND c.lease_expire_time<NOW(3))) ORDER BY c.next_retry_time LIMIT 20")
     List<XianyuOrderConfirmation> due();

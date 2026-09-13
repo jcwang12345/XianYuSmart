@@ -16,6 +16,25 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AutomationSafetyTest {
+    @Test void newMapperSqlRemainsCompatibleWithTenantInterceptor() {
+        var interceptors = new com.xianyusmart.config.MybatisPlusConfig().mybatisPlusInterceptor().getInterceptors();
+        var tenant = (com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor) interceptors.getFirst();
+        com.xianyusmart.context.TenantContext.set(7L);
+        try {
+            for(var mapper:List.of(DeliveryExecutionMapper.class,OrderConfirmationMapper.class,OrderOperationsMapper.class,ReplyPreferenceMapper.class)) {
+                for(var method:mapper.getMethods()) {
+                    String[] sql = null;
+                    if(method.isAnnotationPresent(org.apache.ibatis.annotations.Select.class))sql=method.getAnnotation(org.apache.ibatis.annotations.Select.class).value();
+                    if(method.isAnnotationPresent(org.apache.ibatis.annotations.Update.class))sql=method.getAnnotation(org.apache.ibatis.annotations.Update.class).value();
+                    if(method.isAnnotationPresent(org.apache.ibatis.annotations.Insert.class))sql=method.getAnnotation(org.apache.ibatis.annotations.Insert.class).value();
+                    if(sql!=null) {
+                        String query=String.join(" ",sql).replaceAll("#\\{[^}]+}","?");
+                        assertDoesNotThrow(()->tenant.parserSingle(query,null),mapper.getSimpleName()+"."+method.getName());
+                    }
+                }
+            }
+        } finally {com.xianyusmart.context.TenantContext.clear();}
+    }
     @Test void expiredLeaseCannotStartExternalWorkAndScopeIsCleared() {
         AtomicInteger begins=new AtomicInteger();
         try(var scope=new DeliveryExecution("claim",()->false,()->{begins.incrementAndGet();return true;})) {

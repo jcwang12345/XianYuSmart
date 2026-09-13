@@ -30,7 +30,7 @@ INSERT INTO xianyu_order_confirmation(tenant_id,xianyu_account_id,order_id) VALU
 CALL v24_assert((SELECT COUNT(*)=1 FROM xianyu_order_confirmation WHERE xianyu_account_id=900001),'confirmation idempotent');
 -- Exercise a nonempty cross-table join: historical tables may use a different collation.
 SELECT c.id FROM xianyu_order_confirmation c JOIN xianyu_goods_order o
-ON o.tenant_id=c.tenant_id AND o.xianyu_account_id=c.xianyu_account_id AND BINARY o.order_id=BINARY c.order_id;
+ON o.tenant_id=c.tenant_id AND o.xianyu_account_id=c.xianyu_account_id AND CAST(o.order_id AS BINARY)=CAST(c.order_id AS BINARY);
 INSERT INTO xianyu_notification_channel(id,tenant_id,channel_name,webhook_url,event_types)
 VALUES(900001,900001,'fixture','https://example.invalid/fixture','CREDENTIAL_EXPIRED');
 INSERT INTO xianyu_notification_outbox(tenant_id,channel_id,event_type,xianyu_account_id,dedupe_key,event_id,title,content,data_json,status,lease_owner)
