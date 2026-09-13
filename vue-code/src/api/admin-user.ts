@@ -1,10 +1,16 @@
 import { request } from '@/utils/request'
 import type { UserRole } from '@/api/system'
 
+export type TeamMemberRole = 'OWNER' | 'TENANT_ADMIN' | 'OPERATOR' | 'SUPPORT' | 'FINANCE'
+
 export interface PlatformUser {
   id: number
   username: string
   role: UserRole
+  tenantId: number
+  memberRole: TeamMemberRole
+  accountScopeMode: 'ALL' | 'SELECTED'
+  accountIds: number[]
   status: number
   permissions: string[]
   lastLoginTime?: string
@@ -45,6 +51,9 @@ export function savePlatformUser(data: {
   username?: string
   password?: string
   role: UserRole
+  memberRole: TeamMemberRole
+  accountScopeMode: 'ALL' | 'SELECTED'
+  accountIds: number[]
   status: number
   permissions: string[]
 }) {

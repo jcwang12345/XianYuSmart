@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { isLoggedIn } from '@/utils/request'
-import { firstAccessiblePath, hasPermission, isPlatformAdmin, loadCurrentUser } from '@/utils/permission'
+import { firstAccessiblePath, hasPermission, isPlatformAdmin, isTenantManager, loadCurrentUser } from '@/utils/permission'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -10,6 +10,12 @@ const router = createRouter({
       name: 'data-panel',
       component: () => import('@/views/data-panel/index.vue'),
       meta: { title: '数据看板', icon: '▥', permission: 'menu:dashboard' }
+    },
+    {
+      path: '/command-center',
+      name: 'command-center',
+      component: () => import('@/views/command-center/index.vue'),
+      meta: { title: '运营驾驶舱', icon: '!', permission: 'menu:command-center', writePermission: 'action:system-write' }
     },
     {
       path: '/product-publish',
@@ -163,7 +169,7 @@ const router = createRouter({
       path: '/admin/users',
       name: 'admin-users',
       component: () => import('@/views/admin-users/index.vue'),
-      meta: { title: '账号与权限', adminOnly: true }
+      meta: { title: '团队与权限', managerOnly: true }
     },
     {
       path: '/qrlogin',
@@ -187,6 +193,10 @@ router.beforeEach(async (to, _from, next) => {
   try {
     await loadCurrentUser()
     if (to.meta.adminOnly && !isPlatformAdmin.value) {
+      next(firstAccessiblePath())
+      return
+    }
+    if (to.meta.managerOnly && !isTenantManager.value) {
       next(firstAccessiblePath())
       return
     }

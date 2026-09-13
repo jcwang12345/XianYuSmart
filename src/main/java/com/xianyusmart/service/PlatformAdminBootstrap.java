@@ -64,13 +64,18 @@ public class PlatformAdminBootstrap implements ApplicationRunner {
 
         String now = LocalDateTime.now().format(FORMATTER);
         SysUser admin = new SysUser();
+        admin.setTenantId(0L);
         admin.setUsername(bootstrapUsername);
         admin.setPassword(passwordEncoder.encode(bootstrapPassword));
         admin.setRole(SysUser.ROLE_ADMIN);
+        admin.setMemberRole("OWNER");
+        admin.setAccountScopeMode("ALL");
         admin.setStatus(1);
         admin.setCreatedTime(now);
         admin.setUpdatedTime(now);
         sysUserMapper.insert(admin);
+        admin.setTenantId(admin.getId());
+        sysUserMapper.updateById(admin);
         log.info("[Auth] 平台管理员初始化完成: username={}", bootstrapUsername);
     }
 }

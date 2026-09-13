@@ -46,6 +46,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         boolean isAdmin = currentUser != null
                 && Integer.valueOf(1).equals(currentUser.getStatus())
                 && SysUser.ROLE_ADMIN.equalsIgnoreCase(currentUser.getRole());
+        if (uri.startsWith("/api/admin/users") && isTenantManager(currentUser)) {
+            return true;
+        }
         if (uri.startsWith("/api/admin")) {
             if (!isAdmin) {
                 writeForbidden(response, "仅平台管理员可以管理账号与权限");
@@ -74,6 +77,13 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         return true;
     }
 
+    private boolean isTenantManager(SysUser user) {
+        if (user == null || !Integer.valueOf(1).equals(user.getStatus())) return false;
+        if (SysUser.ROLE_ADMIN.equalsIgnoreCase(user.getRole())) return true;
+        return "OWNER".equalsIgnoreCase(user.getMemberRole())
+                || "TENANT_ADMIN".equalsIgnoreCase(user.getMemberRole());
+    }
+
     private boolean hasPermission(Set<String> permissions, String permissionCode) {
         return permissionCode == null || permissionCode.isBlank() || permissions.contains(permissionCode);
     }
@@ -94,6 +104,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/dashboard") || uri.startsWith("/api/data-panel")) {
             return PermissionCatalog.MENU_DASHBOARD;
         }
+        if (uri.startsWith("/api/command-center")) {
+            return PermissionCatalog.MENU_COMMAND_CENTER;
+        }
         if (uri.startsWith("/api/items/autodeliveryrecords") || uri.startsWith("/api/order")) {
             return PermissionCatalog.MENU_ORDERS;
         }
@@ -105,6 +118,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         }
         if (uri.startsWith("/api/account") || uri.startsWith("/api/qrlogin")) {
             return PermissionCatalog.MENU_ACCOUNTS;
+        }
+        if (uri.startsWith("/api/security")) {
+            return PermissionCatalog.MENU_SETTINGS;
         }
         if (uri.startsWith("/api/websocket")) {
             return PermissionCatalog.MENU_CONNECTION;
@@ -190,8 +206,10 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         }
         if ((uri.startsWith("/api/operation-log") && !uri.endsWith("/query"))
                 || (uri.startsWith("/api/diagnostics") && !"GET".equalsIgnoreCase(method))
+                || (uri.startsWith("/api/command-center") && !"GET".equalsIgnoreCase(method))
                 || (uri.startsWith("/api/notifications") && !"GET".equalsIgnoreCase(method))
                 || (uri.startsWith("/api/setting") && !uri.endsWith("/get") && !uri.endsWith("/list"))
+                || (uri.startsWith("/api/security") && !"GET".equalsIgnoreCase(method))
                 || uri.equals("/api/backup/import")) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }

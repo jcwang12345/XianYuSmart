@@ -10,6 +10,7 @@ import com.xianyusmart.service.AuthService;
 import com.xianyusmart.service.PlatformPermissionService;
 import com.xianyusmart.service.SysSettingService;
 import com.xianyusmart.service.SystemUpdateService;
+import com.xianyusmart.context.AccountScopeContext;
 import com.xianyusmart.service.bo.ChangePasswordReqBO;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -29,7 +30,7 @@ public class SystemController {
 
     private static final String MENU_LAYOUT_SETTING_KEY = "menu_layout";
 
-    @Value("${app.version:2.0.7}")
+    @Value("${app.version:2.1.0}")
     private String currentVersion;
 
     @Autowired
@@ -61,6 +62,12 @@ public class SystemController {
             CurrentUserRespDTO respDTO = new CurrentUserRespDTO();
             respDTO.setUsername(user.getUsername());
             respDTO.setRole(user.getRole());
+            respDTO.setTenantId(user.getTenantId());
+            respDTO.setMemberRole(user.getMemberRole());
+            respDTO.setAccountScopeMode(user.getAccountScopeMode());
+            AccountScopeContext.Scope accountScope = AccountScopeContext.get();
+            respDTO.setAccountIds(accountScope == null || accountScope.unrestricted()
+                    ? java.util.List.of() : accountScope.accountIds().stream().sorted().toList());
             respDTO.setPermissions(permissionService.getPermissionCodes(user.getId()));
             // 菜单布局随当前用户返回，避免导航额外请求导致顺序闪动。
             respDTO.setMenuLayout(sysSettingService.getSettingValue(MENU_LAYOUT_SETTING_KEY));

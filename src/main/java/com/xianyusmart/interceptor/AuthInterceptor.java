@@ -4,6 +4,7 @@ import com.xianyusmart.annotation.NoAuth;
 import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.entity.SysUser;
 import com.xianyusmart.service.AuthService;
+import com.xianyusmart.service.AccountAccessService;
 import com.xianyusmart.util.JwtUtil;
 import com.google.gson.Gson;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,6 +32,9 @@ public class AuthInterceptor implements HandlerInterceptor {
 
     @Autowired
     private AuthService authService;
+
+    @Autowired
+    private AccountAccessService accountAccessService;
 
     private final Gson gson = new Gson();
 
@@ -83,7 +87,12 @@ public class AuthInterceptor implements HandlerInterceptor {
         request.setAttribute("currentUser", currentUser);
         
         // 同时设置到UserContext（ThreadLocal），供任意位置获取
-        com.xianyusmart.context.UserContext.set(userId, username);
+        Long tenantId = currentUser.getTenantId() == null ? userId : currentUser.getTenantId();
+        com.xianyusmart.context.UserContext.set(userId, username, tenantId);
+        com.xianyusmart.context.TenantContext.set(tenantId);
+        AccountAccessService.Scope accountScope = accountAccessService.loadScope(currentUser);
+        com.xianyusmart.context.AccountScopeContext.set(
+                accountScope.unrestricted(), accountScope.accountIds());
 
         return true;
     }
@@ -92,6 +101,8 @@ public class AuthInterceptor implements HandlerInterceptor {
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
         // 请求结束后清理UserContext，防止内存泄漏
         com.xianyusmart.context.UserContext.clear();
+        com.xianyusmart.context.TenantContext.clear();
+        com.xianyusmart.context.AccountScopeContext.clear();
     }
 
     private void writeUnauthorized(HttpServletResponse response, String message) throws Exception {

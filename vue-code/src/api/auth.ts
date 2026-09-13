@@ -9,7 +9,7 @@ export function checkUserExists() {
 }
 
 /** 登录 */
-export function login(data: { username: string; password: string }) {
+export function login(data: { username: string; password: string; totpCode?: string }) {
   return request<{ token: string; username: string }>({
     url: '/login/login',
     method: 'post',

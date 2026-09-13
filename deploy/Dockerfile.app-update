@@ -8,4 +8,4 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends fonts-wqy-microhei \
     && rm -rf /var/lib/apt/lists/*
 USER xianyusmart
-COPY --chown=xianyusmart:xianyusmart xianyusmart-2.0.7.jar /app/app.jar
+COPY --chown=xianyusmart:xianyusmart xianyusmart-2.1.0.jar /app/app.jar

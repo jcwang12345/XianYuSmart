@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.xianyusmart.controller.dto.PlatformUserPasswordReqDTO;
 import com.xianyusmart.controller.dto.PlatformUserRespDTO;
 import com.xianyusmart.controller.dto.PlatformUserSaveReqDTO;
+import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.SysLoginToken;
 import com.xianyusmart.entity.SysUser;
 import com.xianyusmart.exception.BusinessException;
@@ -31,18 +33,22 @@ public class PlatformUserService {
     private final SysUserMapper userMapper;
     private final SysLoginTokenMapper loginTokenMapper;
     private final PlatformPermissionService permissionService;
+    private final AccountAccessService accountAccessService;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     public PlatformUserService(SysUserMapper userMapper,
                                SysLoginTokenMapper loginTokenMapper,
-                               PlatformPermissionService permissionService) {
+                               PlatformPermissionService permissionService,
+                               AccountAccessService accountAccessService) {
         this.userMapper = userMapper;
         this.loginTokenMapper = loginTokenMapper;
         this.permissionService = permissionService;
+        this.accountAccessService = accountAccessService;
     }
 
     public Map<String, Object> list() {
         List<SysUser> users = userMapper.selectList(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getTenantId, requireTenantId())
                 .orderByDesc(SysUser::getId));
         List<PlatformUserRespDTO> records = users.stream().map(this::toResponse).toList();
         Map<String, Object> result = new LinkedHashMap<>();
@@ -56,20 +62,25 @@ public class PlatformUserService {
 
     @Transactional
     public PlatformUserRespDTO save(PlatformUserSaveReqDTO request) {
+        assertPlatformRoleChangeAllowed(request.getId(), request.getRole());
         String role = normalizeRole(request.getRole());
+        String memberRole = normalizeMemberRole(request.getMemberRole(), role);
+        assertMemberRoleChangeAllowed(request.getId(), memberRole);
+        String scopeMode = AccountAccessService.normalizeMode(request.getAccountScopeMode());
         int status = Integer.valueOf(0).equals(request.getStatus()) ? 0 : 1;
         List<String> permissions = normalizePermissions(request.getPermissions(), role);
         SysUser user;
         if (request.getId() == null) {
-            user = createUser(request, role, status);
+            user = createUser(request, role, memberRole, scopeMode, status);
         } else {
-            user = updateUser(request.getId(), role, status);
+            user = updateUser(request.getId(), role, memberRole, scopeMode, status);
         }
         if (SysUser.ROLE_ADMIN.equals(role)) {
             permissionService.replacePermissions(user.getId(), List.of());
         } else {
             permissionService.replacePermissions(user.getId(), permissions);
         }
+        accountAccessService.replaceScope(user.getId(), user.getTenantId(), scopeMode, request.getAccountIds());
         return toResponse(userMapper.selectById(user.getId()));
     }
 
@@ -79,9 +90,14 @@ public class PlatformUserService {
             throw new BusinessException(400, "账号ID不能为空");
         }
         validatePassword(request.getNewPassword());
-        SysUser user = userMapper.selectById(request.getUserId());
+        SysUser user = userMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getId, request.getUserId())
+                .eq(SysUser::getTenantId, requireTenantId()));
         if (user == null) {
             throw new BusinessException(404, "平台账号不存在");
+        }
+        if (SysUser.ROLE_ADMIN.equalsIgnoreCase(user.getRole()) && !isActorPlatformAdmin()) {
+            throw new BusinessException(403, "租户管理员不能重置平台管理员密码");
         }
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         user.setUpdatedTime(now());
@@ -93,7 +109,8 @@ public class PlatformUserService {
         return PermissionCatalog.options();
     }
 
-    private SysUser createUser(PlatformUserSaveReqDTO request, String role, int status) {
+    private SysUser createUser(PlatformUserSaveReqDTO request, String role, String memberRole,
+                               String scopeMode, int status) {
         String username = normalizeUsername(request.getUsername());
         validatePassword(request.getPassword());
         Long duplicate = userMapper.selectCount(new LambdaQueryWrapper<SysUser>()
@@ -102,9 +119,12 @@ public class PlatformUserService {
             throw new BusinessException(400, "用户名已存在");
         }
         SysUser user = new SysUser();
+        user.setTenantId(requireTenantId());
         user.setUsername(username);
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setRole(role);
+        user.setMemberRole(memberRole);
+        user.setAccountScopeMode(scopeMode);
         user.setStatus(status);
         user.setCreatedTime(now());
         user.setUpdatedTime(now());
@@ -112,8 +132,11 @@ public class PlatformUserService {
         return user;
     }
 
-    private SysUser updateUser(Long userId, String role, int status) {
-        SysUser user = userMapper.selectById(userId);
+    private SysUser updateUser(Long userId, String role, String memberRole,
+                               String scopeMode, int status) {
+        SysUser user = userMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getId, userId)
+                .eq(SysUser::getTenantId, requireTenantId()));
         if (user == null) {
             throw new BusinessException(404, "平台账号不存在");
         }
@@ -127,8 +150,24 @@ public class PlatformUserService {
                 throw new BusinessException(400, "至少需要保留一个启用中的管理员账号");
             }
         }
-        boolean identityChanged = !role.equalsIgnoreCase(user.getRole()) || status != user.getStatus();
+        boolean removingActiveOwner = "OWNER".equalsIgnoreCase(user.getMemberRole())
+                && Integer.valueOf(1).equals(user.getStatus())
+                && (!"OWNER".equalsIgnoreCase(memberRole) || status == 0);
+        if (removingActiveOwner) {
+            Long activeOwners = userMapper.selectCount(new LambdaQueryWrapper<SysUser>()
+                    .eq(SysUser::getTenantId, requireTenantId())
+                    .eq(SysUser::getMemberRole, "OWNER")
+                    .eq(SysUser::getStatus, 1));
+            if (activeOwners != null && activeOwners <= 1) {
+                throw new BusinessException(400, "至少需要保留一个启用中的负责人");
+            }
+        }
+        boolean identityChanged = !role.equalsIgnoreCase(user.getRole()) || status != user.getStatus()
+                || !memberRole.equalsIgnoreCase(user.getMemberRole())
+                || !scopeMode.equalsIgnoreCase(user.getAccountScopeMode());
         user.setRole(role);
+        user.setMemberRole(memberRole);
+        user.setAccountScopeMode(scopeMode);
         user.setStatus(status);
         user.setUpdatedTime(now());
         userMapper.updateById(user);
@@ -164,6 +203,50 @@ public class PlatformUserService {
         throw new BusinessException(400, "账号角色无效");
     }
 
+    private String normalizeMemberRole(String memberRole, String platformRole) {
+        if (SysUser.ROLE_ADMIN.equals(platformRole)) {
+            return "OWNER";
+        }
+        String normalized = memberRole == null ? "OPERATOR" : memberRole.trim().toUpperCase();
+        if (!Set.of("OWNER", "TENANT_ADMIN", "OPERATOR", "SUPPORT", "FINANCE").contains(normalized)) {
+            throw new BusinessException(400, "团队角色无效");
+        }
+        return normalized;
+    }
+
+    private void assertPlatformRoleChangeAllowed(Long targetUserId, String requestedRole) {
+        if (isActorPlatformAdmin()) return;
+        if (SysUser.ROLE_ADMIN.equalsIgnoreCase(requestedRole)) {
+            throw new BusinessException(403, "租户管理员不能创建平台管理员");
+        }
+        if (targetUserId != null) {
+            SysUser target = userMapper.selectById(targetUserId);
+            if (target != null && SysUser.ROLE_ADMIN.equalsIgnoreCase(target.getRole())) {
+                throw new BusinessException(403, "租户管理员不能修改平台管理员");
+            }
+        }
+    }
+
+    private boolean isActorPlatformAdmin() {
+        SysUser actor = UserContext.getUserId() == null ? null : userMapper.selectById(UserContext.getUserId());
+        return actor != null && SysUser.ROLE_ADMIN.equalsIgnoreCase(actor.getRole());
+    }
+
+    private void assertMemberRoleChangeAllowed(Long targetUserId, String requestedMemberRole) {
+        if (isActorPlatformAdmin()) return;
+        SysUser actor = userMapper.selectById(UserContext.getUserId());
+        if (actor != null && "OWNER".equalsIgnoreCase(actor.getMemberRole())) return;
+        if ("OWNER".equalsIgnoreCase(requestedMemberRole)) {
+            throw new BusinessException(403, "租户管理员不能授予负责人角色");
+        }
+        if (targetUserId != null) {
+            SysUser target = userMapper.selectById(targetUserId);
+            if (target != null && "OWNER".equalsIgnoreCase(target.getMemberRole())) {
+                throw new BusinessException(403, "租户管理员不能修改负责人");
+            }
+        }
+    }
+
     private String normalizeUsername(String username) {
         String normalized = username == null ? "" : username.trim();
         if (normalized.length() < 3 || normalized.length() > 20) {
@@ -191,6 +274,10 @@ public class PlatformUserService {
         response.setId(user.getId());
         response.setUsername(user.getUsername());
         response.setRole(user.getRole());
+        response.setTenantId(user.getTenantId());
+        response.setMemberRole(user.getMemberRole());
+        response.setAccountScopeMode(user.getAccountScopeMode());
+        response.setAccountIds(accountAccessService.getAccountIds(user.getId()));
         response.setStatus(user.getStatus());
         response.setPermissions(permissionService.getPermissionCodes(user.getId()));
         response.setLastLoginTime(user.getLastLoginTime());
@@ -201,5 +288,13 @@ public class PlatformUserService {
 
     private String now() {
         return LocalDateTime.now().format(FORMATTER);
+    }
+
+    private Long requireTenantId() {
+        Long tenantId = TenantContext.get();
+        if (tenantId == null) {
+            throw new BusinessException(401, "登录状态已失效");
+        }
+        return tenantId;
     }
 }

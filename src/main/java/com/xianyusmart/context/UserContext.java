@@ -10,13 +10,19 @@ public class UserContext {
     
     private static final ThreadLocal<Long> USER_ID = new ThreadLocal<>();
     private static final ThreadLocal<String> USERNAME = new ThreadLocal<>();
+    private static final ThreadLocal<Long> TENANT_ID = new ThreadLocal<>();
     
     /**
      * 设置当前用户信息
      */
     public static void set(Long userId, String username) {
+        set(userId, username, userId);
+    }
+
+    public static void set(Long userId, String username, Long tenantId) {
         USER_ID.set(userId);
         USERNAME.set(username);
+        TENANT_ID.set(tenantId);
     }
     
     /**
@@ -32,6 +38,10 @@ public class UserContext {
     public static String getUsername() {
         return USERNAME.get();
     }
+
+    public static Long getTenantId() {
+        return TENANT_ID.get();
+    }
     
     /**
      * 清理当前用户信息（请求结束后调用）
@@ -39,5 +49,6 @@ public class UserContext {
     public static void clear() {
         USER_ID.remove();
         USERNAME.remove();
+        TENANT_ID.remove();
     }
 }

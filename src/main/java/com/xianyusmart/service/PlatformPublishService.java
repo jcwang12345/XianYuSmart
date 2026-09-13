@@ -121,7 +121,8 @@ public class PlatformPublishService {
         Map<String, Object> category = recommendCategory(accountId, cookieText, title, description, cdnImages);
 
         Map<String, Object> publishData = buildPublishData(
-                title, description, material.getAmount(), material.getStock(), cdnImages, category, platformAddress);
+                title, description, material.getAmount(), material.getStock(), cdnImages, category,
+                platformAddress, data);
         // 图片上传不单独限流，最终提交前只获取一次完整发布额度。
         requirePermit(accountId, RiskControlService.WriteOperation.ITEM_PUBLISH);
         XianyuApiCallUtils.ApiCallResult publishResult = apiCallUtils.callApiWithRetry(
@@ -605,7 +606,7 @@ public class PlatformPublishService {
     private Map<String, Object> buildPublishData(String title, String description,
                                                  java.math.BigDecimal amount, Integer stock,
                                                  List<String> images, Map<String, Object> category,
-                                                 Map<String, Object> address) {
+                                                 Map<String, Object> address, Map<String, Object> config) {
         List<Map<String, Object>> imageList = new ArrayList<>();
         for (int index = 0; index < images.size(); index++) {
             Map<String, Object> image = new LinkedHashMap<>();
@@ -640,12 +641,17 @@ public class PlatformPublishService {
         ));
         publishData.put("itemCatDTO", category);
         publishData.put("itemPriceDTO", Map.of("priceInCent", priceInCent));
-        publishData.put("itemPostFeeDTO", Map.of(
-                "canFreeShipping", false,
-                "supportFreight", false,
-                "onlyTakeSelf", false,
-                "templateId", "0"
-        ));
+        String deliveryMethod = text(config.get("deliveryMethod"));
+        boolean express = "快递发货".equals(deliveryMethod);
+        boolean selfPickup = "当面交易".equals(deliveryMethod);
+        boolean freeShipping = express && Boolean.TRUE.equals(config.get("freeShipping"));
+        Map<String, Object> postFee = new LinkedHashMap<>();
+        postFee.put("canFreeShipping", freeShipping);
+        postFee.put("supportFreight", express && !freeShipping);
+        postFee.put("onlyTakeSelf", selfPickup);
+        postFee.put("templateId", text(config.get("freightTemplateId")).isBlank()
+                ? "0" : text(config.get("freightTemplateId")));
+        publishData.put("itemPostFeeDTO", postFee);
         publishData.put("itemAddrDTO", address);
         publishData.put("userRightsProtocols", List.of(
                 Map.of("enable", false, "serviceCode", "FAST_DELIVERY_48_HOUR"),

@@ -7,15 +7,20 @@ import {
   savePlatformUser,
   type PermissionOption,
   type PlatformUser,
-  type PlatformUserList
+  type PlatformUserList,
+  type TeamMemberRole
 } from '@/api/admin-user'
+import { getAccountList } from '@/api/account'
+import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
+import { isPlatformAdmin, permissionState } from '@/utils/permission'
 
 const loading = ref(false)
 const saving = ref(false)
 const users = ref<PlatformUser[]>([])
 const summary = ref<PlatformUserList>({ records: [], total: 0, activeCount: 0, adminCount: 0 })
 const options = ref<PermissionOption[]>([])
+const accounts = ref<Account[]>([])
 const editing = ref<PlatformUser | null>()
 const passwordTarget = ref<PlatformUser | null>()
 const newPassword = ref('')
@@ -23,6 +28,9 @@ const form = ref({
   username: '',
   password: '',
   role: 'USER' as 'ADMIN' | 'USER',
+  memberRole: 'OPERATOR' as TeamMemberRole,
+  accountScopeMode: 'ALL' as 'ALL' | 'SELECTED',
+  accountIds: [] as number[],
   status: 1,
   permissions: [] as string[]
 })
@@ -30,6 +38,7 @@ const form = ref({
 const menuGroups = computed(() => groupOptions('MENU'))
 const actionGroups = computed(() => groupOptions('ACTION'))
 const isCreating = computed(() => editing.value === null)
+const canManageOwner = computed(() => isPlatformAdmin.value || permissionState.value?.memberRole === 'OWNER')
 
 function groupOptions(type: 'MENU' | 'ACTION') {
   return options.value
@@ -43,13 +52,15 @@ function groupOptions(type: 'MENU' | 'ACTION') {
 async function load() {
   loading.value = true
   try {
-    const [userResponse, permissionResponse] = await Promise.all([
+    const [userResponse, permissionResponse, accountResponse] = await Promise.all([
       getPlatformUsers(),
-      getPermissionOptions()
+      getPermissionOptions(),
+      getAccountList()
     ])
     summary.value = userResponse.data || summary.value
     users.value = userResponse.data?.records || []
     options.value = permissionResponse.data || []
+    accounts.value = accountResponse.data?.accounts || []
   } finally {
     loading.value = false
   }
@@ -61,6 +72,9 @@ function openCreate() {
     username: '',
     password: '',
     role: 'USER',
+    memberRole: 'OPERATOR',
+    accountScopeMode: 'ALL',
+    accountIds: [],
     status: 1,
     permissions: options.value.map(option => option.code)
   }
@@ -72,6 +86,9 @@ function openEdit(user: PlatformUser) {
     username: user.username,
     password: '',
     role: user.role,
+    memberRole: user.memberRole || (user.role === 'ADMIN' ? 'OWNER' : 'OPERATOR'),
+    accountScopeMode: user.accountScopeMode || 'ALL',
+    accountIds: [...(user.accountIds || [])],
     status: user.status,
     permissions: [...(user.permissions || [])]
   }
@@ -101,6 +118,9 @@ async function save() {
       username: isCreating.value ? form.value.username : undefined,
       password: isCreating.value ? form.value.password : undefined,
       role: form.value.role,
+      memberRole: form.value.role === 'ADMIN' ? 'OWNER' : form.value.memberRole,
+      accountScopeMode: form.value.accountScopeMode,
+      accountIds: form.value.accountIds,
       status: form.value.status,
       permissions: form.value.permissions
     })
@@ -131,6 +151,24 @@ function formatTime(value?: string) {
   return value ? value.replace('T', ' ').slice(0, 19) : '从未登录'
 }
 
+const memberRoleLabel = (value: TeamMemberRole) => ({
+  OWNER: '负责人', TENANT_ADMIN: '租户管理员', OPERATOR: '运营', SUPPORT: '客服', FINANCE: '财务'
+}[value])
+
+function applyMemberRole() {
+  if (form.value.role === 'ADMIN') return
+  const menu = (code: string) => options.value.find(item => item.code === code)?.code
+  const codes = (...values: string[]) => values.map(menu).filter((value): value is string => !!value)
+  const presets: Record<TeamMemberRole, string[]> = {
+    OWNER: options.value.map(item => item.code),
+    TENANT_ADMIN: options.value.map(item => item.code),
+    OPERATOR: options.value.filter(item => item.group !== '系统').map(item => item.code),
+    SUPPORT: codes('menu:command-center', 'menu:messages', 'menu:buyers', 'menu:orders', 'menu:auto-reply', 'action:message-send', 'action:buyer-write'),
+    FINANCE: codes('menu:dashboard', 'menu:orders', 'menu:operation-log')
+  }
+  form.value.permissions = presets[form.value.memberRole] || []
+}
+
 onMounted(load)
 </script>
 
@@ -139,14 +177,14 @@ onMounted(load)
     <section class="permission-hero">
       <div>
         <span class="eyebrow">PLATFORM ACCESS</span>
-        <h2>账号与权限</h2>
-        <p>集中管理全站登录账号。管理员拥有完整平台能力，普通用户按菜单和操作精确授权。</p>
+        <h2>团队与权限</h2>
+          <p>团队成员共享同一经营主体，并可按角色、菜单、动作和闲鱼账号范围精确授权。</p>
       </div>
       <button class="primary" @click="openCreate">创建账号</button>
     </section>
 
     <section class="summary-grid">
-      <article><span>全站账号</span><strong>{{ summary.total }}</strong></article>
+      <article><span>团队账号</span><strong>{{ summary.total }}</strong></article>
       <article><span>启用账号</span><strong>{{ summary.activeCount }}</strong></article>
       <article><span>管理员</span><strong>{{ summary.adminCount }}</strong></article>
     </section>
@@ -167,8 +205,8 @@ onMounted(load)
             <span><strong>{{ user.username }}</strong><small>ID {{ user.id }} · 创建于 {{ formatTime(user.createdTime) }}</small></span>
           </div>
           <div class="role-cell">
-            <span :class="['role', user.role.toLowerCase()]">{{ user.role === 'ADMIN' ? '管理员' : '普通用户' }}</span>
-            <small>{{ user.role === 'ADMIN' ? '全站完整权限' : `${user.permissions?.length || 0} 项权限` }}</small>
+            <span :class="['role', user.role.toLowerCase()]">{{ memberRoleLabel(user.memberRole) }}</span>
+            <small>{{ user.accountScopeMode === 'ALL' ? '全部闲鱼账号' : `${user.accountIds?.length || 0} 个闲鱼账号` }} · {{ user.permissions?.length || 0 }} 项权限</small>
           </div>
           <div class="login-cell">
             <strong>{{ formatTime(user.lastLoginTime) }}</strong>
@@ -178,8 +216,8 @@ onMounted(load)
             {{ user.status === 1 ? '已启用' : '已停用' }}
           </span>
           <div class="actions">
-            <button @click="openEdit(user)">权限设置</button>
-            <button @click="openPassword(user)">重置密码</button>
+            <button :disabled="user.memberRole === 'OWNER' && !canManageOwner" @click="openEdit(user)">权限设置</button>
+            <button :disabled="user.memberRole === 'OWNER' && !canManageOwner" @click="openPassword(user)">重置密码</button>
           </div>
         </article>
         <div v-if="users.length === 0" class="empty">暂无平台账号</div>
@@ -200,16 +238,39 @@ onMounted(load)
           <div class="base-form">
             <label v-if="isCreating">用户名<input v-model="form.username" maxlength="20" placeholder="3-20位中英文、数字或下划线" /></label>
             <label v-if="isCreating">初始密码<input v-model="form.password" type="password" maxlength="72" placeholder="至少8位" /></label>
-            <label>账号角色
+            <label v-if="isPlatformAdmin">平台角色
               <select v-model="form.role">
                 <option value="USER">普通用户 · 按所选权限使用</option>
                 <option value="ADMIN">管理员 · 管理全站并拥有全部权限</option>
+              </select>
+            </label>
+            <label v-if="form.role !== 'ADMIN'">团队岗位
+              <select v-model="form.memberRole" @change="applyMemberRole">
+                <option v-if="canManageOwner" value="OWNER">负责人 · 团队和经营主体最高权限</option>
+                <option value="TENANT_ADMIN">租户管理员 · 除全站管理外完整权限</option>
+                <option value="OPERATOR">运营 · 商品、订单与自动化</option>
+                <option value="SUPPORT">客服 · 消息、买家与订单只读</option>
+                <option value="FINANCE">财务 · 看板、订单与审计只读</option>
               </select>
             </label>
             <label>账号状态
               <select v-model="form.status">
                 <option :value="1">启用</option>
                 <option :value="0">停用</option>
+              </select>
+            </label>
+          </div>
+
+          <div v-if="form.role !== 'ADMIN'" class="scope-form">
+            <label>闲鱼账号范围
+              <select v-model="form.accountScopeMode">
+                <option value="ALL">全部账号（包括以后新增）</option>
+                <option value="SELECTED">仅指定账号</option>
+              </select>
+            </label>
+            <label v-if="form.accountScopeMode === 'SELECTED'">允许访问的账号
+              <select v-model="form.accountIds" multiple :size="Math.min(Math.max(accounts.length, 3), 7)">
+                <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb || `账号 ${account.id}` }}</option>
               </select>
             </label>
           </div>
@@ -288,12 +349,13 @@ button, input, select { font: inherit; } button { padding: 8px 13px; border: 1px
 .icon-button { padding: 2px 8px; border: 0; font-size: 23px; }.base-form { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 18px 20px; }
 label { color: #475467; font-size: 13px; }.base-form label, .password-dialog label { display: grid; gap: 6px; }input, select { width: 100%; padding: 9px 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; background: #fff; color: #344054; }
 .admin-notice { margin: 0 20px 20px; padding: 13px 14px; border: 1px solid #b2ccff; border-radius: 8px; background: #eff4ff; color: #344054; font-size: 13px; }
+.scope-form { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; margin: 0 20px 18px; padding: 13px; border: 1px solid #d1e9ff; border-radius: 8px; background: #f5fbff; }.scope-form label { display: grid; gap: 6px; }.scope-form select[multiple] { min-height: 90px; }
 .permission-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 0 20px 18px; overflow: auto; }.permission-sections > section { border: 1px solid #e4e7ec; border-radius: 9px; overflow: hidden; }
 .section-title { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #eaecf0; }.section-title strong, .section-title small { display: block; }.section-title small { margin-top: 3px; color: #98a2b3; font-size: 11px; }.section-title button { padding: 4px 8px; font-size: 12px; }
 .permission-group { display: grid; grid-template-columns: 120px 1fr 1fr; align-items: center; gap: 8px; min-height: 40px; padding: 7px 12px; border-bottom: 1px solid #f2f4f7; }.permission-group:last-child { border-bottom: 0; }
 .group-check, .permission-option { display: flex; align-items: center; gap: 7px; }.group-check { color: #344054; font-weight: 600; }.permission-option input, .group-check input { width: 15px; height: 15px; margin: 0; }
 .editor > footer, .password-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid #eaecf0; }
 .password-dialog { width: min(440px, 96vw); padding-bottom: 4px; border-radius: 12px; background: #fff; }.password-dialog header { padding: 16px 18px; }.password-dialog header p { margin-top: 3px; color: #667085; font-size: 12px; }.password-dialog > label, .password-dialog .hint { margin: 16px 18px 0; }.hint { color: #667085; font-size: 12px; line-height: 1.6; }
-@media (max-width: 900px) { .account-row { grid-template-columns: 1fr 1fr; }.actions { justify-content: flex-start; }.permission-sections { grid-template-columns: 1fr; }.base-form { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .account-row { grid-template-columns: 1fr 1fr; }.actions { justify-content: flex-start; }.permission-sections { grid-template-columns: 1fr; }.base-form, .scope-form { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .permission-page { padding: 10px; }.permission-hero { align-items: stretch; flex-direction: column; }.summary-grid { grid-template-columns: 1fr; }.account-row { grid-template-columns: 1fr; }.overlay { padding: 0; }.editor { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }.permission-group { grid-template-columns: 1fr 1fr; }.group-check { grid-column: 1 / -1; } }
 </style>

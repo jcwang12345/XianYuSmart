@@ -16,6 +16,14 @@ public class PlatformUserRespDTO {
 
     private String role;
 
+    private Long tenantId;
+
+    private String memberRole;
+
+    private String accountScopeMode;
+
+    private List<Long> accountIds;
+
     private Integer status;
 
     private List<String> permissions;

@@ -10,4 +10,5 @@ import lombok.Data;
 public class LoginReqDTO {
     private String username;
     private String password;
+    private String totpCode;
 }

@@ -3,7 +3,7 @@
  * 导航菜单组件 - 电脑端侧边栏和手机端抽屉共用
  */
 import { computed, markRaw, type Component } from 'vue'
-import { hasPermission, isPlatformAdmin, permissionState } from '@/utils/permission'
+import { hasPermission, isPlatformAdmin, isTenantManager, permissionState } from '@/utils/permission'
 import { MENU_GROUPS, normalizeMenuLayout, type MenuIcon, type MenuItemDefinition } from '@/config/menu'
 import IconAlert from '@/components/icons/IconAlert.vue'
 import IconChart from '@/components/icons/IconChart.vue'
@@ -73,6 +73,7 @@ const visibleGroups = computed<VisibleMenuGroup[]>(() => {
     const items = groupLayout.items.flatMap(itemId => {
       const item = definition.items.find(menuItem => menuItem.id === itemId)
       if (!item || item.adminOnly && !isPlatformAdmin.value
+        || item.managerOnly && !isTenantManager.value
         || item.permission && !hasPermission(item.permission)) {
         return []
       }

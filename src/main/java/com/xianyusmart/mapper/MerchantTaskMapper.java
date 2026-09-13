@@ -44,7 +44,10 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "WHERE id = #{id} AND (status IN (0, -1) OR (status = 1 AND updated_time <= DATE_SUB(NOW(3), INTERVAL 10 MINUTE)))")
     int claim(@Param("id") Long id);
 
-    @Update("UPDATE merchant_task SET status = 2, result_json = #{resultJson}, error_message = NULL, next_retry_time = NULL WHERE id = #{id}")
+    @Update("UPDATE merchant_task SET status = 2, result_json = #{resultJson}, error_message = NULL, next_retry_time = NULL, " +
+            "verification_status = CASE WHEN task_type <> 'PUBLISH' THEN 'NOT_REQUIRED' " +
+            "WHEN JSON_VALID(#{resultJson}) AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.itemId')), '') IS NOT NULL " +
+            "THEN 'VERIFIED' ELSE 'PENDING' END WHERE id = #{id}")
     int complete(@Param("id") Long id, @Param("resultJson") String resultJson);
 
     @Update("UPDATE merchant_task SET status = -1, error_message = #{errorMessage}, next_retry_time = #{nextRetryTime} WHERE id = #{id}")

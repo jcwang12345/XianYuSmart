@@ -118,6 +118,7 @@ public class LoginController {
             reqBO.setPassword(reqDTO.getPassword());
             reqBO.setIp(ip);
             reqBO.setDeviceId(deviceId);
+            reqBO.setTotpCode(reqDTO.getTotpCode());
 
             LoginRespBO respBO = authService.login(reqBO);
 

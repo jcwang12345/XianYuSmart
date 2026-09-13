@@ -3,11 +3,11 @@ package com.xianyusmart.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.entity.XianyuOperationLog;
+import com.xianyusmart.context.UserContext;
 import com.xianyusmart.mapper.XianyuOperationLogMapper;
 import com.xianyusmart.service.OperationLogService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
@@ -27,9 +27,9 @@ public class OperationLogServiceImpl implements OperationLogService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     
     @Override
-    @Async
     public void log(XianyuOperationLog operationLog) {
         try {
+            populateOperator(operationLog);
             // 设置创建时间
             if (operationLog.getCreateTime() == null) {
                 operationLog.setCreateTime(System.currentTimeMillis());
@@ -46,20 +46,19 @@ public class OperationLogServiceImpl implements OperationLogService {
     }
     
     @Override
-    @Async
     public void log(Long accountId, String operationType, String operationDesc, Integer status) {
         log(accountId, operationType, null, operationDesc, status, 
             null, null, null, null, null, null);
     }
     
     @Override
-    @Async
     public void log(Long accountId, String operationType, String operationModule, 
                    String operationDesc, Integer status, String targetType, String targetId,
                    String requestParams, String responseResult, String errorMessage, Integer durationMs) {
         try {
             XianyuOperationLog operationLog = new XianyuOperationLog();
             operationLog.setXianyuAccountId(accountId);
+            populateOperator(operationLog);
             operationLog.setOperationType(operationType);
             operationLog.setOperationModule(operationModule);
             operationLog.setOperationDesc(operationDesc);
@@ -77,6 +76,15 @@ public class OperationLogServiceImpl implements OperationLogService {
                     accountId, operationType, operationModule, status);
         } catch (Exception e) {
             log.error("记录操作日志失败", e);
+        }
+    }
+
+    private void populateOperator(XianyuOperationLog operationLog) {
+        if (operationLog.getOperatorUserId() == null) {
+            operationLog.setOperatorUserId(UserContext.getUserId());
+        }
+        if (operationLog.getOperatorUsername() == null) {
+            operationLog.setOperatorUsername(UserContext.getUsername());
         }
     }
     

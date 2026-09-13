@@ -22,7 +22,7 @@ const route = useRoute()
 
 declare const __APP_VERSION__: string
 
-const currentVersion = ref(__APP_VERSION__ || '2.0.7')
+const currentVersion = ref(__APP_VERSION__ || '2.1.0')
 const hasNewVersion = ref(false)
 const isAdmin = ref(false)
 const updateDialog = ref<InstanceType<typeof UpdateDialog> | null>(null)
@@ -66,6 +66,7 @@ provide('setHeaderContent', setHeaderContent)
 
 const pageTitleMap: Record<string, string> = {
   '/dashboard': '仪表板',
+  '/command-center': '运营驾驶舱',
   '/accounts': '闲鱼账号',
   '/connection': '连接管理',
   '/goods': '商品管理',
@@ -84,6 +85,7 @@ const pageTitleMap: Record<string, string> = {
 
 const pageIconMap: Record<string, any> = {
   '/dashboard': markRaw(IconChart),
+  '/command-center': markRaw(IconChart),
   '/data-panel': markRaw(IconChart),
   '/accounts': markRaw(IconAccount),
   '/connection': markRaw(IconWifi),

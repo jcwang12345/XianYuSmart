@@ -11,6 +11,7 @@ const loading = ref(false)
 const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
+const totpCode = ref('')
 
 const showPassword = ref(false)
 const showConfirmPassword = ref(false)
@@ -59,7 +60,7 @@ async function handleLogin() {
   if (!password.value) return
   loading.value = true
   try {
-    const res = await login({ username: username.value.trim(), password: password.value })
+    const res = await login({ username: username.value.trim(), password: password.value, totpCode: totpCode.value.trim() || undefined })
     if (res.code === 200 && res.data && res.data.token) {
       setAuthToken(res.data.token, res.data.username)
       window.location.href = '/dashboard'
@@ -134,6 +135,14 @@ function handleKeydown(e: KeyboardEvent) {
               :disabled="loading"
               @keydown="handleKeydown"
             />
+          </div>
+        </div>
+
+        <div class="login-field">
+          <label class="login-label">两步验证码 <small>（启用后填写）</small></label>
+          <div class="login-input-wrap">
+            <input v-model="totpCode" type="text" inputmode="numeric" autocomplete="one-time-code"
+              maxlength="11" class="login-input" placeholder="6 位验证码或恢复码" :disabled="loading" @keydown="handleKeydown" />
           </div>
         </div>
 

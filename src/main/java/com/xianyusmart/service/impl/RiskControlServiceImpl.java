@@ -3,6 +3,7 @@ package com.xianyusmart.service.impl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.constants.OperationConstants;
 import com.xianyusmart.service.OperationLogService;
+import com.xianyusmart.service.OperationalIssueService;
 import com.xianyusmart.service.RiskControlService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -67,6 +68,7 @@ public class RiskControlServiceImpl implements RiskControlService {
     private final Path stateFile;
     private final Clock clock;
     private final OperationLogService operationLogService;
+    private final OperationalIssueService operationalIssueService;
     private final Map<String, Long> rateLimits = new HashMap<>();
     private final Map<Long, CircuitEntry> circuits = new HashMap<>();
 
@@ -74,16 +76,19 @@ public class RiskControlServiceImpl implements RiskControlService {
     public RiskControlServiceImpl(ObjectMapper objectMapper,
                                   @Value("${app.risk-guard.state-file:${user.dir}/data/platform-risk-guard.json}")
                                   String stateFile,
-                                  OperationLogService operationLogService) {
-        this(objectMapper, Path.of(stateFile), Clock.systemUTC(), operationLogService);
+                                  OperationLogService operationLogService,
+                                  OperationalIssueService operationalIssueService) {
+        this(objectMapper, Path.of(stateFile), Clock.systemUTC(), operationLogService, operationalIssueService);
     }
 
     RiskControlServiceImpl(ObjectMapper objectMapper, Path stateFile, Clock clock,
-                           OperationLogService operationLogService) {
+                           OperationLogService operationLogService,
+                           OperationalIssueService operationalIssueService) {
         this.objectMapper = objectMapper;
         this.stateFile = stateFile;
         this.clock = clock;
         this.operationLogService = operationLogService;
+        this.operationalIssueService = operationalIssueService;
         loadState();
     }
 
@@ -224,6 +229,10 @@ public class RiskControlServiceImpl implements RiskControlService {
         log.warn("【账号{}】平台写操作熔断已开启: reason={}, remainingSeconds={}",
                 accountId, reason, remainingSeconds(retryAt));
         logGuardEvent(accountId, "平台风控熔断已开启", OperationConstants.Status.FAIL, reason);
+        operationalIssueService.report(
+                "ACCOUNT_RISK", "account-risk:" + accountId + ":" + reason, accountId,
+                "CRITICAL", "账号需要安全验证", "平台写操作已暂停：" + reason,
+                "RISK_GUARD", reason, java.time.LocalDateTime.now().plusMinutes(10));
     }
 
     @Override

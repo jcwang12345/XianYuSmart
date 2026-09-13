@@ -3,6 +3,9 @@ package com.xianyusmart.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.xianyusmart.persistence.SensitiveStringTypeHandler;
 import lombok.Data;
 
 /**
@@ -10,7 +13,7 @@ import lombok.Data;
  * @date 2026/4/22
  */
 @Data
-@TableName("sys_user")
+@TableName(value = "sys_user", autoResultMap = true)
 public class SysUser {
 
     public static final String ROLE_ADMIN = "ADMIN";
@@ -18,6 +21,9 @@ public class SysUser {
 
     @TableId(type = IdType.AUTO)
     private Long id;
+
+    /** 所属经营租户；多个团队成员可共享同一租户。 */
+    private Long tenantId;
 
     /** 用户名 */
     private String username;
@@ -27,6 +33,21 @@ public class SysUser {
 
     /** 平台角色：ADMIN 管理员，USER 普通租户 */
     private String role;
+
+    /** 租户内角色：OWNER/TENANT_ADMIN/OPERATOR/SUPPORT/FINANCE。 */
+    private String memberRole;
+
+    /** 闲鱼账号访问范围：ALL/SELECTED。 */
+    private String accountScopeMode;
+
+    private Integer totpEnabled;
+
+    @JsonIgnore
+    @TableField(typeHandler = SensitiveStringTypeHandler.class)
+    private String totpSecret;
+
+    @JsonIgnore
+    private String totpRecoveryCodes;
 
     /** 状态 1:正常 0:禁用 */
     private Integer status;

@@ -81,6 +81,7 @@ public class MerchantOperationsService {
     private final OperationLogService operationLogService;
     private final AIService aiService;
     private final OpportunityImageService opportunityImageService;
+    private final ProductContentPolicyService productContentPolicyService;
     private final ObjectMapper objectMapper;
 
     public MerchantOperationsService(MerchantResourceMapper resourceMapper,
@@ -101,6 +102,7 @@ public class MerchantOperationsService {
                                      OperationLogService operationLogService,
                                      AIService aiService,
                                      OpportunityImageService opportunityImageService,
+                                     ProductContentPolicyService productContentPolicyService,
                                      ObjectMapper objectMapper) {
         this.resourceMapper = resourceMapper;
         this.taskMapper = taskMapper;
@@ -120,6 +122,7 @@ public class MerchantOperationsService {
         this.operationLogService = operationLogService;
         this.aiService = aiService;
         this.opportunityImageService = opportunityImageService;
+        this.productContentPolicyService = productContentPolicyService;
         this.objectMapper = objectMapper;
     }
 
@@ -359,11 +362,12 @@ public class MerchantOperationsService {
             throw new IllegalArgumentException("发布账号、标题和商品详情不能为空");
         }
         if (!(request.get("images") instanceof List<?> images) || images.isEmpty()) {
-            throw new IllegalArgumentException("至少需要一张 HTTPS 商品图片");
+            throw new IllegalArgumentException("至少需要一张商品图片");
         }
         for (Object image : images) {
-            if (!(image instanceof String imageUrl) || !imageUrl.startsWith("https://")) {
-                throw new IllegalArgumentException("商品图片必须使用 HTTPS 地址");
+            if (!(image instanceof String imageUrl)
+                    || !(imageUrl.startsWith("https://") || imageUrl.startsWith("/media/"))) {
+                throw new IllegalArgumentException("商品图片必须使用 HTTPS 地址或本地媒体地址");
             }
         }
         BigDecimal amount = decimalValue(request.get("amount"), BigDecimal.ZERO);
@@ -380,7 +384,10 @@ public class MerchantOperationsService {
         Map<String, Object> data = new HashMap<>(request);
         data.remove("dryRun");
         boolean dryRun = Boolean.TRUE.equals(request.get("dryRun"));
-        Map<String, Object> preflight = platformPublishService.preflight(request, accountId);
+        Map<String, Object> contentPreflight = productContentPolicyService.validate(request);
+        Map<String, Object> platformPreflight = platformPublishService.preflight(request, accountId);
+        Map<String, Object> preflight = new LinkedHashMap<>(platformPreflight);
+        preflight.put("contentPolicy", contentPreflight);
         if (dryRun) {
             // 预检必须经过平台类目和默认地址接口，避免仅校验本地字段造成虚假通过。
             return Map.of("valid", true, "dryRun", true, "preview", data, "platform", preflight);
@@ -439,6 +446,7 @@ public class MerchantOperationsService {
         task.setTenantId(requireTenantId());
         task.setTaskType(request.getTaskType());
         task.setRequestKey(blankToNull(request.getRequestKey()));
+        task.setBatchId(blankToNull(request.getBatchId()));
         task.setResourceId(request.getResourceId());
         task.setXianyuAccountId(request.getXianyuAccountId());
         task.setXyGoodsId(blankToNull(request.getXyGoodsId()));
@@ -538,6 +546,7 @@ public class MerchantOperationsService {
             throw new IllegalArgumentException("请选择待发布素材");
         }
         List<MerchantTask> tasks = new ArrayList<>();
+        String batchId = UUID.randomUUID().toString();
         for (Object resourceIdValue : resourceIds) {
             Long resourceId = longValue(resourceIdValue);
             MerchantResource resource = resourceId == null ? null : resourceMapper.selectById(resourceId);
@@ -552,6 +561,7 @@ public class MerchantOperationsService {
             for (Long effectiveAccountId : effectiveAccountIds) {
                 MerchantTaskReqDTO taskRequest = new MerchantTaskReqDTO();
                 taskRequest.setTaskType("PUBLISH");
+                taskRequest.setBatchId(batchId);
                 taskRequest.setResourceId(resourceId);
                 taskRequest.setXianyuAccountId(effectiveAccountId);
                 taskRequest.setScheduledTime(LocalDateTime.now());

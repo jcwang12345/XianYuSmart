@@ -3,6 +3,8 @@ import { request } from '@/utils/request';
 // 操作记录
 export interface OperationLog {
   id: number;
+  operatorUserId?: number;
+  operatorUsername?: string;
   xianyuAccountId: number;
   operationType: string;
   operationModule: string;

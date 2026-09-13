@@ -62,6 +62,7 @@ export interface MerchantResource {
 export interface MerchantTask {
   id: number
   taskType: string
+  batchId?: string
   resourceId?: number
   xianyuAccountId?: number
   xyGoodsId?: string
@@ -70,6 +71,7 @@ export interface MerchantTask {
   attemptCount: number
   maxAttempts: number
   resultJson?: string
+  verificationStatus?: 'NOT_REQUIRED' | 'PENDING' | 'VERIFIED' | 'FAILED'
   errorMessage?: string
   createdTime: string
 }
@@ -209,6 +211,9 @@ export function createPublishPlan(data: {
   poiId?: string
   poiName?: string
   deliveryMethod?: string
+  productType?: 'VIRTUAL' | 'PHYSICAL'
+  freeShipping?: boolean
+  freightTemplateId?: string
   dryRun?: boolean
 }) {
   return request<Record<string, any>>({ url: '/merchant/products/publish', method: 'POST', data })

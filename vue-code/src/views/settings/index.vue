@@ -11,6 +11,10 @@ import { showConfirm } from '@/utils/confirm'
 import { clearAuthToken } from '@/utils/request'
 import { hasPermission, permissionState, updateMenuLayout } from '@/utils/permission'
 import {
+  beginTwoFactor, confirmTwoFactor, disableTwoFactor, getLoginSessions,
+  getTwoFactorStatus, revokeLoginSession, type LoginSession
+} from '@/api/security'
+import {
   MENU_GROUPS,
   MENU_LAYOUT_SETTING_KEY,
   createDefaultMenuLayout,
@@ -51,6 +55,14 @@ const showConfirmPassword = ref(false)
 
 // 退出登录
 const loggingOut = ref(false)
+
+// 登录安全
+const twoFactorEnabled = ref(false)
+const twoFactorSetup = ref<{ secret: string; qrCode: string }>()
+const twoFactorCode = ref('')
+const recoveryCodes = ref<string[]>([])
+const loginSessions = ref<LoginSession[]>([])
+const securitySaving = ref(false)
 
 // 系统提示词
 const SYS_PROMPT_KEY = 'sys_prompt'
@@ -230,6 +242,8 @@ onMounted(async () => {
     loading.value = false
   }
 
+  await loadSecurity()
+
   // 加载系统提示词配置
   try {
     const res = await getSetting({ settingKey: SYS_PROMPT_KEY })
@@ -262,6 +276,57 @@ onMounted(async () => {
   // 加载邮箱通知配置
   await loadEmailConfig()
 })
+
+async function loadSecurity() {
+  try {
+    const [status, sessions] = await Promise.all([getTwoFactorStatus(), getLoginSessions()])
+    twoFactorEnabled.value = status.data?.enabled === true
+    loginSessions.value = sessions.data || []
+  } catch (e) { console.error('加载登录安全配置失败:', e) }
+}
+
+async function startTwoFactor() {
+  securitySaving.value = true
+  try {
+    const response = await beginTwoFactor()
+    if (response.data) twoFactorSetup.value = response.data
+    twoFactorCode.value = ''
+    recoveryCodes.value = []
+  } finally { securitySaving.value = false }
+}
+
+async function enableTwoFactor() {
+  if (!twoFactorCode.value.trim()) return toast.warning('请输入认证器中的 6 位验证码')
+  securitySaving.value = true
+  try {
+    recoveryCodes.value = (await confirmTwoFactor(twoFactorCode.value.trim())).data || []
+    twoFactorEnabled.value = true
+    twoFactorSetup.value = undefined
+    twoFactorCode.value = ''
+    toast.success('两步验证已启用，请妥善保存恢复码')
+  } finally { securitySaving.value = false }
+}
+
+async function turnOffTwoFactor() {
+  if (!twoFactorCode.value.trim()) return toast.warning('请输入验证码或恢复码')
+  securitySaving.value = true
+  try {
+    await disableTwoFactor(twoFactorCode.value.trim())
+    twoFactorEnabled.value = false
+    twoFactorCode.value = ''
+    recoveryCodes.value = []
+    toast.success('两步验证已关闭')
+  } finally { securitySaving.value = false }
+}
+
+async function revokeSession(session: LoginSession) {
+  try {
+    await showConfirm(`确定撤销设备「${session.device || session.loginIp || session.id}」的登录会话？`, '撤销设备')
+    await revokeLoginSession(session.id)
+    await loadSecurity()
+    toast.success('设备会话已撤销')
+  } catch {}
+}
 
 async function loadAIConfig() {
   try {
@@ -1239,6 +1304,25 @@ async function saveMenuLayout() {
               </button>
             </div>
           </div>
+        </div>
+
+        <div class="settings__section">
+          <div class="settings__section-header">
+            <div><div class="settings__section-title">两步验证</div><p class="settings__desc">使用认证器动态验证码保护平台账号。</p></div>
+            <span :class="twoFactorEnabled ? 'security-state enabled' : 'security-state'">{{ twoFactorEnabled ? '已启用' : '未启用' }}</span>
+          </div>
+          <div v-if="twoFactorSetup" class="two-factor-setup">
+            <img :src="twoFactorSetup.qrCode" alt="两步验证二维码" />
+            <div><p>使用 Microsoft Authenticator、Google Authenticator 等应用扫码。</p><code>{{ twoFactorSetup.secret }}</code><input v-model="twoFactorCode" class="settings__input" maxlength="6" inputmode="numeric" placeholder="输入 6 位验证码" /><button class="settings__btn settings__btn--primary" :disabled="securitySaving" @click="enableTwoFactor">确认启用</button></div>
+          </div>
+          <div v-else-if="twoFactorEnabled" class="security-action"><input v-model="twoFactorCode" class="settings__input" maxlength="11" placeholder="验证码或恢复码" /><button class="settings__btn settings__btn--danger" :disabled="securitySaving" @click="turnOffTwoFactor">关闭两步验证</button></div>
+          <button v-else class="settings__btn settings__btn--primary" :disabled="securitySaving" @click="startTwoFactor">绑定认证器</button>
+          <div v-if="recoveryCodes.length" class="recovery-codes"><strong>恢复码仅显示一次</strong><p>每个恢复码只能使用一次，请离线保存。</p><code v-for="code in recoveryCodes" :key="code">{{ code }}</code></div>
+        </div>
+
+        <div class="settings__section">
+          <div class="settings__section-header"><div><div class="settings__section-title">登录设备</div><p class="settings__desc">同一账号最多保留 5 个设备会话。</p></div><button class="settings__toggle-btn" @click="loadSecurity">刷新</button></div>
+          <div class="session-list"><div v-for="session in loginSessions" :key="session.id"><span><strong>{{ session.device || '未知设备' }}</strong><small>{{ session.loginIp || '-' }} · {{ session.createdTime?.replace('T',' ').slice(0,19) }}</small></span><button class="settings__toggle-btn" @click="revokeSession(session)">撤销</button></div><p v-if="!loginSessions.length" class="settings__desc">暂无有效会话。</p></div>
         </div>
 
         <!-- 退出登录 -->
@@ -3558,9 +3642,23 @@ async function saveMenuLayout() {
   box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
 }
 
+.security-state { padding: 3px 8px; border-radius: 999px; color: #667085; background: #f2f4f7; font-size: 12px; }
+.security-state.enabled { color: #067647; background: #ecfdf3; }
+.two-factor-setup { display: grid; grid-template-columns: 180px 1fr; gap: 18px; margin-top: 14px; align-items: start; }
+.two-factor-setup img { width: 180px; border: 1px solid #eaecf0; border-radius: 8px; }
+.two-factor-setup p { margin: 0 0 9px; color: #667085; font-size: 13px; }
+.two-factor-setup code { display: block; margin-bottom: 10px; padding: 8px; overflow-wrap: anywhere; border-radius: 6px; background: #f2f4f7; }
+.two-factor-setup .settings__input { margin-bottom: 9px; }
+.security-action { display: flex; gap: 8px; margin-top: 12px; }
+.security-action .settings__input { max-width: 260px; }
+.recovery-codes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 14px; padding: 12px; border: 1px solid #fedf89; border-radius: 8px; background: #fffaeb; }
+.recovery-codes strong, .recovery-codes p { grid-column: 1 / -1; margin: 0; }.recovery-codes p { color: #93370d; font-size: 12px; }.recovery-codes code { padding: 5px; text-align: center; background: #fff; }
+.session-list { margin-top: 10px; }.session-list > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f2f4f7; }.session-list strong,.session-list small { display: block; }.session-list small { margin-top: 3px; color: #98a2b3; font-size: 11px; }
+
 @media (max-width: 768px) {
   .settings__backup-modules {
     flex-direction: column;
   }
+  .two-factor-setup { grid-template-columns: 1fr; }.security-action { align-items: stretch; flex-direction: column; }.recovery-codes { grid-template-columns: repeat(2, 1fr); }
 }
 </style>

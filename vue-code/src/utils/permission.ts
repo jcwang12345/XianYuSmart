@@ -22,6 +22,10 @@ export async function loadCurrentUser(force = false) {
 
 export const isPlatformAdmin = computed(() => permissionState.value?.role === 'ADMIN')
 
+export const isTenantManager = computed(() => isPlatformAdmin.value
+  || permissionState.value?.memberRole === 'OWNER'
+  || permissionState.value?.memberRole === 'TENANT_ADMIN')
+
 export function hasPermission(code: string) {
   return isPlatformAdmin.value || permissionState.value?.permissions?.includes(code) === true
 }

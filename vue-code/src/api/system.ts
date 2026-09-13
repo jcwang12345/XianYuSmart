@@ -5,6 +5,10 @@ export type UserRole = 'ADMIN' | 'USER'
 export interface CurrentUser {
   username: string
   role: UserRole
+  tenantId: number
+  memberRole: 'OWNER' | 'TENANT_ADMIN' | 'OPERATOR' | 'SUPPORT' | 'FINANCE'
+  accountScopeMode: 'ALL' | 'SELECTED'
+  accountIds: number[]
   permissions: string[]
   menuLayout?: string
   lastLoginTime: string

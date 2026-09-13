@@ -34,6 +34,10 @@ const eventOptions = [
   { value: 'ACCOUNT_RECOVERED', label: '账号恢复' },
   { value: 'ACCOUNT_VERIFICATION_REQUIRED', label: '平台安全验证' },
   { value: 'KAMI_STOCK_LOW', label: '卡密低库存' }
+  ,{ value: 'OPERATIONAL_ISSUE_CREATED', label: '运营异常任务' }
+  ,{ value: 'CONVERSATION_SLA_BREACHED', label: '客服响应超时' }
+  ,{ value: 'PRODUCT_PUBLISH_FAILED', label: '商品发布失败' }
+  ,{ value: 'ACCOUNT_CAPABILITY_CHANGED', label: '账号能力变化' }
 ]
 const channelTypes: Array<{
   value: NotificationChannelType

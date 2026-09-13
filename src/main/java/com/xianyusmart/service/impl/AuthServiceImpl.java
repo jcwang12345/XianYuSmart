@@ -9,6 +9,7 @@ import com.xianyusmart.mapper.SysLoginTokenMapper;
 import com.xianyusmart.mapper.SysUserMapper;
 import com.xianyusmart.service.AuthService;
 import com.xianyusmart.service.PlatformPermissionService;
+import com.xianyusmart.service.TotpService;
 import com.xianyusmart.service.bo.*;
 import com.xianyusmart.util.JwtUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -58,6 +59,9 @@ public class AuthServiceImpl implements AuthService {
     @Autowired
     private PlatformPermissionService permissionService;
 
+    @Autowired
+    private TotpService totpService;
+
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     @Override
@@ -81,14 +85,19 @@ public class AuthServiceImpl implements AuthService {
 
         // 创建用户
         SysUser user = new SysUser();
+        user.setTenantId(0L);
         user.setUsername(reqBO.getUsername());
         user.setPassword(passwordEncoder.encode(reqBO.getPassword()));
         // 公开注册只创建普通租户，避免全新环境的管理员权限被匿名抢占
         user.setRole(SysUser.ROLE_USER);
+        user.setMemberRole("OWNER");
+        user.setAccountScopeMode("ALL");
         user.setStatus(1);
         user.setCreatedTime(LocalDateTime.now().format(FORMATTER));
         user.setUpdatedTime(LocalDateTime.now().format(FORMATTER));
         sysUserMapper.insert(user);
+        user.setTenantId(user.getId());
+        sysUserMapper.updateById(user);
         // 公开注册账号默认保留完整租户能力，后续可由管理员按需收敛。
         permissionService.assignDefaultPermissions(user.getId());
 
@@ -121,13 +130,23 @@ public class AuthServiceImpl implements AuthService {
             throw new RuntimeException("用户名或密码错误");
         }
 
+        if (Integer.valueOf(1).equals(user.getTotpEnabled())
+                && !totpService.verifyForUser(user, reqBO.getTotpCode())) {
+            throw new RuntimeException("请输入正确的两步验证码或恢复码");
+        }
+
         // 生成Token
         String token = jwtUtil.generateToken(user.getId(), user.getUsername());
 
-        // 单设备登录：删除该用户之前的所有Token（挤下线旧设备）
-        LambdaQueryWrapper<SysLoginToken> tokenWrapper = new LambdaQueryWrapper<>();
-        tokenWrapper.eq(SysLoginToken::getUserId, user.getId());
-        sysLoginTokenMapper.delete(tokenWrapper);
+        // 同一设备替换旧会话；允许最多 5 个设备同时登录。
+        if (reqBO.getDeviceId() != null && !reqBO.getDeviceId().isBlank()) {
+            sysLoginTokenMapper.delete(new LambdaQueryWrapper<SysLoginToken>()
+                    .eq(SysLoginToken::getUserId, user.getId())
+                    .eq(SysLoginToken::getDeviceId, reqBO.getDeviceId()));
+        }
+        sysLoginTokenMapper.delete(new LambdaQueryWrapper<SysLoginToken>()
+                .eq(SysLoginToken::getUserId, user.getId())
+                .lt(SysLoginToken::getExpireTime, LocalDateTime.now().format(FORMATTER)));
 
         // 保存新Token到数据库
         SysLoginToken loginToken = new SysLoginToken();
@@ -139,6 +158,9 @@ public class AuthServiceImpl implements AuthService {
         loginToken.setCreatedTime(LocalDateTime.now().format(FORMATTER));
         loginToken.setUpdatedTime(LocalDateTime.now().format(FORMATTER));
         sysLoginTokenMapper.insert(loginToken);
+        List<SysLoginToken> activeTokens = sysLoginTokenMapper.selectList(new LambdaQueryWrapper<SysLoginToken>()
+                .eq(SysLoginToken::getUserId, user.getId()).orderByDesc(SysLoginToken::getCreatedTime));
+        activeTokens.stream().skip(5).forEach(item -> sysLoginTokenMapper.deleteById(item.getId()));
 
         // 更新用户最后登录信息
         user.setLastLoginTime(LocalDateTime.now().format(FORMATTER));

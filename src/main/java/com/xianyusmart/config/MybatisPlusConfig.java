@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.inner.DataPermissionInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
 import com.xianyusmart.context.UserContext;
 import com.xianyusmart.context.TenantContext;
@@ -21,6 +22,8 @@ import java.util.Set;
 @Configuration
 public class MybatisPlusConfig {
 
+    private final AccountDataPermissionHandler accountDataPermissionHandler = new AccountDataPermissionHandler();
+
     private static final Set<String> TENANT_TABLES = Set.of(
             "xianyu_account", "xianyu_cookie", "xianyu_goods", "xianyu_chat_message",
             "xianyu_goods_config", "xianyu_goods_auto_delivery_config", "xianyu_goods_order",
@@ -36,7 +39,8 @@ public class MybatisPlusConfig {
             "merchant_resource_account", "xianyu_keyword_reply_rule_account",
             "xianyu_fixed_delivery_template_account", "xianyu_kami_config_account",
             "xianyu_device_profile"
-            ,"xianyu_order_confirmation", "xianyu_reply_preference", "xianyu_welcome_claim"
+            ,"xianyu_order_confirmation", "xianyu_reply_preference", "xianyu_welcome_claim",
+            "operational_issue", "xianyu_account_capability", "conversation_assignment"
     );
 
     /**
@@ -58,6 +62,7 @@ public class MybatisPlusConfig {
                 return TenantContext.get() == null || !TENANT_TABLES.contains(tableName.toLowerCase());
             }
         }));
+        interceptor.addInnerInterceptor(new DataPermissionInterceptor(accountDataPermissionHandler));
         interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
         return interceptor;

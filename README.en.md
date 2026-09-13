@@ -18,7 +18,7 @@ XianYuSmart is a virtual product operations system for Xianyu in multi-tenant en
 
 The system does more than send a block of text after receiving an order. It connects **order discovery, idempotent queuing, inventory reservation, dual-channel delivery, failure retries, and manual review** into a complete recoverable workflow. Fixed content and card-key delivery modes are strictly mutually exclusive, while accounts, products, messages, orders, inventory, tasks, and AI knowledge bases are isolated by tenant. Core task workflows rely only on MySQL, without requiring Redis or a message queue, balancing deployment cost with future extensibility.
 
-Current version: [2.0.7](https://github.com/Evvvvvvvan/XianYuSmart/releases/tag/v2.0.7) · [View changelog](CHANGELOG.md)
+Current version: [2.1.0](https://github.com/jcwang12345/XianYuSmart/tree/v2.1.0) · [View changelog](CHANGELOG.md)
 
 [Community & Support](#community--support) · [Benefits for Merchants](#benefits-for-merchants) · [Technical Highlights](#technical-highlights) · [Problems Solved](#problems-solved) · [Feature Scope](#feature-scope) · [Feature Entry Points & Setup Order](#feature-entry-points--setup-order) · [Business Workflow](#business-workflow) · [Technical Baseline](#technical-baseline) · [Container Image Deployment](#container-image-deployment) · [Quick Start](#quick-start) · [Configuration](#configuration) · [Development Build](#development-build) · [Build & Verification](#build--verification) · [Directory Responsibilities](#directory-responsibilities) · [Routine Operations](#routine-operations) · [Usage Boundaries](#usage-boundaries) · [License & Disclaimer](#license--disclaimer) · [Star History](#star-history)
 
@@ -202,6 +202,8 @@ flowchart LR
 - Nginx
 
 ## Container Image Deployment
+
+Build this fork's `v2.1.0` locally with the root Dockerfile. The GHCR references below remain the upstream `v2.0.7` public image and do not include this command-center and team-access upgrade.
 
 Every official Release automatically publishes a `linux/amd64` image to GitHub Container Registry. Fixed versions are suitable for production deployment, while `latest` is intended for trying the latest official release.
 

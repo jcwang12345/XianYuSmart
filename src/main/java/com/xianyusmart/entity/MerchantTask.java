@@ -25,6 +25,8 @@ public class MerchantTask {
 
     private String requestKey;
 
+    private String batchId;
+
     private Long resourceId;
 
     private Long xianyuAccountId;
@@ -44,6 +46,9 @@ public class MerchantTask {
     private String requestJson;
 
     private String resultJson;
+
+    /** NOT_REQUIRED/PENDING/VERIFIED/FAILED，禁止用本地成功代替平台回读确认。 */
+    private String verificationStatus;
 
     private String errorMessage;
 

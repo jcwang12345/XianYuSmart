@@ -58,7 +58,8 @@ public class NotificationCenterService {
 
     public static final Set<String> EVENT_TYPES = Set.of(
             "ORDER_CREATED", "DELIVERY_SUCCESS", "DELIVERY_EXCEPTION",
-            "ACCOUNT_OFFLINE", "CREDENTIAL_EXPIRED", "KAMI_STOCK_LOW", "ACCOUNT_RECOVERED", "ACCOUNT_VERIFICATION_REQUIRED"
+            "ACCOUNT_OFFLINE", "CREDENTIAL_EXPIRED", "KAMI_STOCK_LOW", "ACCOUNT_RECOVERED", "ACCOUNT_VERIFICATION_REQUIRED",
+            "OPERATIONAL_ISSUE_CREATED", "CONVERSATION_SLA_BREACHED", "PRODUCT_PUBLISH_FAILED", "ACCOUNT_CAPABILITY_CHANGED"
     );
 
     private final XianyuNotificationChannelMapper channelMapper;
@@ -621,6 +622,10 @@ public class NotificationCenterService {
             case "ACCOUNT_RECOVERED" -> "账号已恢复";
             case "ACCOUNT_VERIFICATION_REQUIRED" -> "平台安全验证";
             case "KAMI_STOCK_LOW" -> "卡密低库存";
+            case "OPERATIONAL_ISSUE_CREATED" -> "运营异常任务";
+            case "CONVERSATION_SLA_BREACHED" -> "客服响应超时";
+            case "PRODUCT_PUBLISH_FAILED" -> "商品发布失败";
+            case "ACCOUNT_CAPABILITY_CHANGED" -> "账号能力变化";
             case "TEST" -> "测试通知";
             default -> eventType;
         };

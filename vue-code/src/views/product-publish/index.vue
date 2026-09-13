@@ -31,6 +31,9 @@ const form = reactive({
   poiId: '',
   poiName: '',
   deliveryMethod: '线上交付',
+  productType: 'VIRTUAL' as 'VIRTUAL' | 'PHYSICAL',
+  freeShipping: true,
+  freightTemplateId: '',
   imagesText: ''
 })
 
@@ -141,6 +144,9 @@ onMounted(load)
           <label class="workbench__field">库存<input v-model.number="form.stock" class="workbench__input" type="number" min="1"></label>
           <label class="workbench__field">素材分类<input v-model="form.category" class="workbench__input"><small>仅用于站内整理，提交时由闲鱼根据标题、详情和图片识别真实类目。</small></label>
           <label class="workbench__field">交付方式<select v-model="form.deliveryMethod" class="workbench__select"><option>线上交付</option><option>快递发货</option><option>当面交易</option></select></label>
+          <label class="workbench__field">商品类型<select v-model="form.productType" class="workbench__select"><option value="VIRTUAL">虚拟商品</option><option value="PHYSICAL">实物商品</option></select></label>
+          <label v-if="form.deliveryMethod === '快递发货'" class="workbench__field">运费方式<select v-model="form.freeShipping" class="workbench__select"><option :value="true">卖家包邮</option><option :value="false">使用运费模板</option></select></label>
+          <label v-if="form.deliveryMethod === '快递发货' && !form.freeShipping" class="workbench__field">运费模板 ID<input v-model="form.freightTemplateId" class="workbench__input" placeholder="平台运费模板 ID"><small>提交后会回读平台结果；无权限时不会显示假成功。</small></label>
         </div>
         <label class="workbench__field">商品图片（最多 9 张）<MediaUploader v-model="images" :account-id="form.xianyuAccountId" :max="9" label="上传商品图" /><small>优先上传到闲鱼图片服务；失败会保存到本机，实际发布时自动同步。</small></label>
         <label class="workbench__field">或粘贴图片地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea" maxlength="5000" placeholder="支持 HTTPS 图片地址，也可使用上方上传"></textarea><small>{{ form.imagesText.length }} / 5000</small></label>

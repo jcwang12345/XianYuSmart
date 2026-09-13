@@ -12,6 +12,10 @@ import java.util.List;
 public class CurrentUserRespDTO {
     private String username;
     private String role;
+    private Long tenantId;
+    private String memberRole;
+    private String accountScopeMode;
+    private List<Long> accountIds;
     private List<String> permissions;
     private String menuLayout;
     private String lastLoginTime;

@@ -211,6 +211,7 @@ onMounted(() => {
                   <th>ID</th>
                   <th>操作类型</th>
                   <th>操作描述</th>
+                  <th>操作人</th>
                   <th>状态</th>
                   <th>时间</th>
                   <th>操作</th>
@@ -227,6 +228,7 @@ onMounted(() => {
                   <td>
                     <span class="ol__log-desc" :title="log.operationDesc">{{ log.operationDesc || '-' }}</span>
                   </td>
+                  <td>{{ log.operatorUsername || '系统任务' }}</td>
                   <td>
                     <span class="ol__log-status" :class="`ol__log-status--${getStatusClass(log.operationStatus)}`">
                       {{ getStatusText(log.operationStatus) }}
@@ -366,6 +368,10 @@ onMounted(() => {
             <div class="ol__detail-row">
               <span class="ol__detail-label">操作描述</span>
               <span class="ol__detail-value">{{ detailLog.operationDesc || '-' }}</span>
+            </div>
+            <div class="ol__detail-row">
+              <span class="ol__detail-label">操作人</span>
+              <span class="ol__detail-value">{{ detailLog.operatorUsername || '系统任务' }}</span>
             </div>
             <div class="ol__detail-row">
               <span class="ol__detail-label">状态</span>

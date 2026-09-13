@@ -14,6 +14,11 @@ public class XianyuOperationLog {
     
     @TableId(type = IdType.AUTO)
     private Long id;
+
+    /** 发起操作的平台用户；后台任务为空。 */
+    private Long operatorUserId;
+
+    private String operatorUsername;
     
     /**
      * 账号ID

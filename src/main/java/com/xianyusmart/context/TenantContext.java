@@ -16,7 +16,7 @@ public final class TenantContext {
 
     public static Long get() {
         Long tenantId = CURRENT.get();
-        return tenantId == null ? UserContext.getUserId() : tenantId;
+        return tenantId == null ? UserContext.getTenantId() : tenantId;
     }
 
     public static void clear() {

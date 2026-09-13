@@ -18,6 +18,12 @@ public class PlatformUserSaveReqDTO {
 
     private String role;
 
+    private String memberRole;
+
+    private String accountScopeMode;
+
+    private List<Long> accountIds;
+
     private Integer status;
 
     private List<String> permissions;

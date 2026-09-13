@@ -26,6 +26,7 @@ export interface MenuItemDefinition {
   path: string
   permission?: string
   adminOnly?: boolean
+  managerOnly?: boolean
   icon: MenuIcon
 }
 
@@ -48,7 +49,8 @@ export const MENU_GROUPS: MenuGroupDefinition[] = [
     label: '概览',
     items: [
       { id: 'dashboard', label: '面板', path: '/dashboard', permission: 'menu:dashboard', icon: 'chart' },
-      { id: 'data-panel', label: '数据看板', path: '/data-panel', permission: 'menu:dashboard', icon: 'dashboard' }
+      { id: 'data-panel', label: '数据看板', path: '/data-panel', permission: 'menu:dashboard', icon: 'dashboard' },
+      { id: 'command-center', label: '运营驾驶舱', path: '/command-center', permission: 'menu:command-center', icon: 'alert' }
     ]
   },
   {
@@ -98,7 +100,7 @@ export const MENU_GROUPS: MenuGroupDefinition[] = [
       { id: 'operation-log', label: '操作日志', path: '/operation-log', permission: 'menu:operation-log', icon: 'log' },
       { id: 'health', label: '通知与诊断', path: '/operations-health', permission: 'menu:health', icon: 'alert' },
       { id: 'settings', label: '系统设置', path: '/settings', permission: 'menu:settings', icon: 'shield' },
-      { id: 'admin-users', label: '账号与权限', path: '/admin/users', adminOnly: true, icon: 'users' }
+      { id: 'admin-users', label: '团队与权限', path: '/admin/users', managerOnly: true, icon: 'users' }
     ]
   }
 ]

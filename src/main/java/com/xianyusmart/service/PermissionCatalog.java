@@ -9,6 +9,7 @@ import java.util.Set;
 public final class PermissionCatalog {
 
     public static final String MENU_DASHBOARD = "menu:dashboard";
+    public static final String MENU_COMMAND_CENTER = "menu:command-center";
     public static final String MENU_ACCOUNTS = "menu:accounts";
     public static final String MENU_CONNECTION = "menu:connection";
     public static final String MENU_GOODS = "menu:goods";
@@ -37,6 +38,7 @@ public final class PermissionCatalog {
 
     private static final List<PermissionOption> OPTIONS = List.of(
             menu(MENU_DASHBOARD, "经营面板", "经营"),
+            menu(MENU_COMMAND_CENTER, "运营驾驶舱", "经营"),
             menu(MENU_ACCOUNTS, "闲鱼账号", "经营"),
             menu(MENU_CONNECTION, "连接管理", "经营"),
             menu(MENU_GOODS, "商品管理", "经营"),
