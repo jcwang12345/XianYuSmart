@@ -315,6 +315,28 @@ export function updateOrderNote(orderRecordId: number, data: { requestId: string
   return request<Record<string, any>>({ url: `/order-matrix/orders/${orderRecordId}/note`, method: 'PUT', data })
 }
 
+export interface ReturnShipmentCommand {
+  requestId: string
+  direction: 'BUYER_TO_SELLER' | 'SELLER_TO_BUYER'
+  logisticsCompanyCode?: string
+  logisticsCompanyName: string
+  trackingNumber: string
+  shipmentStatus: 'PENDING_PICKUP' | 'IN_TRANSIT' | 'DELIVERED' | 'RECEIVED' | 'EXCEPTION' | 'RETURNED'
+  latestEvent?: string
+  shippedTime?: string
+  receivedTime?: string
+  platformConfirmed: boolean
+  confirmationText?: string
+}
+
+export function previewReturnShipment(refundCaseId: number, data: ReturnShipmentCommand) {
+  return request<Record<string, any>>({ url: `/order-matrix/refunds/${refundCaseId}/return-shipment/preview`, method: 'POST', data })
+}
+
+export function recordReturnShipment(refundCaseId: number, data: ReturnShipmentCommand) {
+  return request<Record<string, any>>({ url: `/order-matrix/refunds/${refundCaseId}/return-shipment/record`, method: 'POST', data })
+}
+
 export function getPublishingCapabilities(accountId: number) {
   return request<Record<string, any>>({ url: `/publishing/accounts/${accountId}/capabilities`, method: 'GET' })
 }

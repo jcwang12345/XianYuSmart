@@ -10,6 +10,7 @@ import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +36,9 @@ public class OrderMatrixService {
     private static final Set<String> REFUND_FILTERS = Set.of(
             "ALL", "NONE", "REQUESTED", "PROCESSING", "APPROVED", "REJECTED", "CLOSED", "DISPUTE", "UNKNOWN");
     private static final Set<String> FLAGS = Set.of("NONE", "RED", "ORANGE", "YELLOW", "GREEN", "BLUE", "PURPLE");
+    private static final Set<String> RETURN_DIRECTIONS = Set.of("BUYER_TO_SELLER", "SELLER_TO_BUYER");
+    private static final Set<String> RETURN_STATUSES = Set.of(
+            "PENDING_PICKUP", "IN_TRANSIT", "DELIVERED", "RECEIVED", "EXCEPTION", "RETURNED");
 
     private final JdbcTemplate jdbcTemplate;
     private final NamedParameterJdbcTemplate namedJdbc;
@@ -158,6 +162,8 @@ public class OrderMatrixService {
         result.put("logisticsTracking", Map.of("status", "PARTIAL", "source", "LOCAL_OR_IMPORTED_SNAPSHOT"));
         result.put("refundDecision", Map.of("status", "UNAVAILABLE",
                 "reason", "当前没有可靠退款同意/拒绝平台接口，仅展示快照并允许补充内部说明"));
+        result.put("returnTracking", Map.of("status", "READY_LOCAL_EVIDENCE",
+                "reason", "可记录已在闲鱼平台确认的退货/换货运单事实；不会代替平台提交退货"));
         result.put("dispute", Map.of("status", "READ_ONLY", "reason", "小法庭/争议仅展示平台同步状态"));
         result.put("orderNote", Map.of("status", "READY", "source", "LOCAL"));
         result.put("orderPriceChange", Map.of("status", "UNAVAILABLE",
@@ -228,6 +234,102 @@ public class OrderMatrixService {
         return Map.of("orderRecordId", orderRecordId, "orderId", text(order.get("orderId")),
                 "buyer", text(order.get("buyerName")), "confirmationText", confirmation,
                 "platformWrite", "NOT_PERFORMED", "requiredEvidence", "platformConfirmed=true");
+    }
+
+    public Map<String, Object> returnShipmentPreview(Long refundCaseId, ReturnShipmentCommand command) {
+        Map<String, Object> refund = requireRefund(refundCaseId);
+        ValidatedReturnShipment shipment = validateReturnShipment(command);
+        String confirmation = returnConfirmation(refund, shipment);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("refundCaseId", refundCaseId);
+        result.put("orderId", refund.get("orderId"));
+        result.put("buyer", refund.get("buyerName"));
+        result.put("direction", shipment.direction());
+        result.put("directionLabel", returnDirectionLabel(shipment.direction()));
+        result.put("logisticsCompanyName", shipment.companyName());
+        result.put("trackingNumber", shipment.trackingNumber());
+        result.put("shipmentStatus", shipment.shipmentStatus());
+        result.put("confirmationText", confirmation);
+        result.put("platformWrite", "NOT_PERFORMED");
+        result.put("requiredEvidence", "platformConfirmed=true");
+        result.put("notice", "这里只记录已在闲鱼平台确认的售后物流事实，不会向平台提交退货、换货或退款决定。");
+        return result;
+    }
+
+    @Transactional
+    public Map<String, Object> recordReturnShipment(Long refundCaseId, ReturnShipmentCommand command) {
+        Map<String, Object> refund = requireRefund(refundCaseId);
+        requireRequest(command == null ? null : command.requestId());
+        ValidatedReturnShipment shipment = validateReturnShipment(command);
+        if (!Boolean.TRUE.equals(command.platformConfirmed())) {
+            throw new BusinessException(409, "仅允许记录已在闲鱼平台确认的退货/换货运单；本系统不会伪造平台售后操作成功");
+        }
+        String expected = returnConfirmation(refund, shipment);
+        if (!expected.equals(command.confirmationText())) {
+            throw new BusinessException(400, "确认范围不匹配，请重新预检并核对订单、方向和运单号");
+        }
+        List<Map<String, Object>> replay = returnShipmentByRequest(command.requestId());
+        if (!replay.isEmpty()) {
+            return returnShipmentResult(true, replay.getFirst(), requireRefund(refundCaseId));
+        }
+        Long accountId = number(refund.get("accountId"));
+        Timestamp shipped = command.shippedTime() == null ? null : Timestamp.from(command.shippedTime());
+        Timestamp received = command.receivedTime() == null ? null : Timestamp.from(command.receivedTime());
+        try {
+            jdbcTemplate.update("""
+                    INSERT INTO xianyu_return_shipment
+                    (tenant_id,refund_case_id,xianyu_account_id,order_record_id,direction,
+                     logistics_company_code,logistics_company_name,tracking_number,shipment_status,
+                     latest_event,shipped_time,received_time,source,coverage_status,synced_at,request_id,created_by)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'MANUAL_PLATFORM_CONFIRMATION','PARTIAL',NOW(3),?,?)
+                    """, tenant(), refundCaseId, accountId, refund.get("orderRecordId"), shipment.direction(),
+                    blank(command.logisticsCompanyCode()), shipment.companyName(), shipment.trackingNumber(),
+                    shipment.shipmentStatus(), blank(command.latestEvent()), shipped, received,
+                    command.requestId(), UserContext.getUserId());
+        } catch (DuplicateKeyException conflict) {
+            List<Map<String, Object>> winner = returnShipmentByRequest(command.requestId());
+            if (!winner.isEmpty()) {
+                return returnShipmentResult(true, winner.getFirst(), requireRefund(refundCaseId));
+            }
+            throw new BusinessException(409, "该售后方向和运单号已经记录，请核对现有物流事实", conflict);
+        }
+        jdbcTemplate.update("""
+                UPDATE xianyu_refund_case
+                   SET return_status=CASE WHEN ?='BUYER_TO_SELLER' THEN ? ELSE return_status END,
+                       latest_status_message=?, last_request_id=?, updated_time=NOW(3)
+                 WHERE tenant_id=? AND id=?
+                """, shipment.direction(), shipment.shipmentStatus(), blank(command.latestEvent()),
+                command.requestId(), tenant(), refundCaseId);
+        Map<String, Object> after = new LinkedHashMap<>();
+        after.put("refundCaseId", refundCaseId);
+        after.put("direction", shipment.direction());
+        after.put("logisticsCompanyName", shipment.companyName());
+        after.put("trackingNumber", shipment.trackingNumber());
+        after.put("shipmentStatus", shipment.shipmentStatus());
+        after.put("latestEvent", blank(command.latestEvent()));
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_order_event
+                (tenant_id,xianyu_account_id,order_record_id,order_id,event_type,event_origin,outcome_state,
+                 data_source,operator_user_id,operator_username,request_id,idempotency_key,after_json)
+                VALUES (?,?,?,?,'RETURN_SHIPMENT_RECORDED','USER','MANUAL_PLATFORM_CONFIRMED',
+                        'MANUAL_PLATFORM_CONFIRMATION',?,?,?,?,?)
+                """, tenant(), accountId, refund.get("orderRecordId"), refund.get("orderId"),
+                UserContext.getUserId(), UserContext.getUsername(), command.requestId(), command.requestId(), json(after));
+        audit(accountId, "RETURN_SHIPMENT_RECORD", "记录平台已确认的售后物流", command.requestId(),
+                "MANUAL_PLATFORM_CONFIRMED", command, after);
+        List<Map<String, Object>> created = returnShipmentByRequest(command.requestId());
+        return returnShipmentResult(false, created.getFirst(), requireRefund(refundCaseId));
+    }
+
+    private Map<String, Object> returnShipmentResult(boolean replay, Map<String, Object> shipment,
+                                                     Map<String, Object> refund) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("idempotentReplay", replay);
+        result.put("platformWrite", "NOT_PERFORMED");
+        result.put("evidenceState", "MANUAL_PLATFORM_CONFIRMED");
+        result.put("shipment", shipment);
+        result.put("refundCase", refund);
+        return result;
     }
 
     @Transactional
@@ -308,12 +410,58 @@ public class OrderMatrixService {
     }
 
     private List<Map<String, Object>> refunds(Long orderRecordId) {
-        return jdbcTemplate.query("""
+        List<Map<String, Object>> cases = jdbcTemplate.query("""
                 SELECT refunds.*, orders.buyer_user_name
                   FROM xianyu_refund_case refunds
                   JOIN xianyu_goods_order orders ON orders.id=refunds.order_record_id AND orders.tenant_id=refunds.tenant_id
                  WHERE refunds.tenant_id=? AND refunds.order_record_id=? ORDER BY refunds.updated_time DESC
                 """, (rs, rowNum) -> refundRow(rs), tenant(), orderRecordId);
+        cases.forEach(refund -> {
+            Long refundCaseId = number(refund.get("refundCaseId"));
+            refund.put("returnShipments", returnShipments(refundCaseId));
+            refund.put("actions", refundActions(refundCaseId));
+        });
+        return cases;
+    }
+
+    private List<Map<String, Object>> returnShipments(Long refundCaseId) {
+        return jdbcTemplate.query("""
+                SELECT id,refund_case_id,direction,logistics_company_code,logistics_company_name,
+                       tracking_number,shipment_status,latest_event,shipped_time,received_time,
+                       source,coverage_status,synced_at,raw_snapshot_hash,request_id,created_by,created_time,updated_time
+                  FROM xianyu_return_shipment
+                 WHERE tenant_id=? AND refund_case_id=? ORDER BY created_time,id
+                """, (rs, rowNum) -> returnShipmentRow(rs), tenant(), refundCaseId);
+    }
+
+    private List<Map<String, Object>> returnShipmentByRequest(String requestId) {
+        return jdbcTemplate.query("""
+                SELECT id,refund_case_id,direction,logistics_company_code,logistics_company_name,
+                       tracking_number,shipment_status,latest_event,shipped_time,received_time,
+                       source,coverage_status,synced_at,raw_snapshot_hash,request_id,created_by,created_time,updated_time
+                  FROM xianyu_return_shipment WHERE tenant_id=? AND request_id=?
+                """, (rs, rowNum) -> returnShipmentRow(rs), tenant(), requestId);
+    }
+
+    private List<Map<String, Object>> refundActions(Long refundCaseId) {
+        return jdbcTemplate.query("""
+                SELECT id,action_type,outcome_state,reason,request_id,platform_response_code,
+                       operator_user_id,operator_username,created_time
+                  FROM xianyu_refund_action
+                 WHERE tenant_id=? AND refund_case_id=? ORDER BY created_time,id
+                """, (rs, rowNum) -> {
+            Map<String, Object> action = new LinkedHashMap<>();
+            action.put("actionId", rs.getLong("id"));
+            action.put("actionType", rs.getString("action_type"));
+            action.put("outcomeState", rs.getString("outcome_state"));
+            action.put("reason", rs.getString("reason"));
+            action.put("requestId", rs.getString("request_id"));
+            action.put("platformResponseCode", rs.getString("platform_response_code"));
+            action.put("operatorUserId", nullableLong(rs, "operator_user_id"));
+            action.put("operatorUsername", rs.getString("operator_username"));
+            action.put("createdTime", instant(rs, "created_time"));
+            return action;
+        }, tenant(), refundCaseId);
     }
 
     private List<Map<String, Object>> timeline(Long orderRecordId, String orderId) {
@@ -499,6 +647,7 @@ public class OrderMatrixService {
         row.put("buyerName", rs.getString("buyer_user_name"));
         row.put("platformRefundId", rs.getString("platform_refund_id"));
         row.put("type", rs.getString("refund_type"));
+        row.put("afterSalesType", rs.getString("after_sales_type"));
         row.put("reason", rs.getString("refund_reason"));
         row.put("requestedAmount", rs.getBigDecimal("requested_amount"));
         row.put("approvedAmount", rs.getBigDecimal("approved_amount"));
@@ -506,13 +655,43 @@ public class OrderMatrixService {
         row.put("evidence", readJson(rs.getString("evidence_json")));
         row.put("appliedTime", instant(rs, "applied_time"));
         row.put("decisionDeadline", instant(rs, "decision_deadline"));
+        row.put("sellerDecisionDeadline", instant(rs, "seller_decision_deadline"));
+        row.put("buyerReturnDeadline", instant(rs, "buyer_return_deadline"));
         row.put("platformStatus", rs.getString("platform_status"));
         row.put("disputeStatus", rs.getString("dispute_status"));
+        row.put("returnStatus", rs.getString("return_status"));
+        row.put("platformActionCode", rs.getString("platform_action_required"));
+        row.put("platformActionRequired", platformActionLabel(rs.getString("platform_action_required")));
+        row.put("latestStatusMessage", rs.getString("latest_status_message"));
         row.put("source", rs.getString("source"));
         row.put("syncStatus", rs.getString("sync_status"));
         row.put("coverageStatus", rs.getString("coverage_status"));
         row.put("syncedAt", instant(rs, "synced_at"));
         row.put("rawSnapshotHash", rs.getString("raw_snapshot_hash"));
+        return row;
+    }
+
+    private Map<String, Object> returnShipmentRow(ResultSet rs) throws SQLException {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("returnShipmentId", rs.getLong("id"));
+        row.put("refundCaseId", nullableLong(rs, "refund_case_id"));
+        row.put("direction", rs.getString("direction"));
+        row.put("directionLabel", returnDirectionLabel(rs.getString("direction")));
+        row.put("logisticsCompanyCode", rs.getString("logistics_company_code"));
+        row.put("logisticsCompanyName", rs.getString("logistics_company_name"));
+        row.put("trackingNumber", rs.getString("tracking_number"));
+        row.put("shipmentStatus", rs.getString("shipment_status"));
+        row.put("latestEvent", rs.getString("latest_event"));
+        row.put("shippedTime", instant(rs, "shipped_time"));
+        row.put("receivedTime", instant(rs, "received_time"));
+        row.put("source", rs.getString("source"));
+        row.put("coverageStatus", rs.getString("coverage_status"));
+        row.put("syncedAt", instant(rs, "synced_at"));
+        row.put("rawSnapshotHash", rs.getString("raw_snapshot_hash"));
+        row.put("requestId", rs.getString("request_id"));
+        row.put("createdBy", nullableLong(rs, "created_by"));
+        row.put("createdTime", instant(rs, "created_time"));
+        row.put("updatedTime", instant(rs, "updated_time"));
         return row;
     }
 
@@ -623,6 +802,46 @@ public class OrderMatrixService {
         return switch (action) { case "APPROVE" -> "同意退款"; case "REJECT" -> "拒绝退款"; default -> "补充退款说明"; };
     }
 
+    private ValidatedReturnShipment validateReturnShipment(ReturnShipmentCommand command) {
+        if (command == null) throw new BusinessException(400, "售后物流参数不能为空");
+        String direction = upper(command.direction());
+        if (!RETURN_DIRECTIONS.contains(direction)) throw new BusinessException(400, "售后物流方向无效");
+        String status = upper(command.shipmentStatus());
+        if (!RETURN_STATUSES.contains(status)) throw new BusinessException(400, "售后物流状态无效");
+        String company = required(command.logisticsCompanyName(), "物流公司", 128);
+        String tracking = required(command.trackingNumber(), "运单号", 128);
+        if (tracking.length() < 4 || tracking.chars().anyMatch(Character::isWhitespace)) {
+            throw new BusinessException(400, "运单号至少4个字符且不能包含空格");
+        }
+        if (command.receivedTime() != null && command.shippedTime() != null
+                && command.receivedTime().isBefore(command.shippedTime())) {
+            throw new BusinessException(400, "签收时间不能早于发出时间");
+        }
+        return new ValidatedReturnShipment(direction, company, tracking, status);
+    }
+
+    private String returnConfirmation(Map<String, Object> refund, ValidatedReturnShipment shipment) {
+        return "确认记录订单" + text(refund.get("orderId")) + "的" + returnDirectionLabel(shipment.direction())
+                + "运单" + shipment.companyName() + "/" + shipment.trackingNumber()
+                + "；该运单已在闲鱼平台确认，本系统仅保存事实";
+    }
+
+    private String returnDirectionLabel(String direction) {
+        return "SELLER_TO_BUYER".equals(direction) ? "卖家补发/换货" : "买家退回";
+    }
+
+    private String platformActionLabel(String action) {
+        if (action == null || action.isBlank()) return null;
+        return switch (action) {
+            case "WAIT_SELLER_DECISION" -> "等待卖家处理";
+            case "WAIT_BUYER_RETURN" -> "等待买家寄回";
+            case "WAIT_SELLER_RECEIVE" -> "等待卖家签收";
+            case "WAIT_PLATFORM_ARBITRATION" -> "等待平台处理";
+            case "NONE" -> "暂无平台动作";
+            default -> action;
+        };
+    }
+
     private String requireRequest(String value) {
         return required(value, "requestId", 80);
     }
@@ -687,4 +906,12 @@ public class OrderMatrixService {
     public record OrderNoteCommand(String requestId, String flag, String note) {}
 
     public record RefundActionCommand(String requestId, String action, String reason, String confirmationText) {}
+
+    public record ReturnShipmentCommand(String requestId, String direction, String logisticsCompanyCode,
+                                        String logisticsCompanyName, String trackingNumber, String shipmentStatus,
+                                        String latestEvent, Instant shippedTime, Instant receivedTime,
+                                        Boolean platformConfirmed, String confirmationText) {}
+
+    private record ValidatedReturnShipment(String direction, String companyName,
+                                           String trackingNumber, String shipmentStatus) {}
 }

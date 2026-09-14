@@ -328,3 +328,30 @@
 - 隔离 QA：`http://127.0.0.1:12401/`，MySQL 5.7 Flyway 35/35 校验，应用 healthy。
 - Chrome：桌面、390×844、缩放、1000 商品、五页签、未同步语义、跨页预检、部分成功/失败/UNKNOWN、CSV 导出和键盘焦点完成开发侧设计 QA。
 - 安全边界：未创建真实平台写任务；未执行生产商品上下架、改价、库存、擦亮或删除。
+
+## 批次 7：ORD-04/05 退货、换货与售后物流证据
+
+### 需求范围
+
+- 订单详情中的退款/售后案例、关键处理期限、平台下一步与双向售后运单。
+- 只记录已在闲鱼平台确认的真实事实；没有可靠平台适配器时不提供退款、退货或换货的假执行入口。
+
+### 已完成
+
+- `xianyu_refund_case` 增加售后类型、退货状态、卖家/买家截止时间、平台下一步与最新状态说明。
+- 新增租户和店铺隔离的 `xianyu_return_shipment`，覆盖买家退回与卖家补发/换货方向。
+- 新增售后运单预检和记录 API，执行完整确认文案、人工平台证据、幂等和重复运单保护，并写入订单时间线与统一审计。
+- 退款详情展示来源、覆盖状态、期限、平台动作、运单历史与处理记录；案例未同步时不再显示成 0。
+- 新增仅限 QA profile、白名单租户/店铺、`QA-ORDER-` 前缀的可回放售后夹具，外部平台网络调用为 0。
+
+### 变更文件与迁移
+
+- 迁移：`V39__after_sales_return_evidence.sql`。
+- 后端：`OrderMatrixService.java`、`OrderMatrixController.java`、`QaOrderAfterSalesController.java`、租户与账号隔离配置。
+- 前端：`vue-code/src/views/orders/index.vue`、`orders.css`、`vue-code/src/api/matrix.ts` 及最终生产静态资源。
+- 测试：`OrderMatrixServiceTest.java`；隔离 E2E 方式见 `ORD_04_05_QA_E2E_GUIDE.md`。
+
+### 安全边界
+
+- 不调用闲鱼退款、退货、换货、补发平台写接口；所有保存响应明确 `platformWrite=NOT_PERFORMED`。
+- 不使用生产店铺做破坏性验证；开发与独立测试仅使用 Tenant-A 的 QA 白名单订单。

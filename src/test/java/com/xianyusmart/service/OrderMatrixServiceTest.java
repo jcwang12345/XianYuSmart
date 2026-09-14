@@ -15,11 +15,13 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import java.sql.ResultSet;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -45,7 +47,7 @@ class OrderMatrixServiceTest {
         namedJdbc = mock(NamedParameterJdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
         service = new OrderMatrixService(jdbcTemplate, namedJdbc, accountAccessService,
-                mock(OperationLogService.class), new ObjectMapper());
+                mock(OperationLogService.class), new ObjectMapper().findAndRegisterModules());
         TenantContext.set(5L);
         UserContext.set(2L, "order-tester", 5L);
         when(namedJdbc.queryForObject(anyString(), any(MapSqlParameterSource.class), eq(Integer.class))).thenReturn(0);
@@ -123,6 +125,87 @@ class OrderMatrixServiceTest {
         BusinessException error = assertThrows(BusinessException.class,
                 () -> service.recordPhysicalShipment(8L, command));
         assertEquals(409, error.getCode());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void returnShipmentPreviewMakesTheManualPlatformEvidenceBoundaryExplicit() {
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of(refund()));
+        OrderMatrixService.ReturnShipmentCommand command = new OrderMatrixService.ReturnShipmentCommand(
+                "return-request-1", "BUYER_TO_SELLER", "SF", "顺丰", "SF123456",
+                "IN_TRANSIT", "买家已寄出", Instant.parse("2026-09-14T08:00:00Z"), null,
+                false, null);
+
+        Map<String, Object> preview = service.returnShipmentPreview(3L, command);
+
+        assertEquals("NOT_PERFORMED", preview.get("platformWrite"));
+        assertEquals("买家退回", preview.get("directionLabel"));
+        assertTrue(String.valueOf(preview.get("confirmationText")).contains("本系统仅保存事实"));
+        BusinessException denied = assertThrows(BusinessException.class,
+                () -> service.recordReturnShipment(3L, command));
+        assertEquals(409, denied.getCode());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void returnShipmentRejectsInvalidDirectionAndImpossibleTimeOrder() {
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of(refund()));
+        OrderMatrixService.ReturnShipmentCommand invalidDirection = new OrderMatrixService.ReturnShipmentCommand(
+                "return-request-2", "WAREHOUSE_TO_PLATFORM", null, "顺丰", "SF123456",
+                "IN_TRANSIT", null, null, null, true, null);
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> service.returnShipmentPreview(3L, invalidDirection)).getCode());
+
+        OrderMatrixService.ReturnShipmentCommand impossibleTime = new OrderMatrixService.ReturnShipmentCommand(
+                "return-request-3", "SELLER_TO_BUYER", null, "中通", "ZT123456",
+                "RECEIVED", null, Instant.parse("2026-09-14T09:00:00Z"),
+                Instant.parse("2026-09-14T08:00:00Z"), true, null);
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> service.returnShipmentPreview(3L, impossibleTime)).getCode());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void confirmedReturnShipmentIsPersistedWithIdempotentEvidenceAndNoPlatformWriteClaim() {
+        AtomicBoolean inserted = new AtomicBoolean(false);
+        Map<String, Object> shipment = new LinkedHashMap<>();
+        shipment.put("returnShipmentId", 31L);
+        shipment.put("refundCaseId", 3L);
+        shipment.put("direction", "BUYER_TO_SELLER");
+        shipment.put("trackingNumber", "SF123456");
+        shipment.put("shipmentStatus", "IN_TRANSIT");
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    String sql = invocation.getArgument(0);
+                    if (sql.contains("FROM xianyu_refund_case")) return List.of(refund());
+                    if (sql.contains("FROM xianyu_return_shipment")) {
+                        return inserted.get() ? List.of(shipment) : List.of();
+                    }
+                    return List.of();
+                });
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            if (sql.contains("INSERT INTO xianyu_return_shipment")) inserted.set(true);
+            return 1;
+        });
+        OrderMatrixService.ReturnShipmentCommand draft = new OrderMatrixService.ReturnShipmentCommand(
+                "return-request-4", "BUYER_TO_SELLER", "SF", "顺丰", "SF123456",
+                "IN_TRANSIT", "买家已寄出", Instant.parse("2026-09-14T08:00:00Z"), null,
+                true, null);
+        String confirmation = String.valueOf(service.returnShipmentPreview(3L, draft).get("confirmationText"));
+        OrderMatrixService.ReturnShipmentCommand confirmed = new OrderMatrixService.ReturnShipmentCommand(
+                draft.requestId(), draft.direction(), draft.logisticsCompanyCode(), draft.logisticsCompanyName(),
+                draft.trackingNumber(), draft.shipmentStatus(), draft.latestEvent(), draft.shippedTime(),
+                draft.receivedTime(), true, confirmation);
+
+        Map<String, Object> result = service.recordReturnShipment(3L, confirmed);
+
+        assertEquals(false, result.get("idempotentReplay"));
+        assertEquals("NOT_PERFORMED", result.get("platformWrite"));
+        assertEquals("MANUAL_PLATFORM_CONFIRMED", result.get("evidenceState"));
+        assertEquals(shipment, result.get("shipment"));
     }
 
     private Map<String, Object> order() {

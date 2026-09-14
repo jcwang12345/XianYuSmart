@@ -50,6 +50,18 @@ public class OrderMatrixController {
         return ResultObject.success(service.recordPhysicalShipment(orderRecordId, command));
     }
 
+    @PostMapping("/refunds/{refundCaseId}/return-shipment/preview")
+    public ResultObject<Map<String, Object>> returnShipmentPreview(
+            @PathVariable Long refundCaseId, @RequestBody OrderMatrixService.ReturnShipmentCommand command) {
+        return ResultObject.success(service.returnShipmentPreview(refundCaseId, command));
+    }
+
+    @PostMapping("/refunds/{refundCaseId}/return-shipment/record")
+    public ResultObject<Map<String, Object>> recordReturnShipment(
+            @PathVariable Long refundCaseId, @RequestBody OrderMatrixService.ReturnShipmentCommand command) {
+        return ResultObject.success(service.recordReturnShipment(refundCaseId, command));
+    }
+
     @PutMapping("/orders/{orderRecordId}/note")
     public ResultObject<Map<String, Object>> updateNote(
             @PathVariable Long orderRecordId, @RequestBody OrderMatrixService.OrderNoteCommand command) {
