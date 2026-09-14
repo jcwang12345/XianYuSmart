@@ -39,6 +39,7 @@ public class ProductMatrixService {
     private static final Set<String> STATUS_BUCKETS = Set.of("ALL", "ON_SALE", "SOLD", "OFF_SHELF", "OTHER", "DRAFT");
     private static final Set<String> BATCH_OPERATIONS = Set.of(
             "ON_SALE", "OFF_SHELF", "CHANGE_PRICE", "CHANGE_STOCK", "POLISH", "DELETE", "SYNC");
+    private static final BigDecimal MAX_PRODUCT_PRICE = new BigDecimal("9999999.99");
     private static final Set<String> BATCH_STATUSES = Set.of(
             "PENDING_CONFIRMATION", "QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "PARTIAL_SUCCESS",
             "CANCEL_REQUESTED", "CANCELLED");
@@ -1064,6 +1065,12 @@ public class ProductMatrixService {
         if ("CHANGE_PRICE".equals(operation)) {
             BigDecimal price = decimal(params.get("price"));
             if (price == null || price.signum() <= 0) throw new BusinessException(400, "批量改价需要大于0的price");
+            if (Math.max(price.stripTrailingZeros().scale(), 0) > 2) {
+                throw new BusinessException(400, "批量改价的price最多保留两位小数");
+            }
+            if (price.compareTo(MAX_PRODUCT_PRICE) > 0) {
+                throw new BusinessException(400, "批量改价的price不能超过" + MAX_PRODUCT_PRICE.toPlainString());
+            }
         }
         if ("CHANGE_STOCK".equals(operation)) {
             Integer stock = integer(params.get("stock"));

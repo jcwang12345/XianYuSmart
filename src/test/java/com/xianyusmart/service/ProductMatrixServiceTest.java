@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -208,6 +209,44 @@ class ProductMatrixServiceTest {
         assertEquals(0, preview.executableCount());
         assertTrue(preview.items().getFirst().conflictMessage().contains("禁止创建只改本地缓存"));
         verify(accountAccessService, atLeast(1)).requireAccess(2L);
+    }
+
+    @Test
+    void batchPricePreviewRejectsMoreThanTwoDecimalPlacesBeforeCreatingToken() {
+        for (String price : List.of("0.001", "1.234")) {
+            ProductMatrixService.BatchRequest request = request("CHANGE_PRICE", Map.of("price", price), null);
+
+            BusinessException error = assertThrows(BusinessException.class, () -> service.previewBatch(request));
+
+            assertEquals(400, error.getCode());
+            assertTrue(error.getMessage().contains("最多保留两位小数"));
+        }
+        verify(jdbcTemplate, never()).queryForList(anyString(), any(Object[].class));
+    }
+
+    @Test
+    void batchPricePreviewAcceptsTwoDecimalsAndExactUpperLimit() {
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenReturn(List.of(product(0, "PLATFORM_LIST_SYNC")));
+
+        for (String price : List.of("12.34", "9999999.99")) {
+            ProductMatrixService.BatchPreview preview = service.previewBatch(
+                    request("CHANGE_PRICE", Map.of("price", price), null));
+
+            assertFalse(preview.previewToken().isBlank());
+        }
+    }
+
+    @Test
+    void batchPricePreviewRejectsValueAboveUpperLimit() {
+        ProductMatrixService.BatchRequest request = request(
+                "CHANGE_PRICE", Map.of("price", "10000000.00"), null);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.previewBatch(request));
+
+        assertEquals(400, error.getCode());
+        assertTrue(error.getMessage().contains("9999999.99"));
+        verify(jdbcTemplate, never()).queryForList(anyString(), any(Object[].class));
     }
 
     @Test
