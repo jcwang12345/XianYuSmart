@@ -2,7 +2,7 @@
 
 ## 版本与范围
 
-- 目标版本：`v2.6.0`
+- 目标版本：`v2.6.1`
 - 隔离环境：`http://127.0.0.1:3000`
 - 接口：`GET /api/business-analytics/overview`、`GET /api/business-analytics/scopes`
 - 本批无数据库迁移，继续使用 `V27__business_analytics.sql` 中的店铺/商品日指标表。

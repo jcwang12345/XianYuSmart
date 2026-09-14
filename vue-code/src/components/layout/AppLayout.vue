@@ -245,27 +245,27 @@ onUnmounted(() => {
       </aside>
 
       <div class="el-container">
-        <main>
+        <div class="app-main" role="main">
           <div v-if="pageReadOnly" class="readonly-notice">当前账号在此页面为只读权限，修改、发送和执行操作已停用。</div>
           <RouterView />
-        </main>
+        </div>
       </div>
     </div>
 
     <!-- 平板端: 主内容区 -->
     <div v-if="isTablet" class="el-container">
-      <main>
+      <div class="app-main" role="main">
         <div v-if="pageReadOnly" class="readonly-notice">当前账号在此页面为只读权限，修改、发送和执行操作已停用。</div>
         <RouterView />
-      </main>
+      </div>
     </div>
 
     <!-- 手机端: 主内容区 -->
     <div v-if="isMobile" class="el-container">
-      <main>
+      <div class="app-main" role="main">
         <div v-if="pageReadOnly" class="readonly-notice">当前账号在此页面为只读权限，修改、发送和执行操作已停用。</div>
         <RouterView />
-      </main>
+      </div>
     </div>
 
     <UpdateDialog v-if="isAdmin" ref="updateDialog" />
@@ -413,7 +413,7 @@ onUnmounted(() => {
 
 
 
-main {
+.app-main {
   padding: 0;
   overflow: auto;
   background: transparent;
@@ -427,7 +427,7 @@ main {
   -webkit-overflow-scrolling: touch;
 }
 
-main::-webkit-scrollbar {
+.app-main::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
@@ -713,7 +713,7 @@ main::-webkit-scrollbar {
     font-size: 20px;
   }
 
-  main {
+  .app-main {
     padding: 0;
   }
 
@@ -751,7 +751,7 @@ main::-webkit-scrollbar {
     font-size: 20px;
   }
 
-  main {
+  .app-main {
     padding: 0;
     overflow: auto;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -799,7 +799,7 @@ main::-webkit-scrollbar {
     font-size: 18px;
   }
 
-  main {
+  .app-main {
     padding: 0;
     overflow: auto;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
