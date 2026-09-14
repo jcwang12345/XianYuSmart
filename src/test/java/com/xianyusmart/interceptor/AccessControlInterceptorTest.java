@@ -156,6 +156,23 @@ class AccessControlInterceptorTest {
         assertEquals(403, denied.getStatus());
     }
 
+    @Test
+    void qaAfterSalesFixtureRequiresOrderWritePermission() throws Exception {
+        SysUser support = user("SUPPORT");
+        when(permissionService.getPermissionCodeSet(support)).thenReturn(Set.of(PermissionCatalog.MENU_ORDERS));
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+
+        assertFalse(interceptor.preHandle(
+                request("POST", "/api/qa/order-after-sales/fixtures/1", support), denied, new Object()));
+        assertEquals(403, denied.getStatus());
+
+        when(permissionService.getPermissionCodeSet(support)).thenReturn(Set.of(
+                PermissionCatalog.MENU_ORDERS, PermissionCatalog.ACTION_ORDER_WRITE));
+        assertTrue(interceptor.preHandle(
+                request("POST", "/api/qa/order-after-sales/fixtures/1", support),
+                new MockHttpServletResponse(), new Object()));
+    }
+
     private SysUser user(String memberRole) {
         SysUser user = new SysUser();
         user.setId(11L);

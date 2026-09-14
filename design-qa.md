@@ -1,7 +1,7 @@
-# Product Design QA — 订单售后与退货物流证据（v2.4.0）
+# Product Design QA — 订单售后与退货物流证据（v2.4.1）
 
 - QA 日期：2026-09-14（Asia/Shanghai）
-- QA 环境：`http://127.0.0.1:12401` / `http://localhost:12401`，Spring `qa` profile，MySQL 5.7.18
+- QA 环境：`http://127.0.0.1:3000` / `http://localhost:3000`，Spring `qa` profile，MySQL 5.7.18
 - 范围：ORD-04 退款/售后事实、ORD-05 退货物流证据、订单详情抽屉和“记录平台已确认运单”弹窗
 - 安全边界：仅使用 Tenant 1、QA 账号 101/102/103、`QA-ORDER-*`；未调用闲鱼平台写接口，未执行发布、退款、删除或申诉
 
@@ -43,14 +43,18 @@
 
 1. P2：平台下一步曾直接显示 `WAIT_BUYER_RETURN`，窄屏换行差。已改为“等待买家寄回”，保留 `platformActionCode` 供程序判断。
 2. P2：卖家补发证据曾覆盖售后主档的买家退回进度。已限制只有 `BUYER_TO_SELLER` 方向更新退款主档状态；最终夹具保持“运输中”。
-3. 复测结果：上述两项在桌面和 390×844 最终截图中均未复现；本批无未决 P0/P1/P2。
+3. 复测结果：上述两项在桌面和 390×844 最终截图中均未复现。
+4. P1 `XYM-ORD-001`：相同 `requestId` 改变载荷曾静默返回旧事实。已增加完整规范化载荷绑定校验；只有完全一致才能重放，任一字段或售后记录变化均返回 409。
+5. P1 `XYM-ORD-002`：只读 SUPPORT 曾可调用 QA 售后夹具。已为 QA 控制面增加订单菜单、`action:order-write` 和账号范围三重校验。
+6. P1 `XYM-ORD-004`：卖家补发物流事件曾覆盖买家退回主档文案。已与主进度同样按方向隔离，补发事件只显示在对应运单卡片。
+7. 复测结果：本批无未决 P0/P1/P2。
 
 ## 构建与运行证据
 
 - 无缓存前端类型检查：通过。
 - 无缓存 Vite 生产构建：338 modules transformed，通过；最终产物重新写入 `src/main/resources/static`。
 - 静态入口校验：`index.html` 引用的 JS/CSS 均存在。
-- Maven 全量测试（Docker clean package）：138 tests，0 failures，0 errors，0 skipped。
+- Maven 全量测试（Docker clean package）：141 tests，0 failures，0 errors，0 skipped。
 - Flyway：MySQL 5.7.18 验证 39 个迁移，schema version 39。
 - QA E2E：`safeFixture=true`、`platformNetworkCalls=false`、`platformWrite=NOT_PERFORMED`、幂等重放通过。
 

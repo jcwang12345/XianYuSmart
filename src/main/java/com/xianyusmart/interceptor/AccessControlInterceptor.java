@@ -102,6 +102,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/account-groups")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
+        if (uri.startsWith("/api/qa/order-after-sales")) return PermissionCatalog.MENU_ORDERS;
         if (uri.startsWith("/api/order-matrix")) return PermissionCatalog.MENU_ORDERS;
         if (uri.startsWith("/api/publishing")) return PermissionCatalog.MENU_OPERATIONS;
         if (uri.startsWith("/api/product-matrix")) return PermissionCatalog.MENU_GOODS;
@@ -185,6 +186,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/message-workspace/send/")
                 || uri.equals("/api/message-workspace/conversation/takeover")) return PermissionCatalog.ACTION_MESSAGE_SEND;
         if (uri.equals("/api/message-workspace/conversation/update")) return PermissionCatalog.ACTION_BUYER_WRITE;
+        if (uri.startsWith("/api/qa/order-after-sales") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_ORDER_WRITE;
+        }
         if (uri.startsWith("/api/order-matrix/refunds/") && uri.contains("/approve/")
                 && uri.endsWith("/execute")) return PermissionCatalog.ACTION_REFUND_APPROVE;
         if (uri.startsWith("/api/order-matrix/refunds/") && uri.contains("/reject/")

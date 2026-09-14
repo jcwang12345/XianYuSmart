@@ -3,6 +3,7 @@ package com.xianyusmart.controller;
 import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.exception.BusinessException;
+import com.xianyusmart.service.AccountAccessService;
 import com.xianyusmart.service.OrderMatrixService;
 import com.xianyusmart.service.ProductBatchQaMockService;
 import org.springframework.context.annotation.Profile;
@@ -27,12 +28,15 @@ public class QaOrderAfterSalesController {
     private final JdbcTemplate jdbcTemplate;
     private final ProductBatchQaMockService qaMockService;
     private final OrderMatrixService orderMatrixService;
+    private final AccountAccessService accountAccessService;
 
     public QaOrderAfterSalesController(JdbcTemplate jdbcTemplate, ProductBatchQaMockService qaMockService,
-                                       OrderMatrixService orderMatrixService) {
+                                       OrderMatrixService orderMatrixService,
+                                       AccountAccessService accountAccessService) {
         this.jdbcTemplate = jdbcTemplate;
         this.qaMockService = qaMockService;
         this.orderMatrixService = orderMatrixService;
+        this.accountAccessService = accountAccessService;
     }
 
     @PostMapping("/fixtures/{orderRecordId}")
@@ -59,6 +63,7 @@ public class QaOrderAfterSalesController {
         Map<String, Object> order = orders.getFirst();
         Long accountId = ((Number) order.get("xianyu_account_id")).longValue();
         String orderId = String.valueOf(order.get("order_id"));
+        accountAccessService.requireAccess(accountId);
         if (!allowedAccounts.contains(accountId) || !orderId.startsWith("QA-ORDER-")) {
             throw new BusinessException(403, "只允许白名单店铺的 QA-ORDER- 隔离订单");
         }

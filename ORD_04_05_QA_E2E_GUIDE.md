@@ -1,8 +1,8 @@
 # ORD-04/05 售后退货证据隔离验收指南
 
-版本：`v2.4.0`
+版本：`v2.4.1`
 
-隔离地址：`http://127.0.0.1:12401`
+隔离地址：`http://127.0.0.1:3000`
 
 安全对象：Tenant-A、店铺 `101/102/103`、订单号前缀 `QA-ORDER-`。生产端口 `2000`、真实闲鱼店铺、真实退款/退货/换货操作不在测试范围内。
 
@@ -22,7 +22,7 @@ curl -X POST \
   -H "Authorization: Bearer $QA_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"requestId":"qa-ord-04-fixture-001"}' \
-  http://127.0.0.1:12401/api/qa/order-after-sales/fixtures/ORDER_RECORD_ID
+  http://127.0.0.1:3000/api/qa/order-after-sales/fixtures/ORDER_RECORD_ID
 ```
 
 返回必须包含 `safeFixture=true`、`platformNetworkCalls=false`、`refundCaseId` 和完整订单详情。夹具会生成一个退货退款案例和一条买家退回的运输中运单；重复调用只更新同一夹具，不复制案例或运单。

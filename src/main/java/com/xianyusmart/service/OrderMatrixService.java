@@ -21,12 +21,14 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /** ORD-01~04：跨店订单、详情、物流事实和退款只读/决策边界。 */
@@ -270,6 +272,7 @@ public class OrderMatrixService {
         }
         List<Map<String, Object>> replay = returnShipmentByRequest(command.requestId());
         if (!replay.isEmpty()) {
+            assertReturnShipmentReplayMatches(refundCaseId, shipment, command, replay.getFirst());
             return returnShipmentResult(true, replay.getFirst(), requireRefund(refundCaseId));
         }
         Long accountId = number(refund.get("accountId"));
@@ -287,8 +290,11 @@ public class OrderMatrixService {
                     shipment.shipmentStatus(), blank(command.latestEvent()), shipped, received,
                     command.requestId(), UserContext.getUserId());
         } catch (DuplicateKeyException conflict) {
-            List<Map<String, Object>> winner = returnShipmentByRequest(command.requestId());
+            // MySQL 5.7 默认 REPEATABLE READ 的普通快照读可能看不到刚提交的并发赢家；
+            // FOR UPDATE 是当前读，唯一键等待结束后可安全读取赢家并校验其完整载荷。
+            List<Map<String, Object>> winner = returnShipmentByRequestCurrent(command.requestId());
             if (!winner.isEmpty()) {
+                assertReturnShipmentReplayMatches(refundCaseId, shipment, command, winner.getFirst());
                 return returnShipmentResult(true, winner.getFirst(), requireRefund(refundCaseId));
             }
             throw new BusinessException(409, "该售后方向和运单号已经记录，请核对现有物流事实", conflict);
@@ -296,9 +302,10 @@ public class OrderMatrixService {
         jdbcTemplate.update("""
                 UPDATE xianyu_refund_case
                    SET return_status=CASE WHEN ?='BUYER_TO_SELLER' THEN ? ELSE return_status END,
-                       latest_status_message=?, last_request_id=?, updated_time=NOW(3)
+                       latest_status_message=CASE WHEN ?='BUYER_TO_SELLER' THEN ? ELSE latest_status_message END,
+                       last_request_id=?, updated_time=NOW(3)
                  WHERE tenant_id=? AND id=?
-                """, shipment.direction(), shipment.shipmentStatus(), blank(command.latestEvent()),
+                """, shipment.direction(), shipment.shipmentStatus(), shipment.direction(), blank(command.latestEvent()),
                 command.requestId(), tenant(), refundCaseId);
         Map<String, Object> after = new LinkedHashMap<>();
         after.put("refundCaseId", refundCaseId);
@@ -330,6 +337,28 @@ public class OrderMatrixService {
         result.put("shipment", shipment);
         result.put("refundCase", refund);
         return result;
+    }
+
+    private void assertReturnShipmentReplayMatches(Long refundCaseId, ValidatedReturnShipment shipment,
+                                                   ReturnShipmentCommand command, Map<String, Object> existing) {
+        boolean matches = Objects.equals(refundCaseId, number(existing.get("refundCaseId")))
+                && Objects.equals(shipment.direction(), text(existing.get("direction")))
+                && Objects.equals(blank(command.logisticsCompanyCode()), blank(text(existing.get("logisticsCompanyCode"))))
+                && Objects.equals(shipment.companyName(), blank(text(existing.get("logisticsCompanyName"))))
+                && Objects.equals(shipment.trackingNumber(), text(existing.get("trackingNumber")))
+                && Objects.equals(shipment.shipmentStatus(), text(existing.get("shipmentStatus")))
+                && Objects.equals(blank(command.latestEvent()), blank(text(existing.get("latestEvent"))))
+                && sameStoredInstant(command.shippedTime(), existing.get("shippedTime"))
+                && sameStoredInstant(command.receivedTime(), existing.get("receivedTime"));
+        if (!matches) {
+            throw new BusinessException(409, "requestId 已用于不同售后物流事实，请更换 requestId 或恢复首次请求载荷");
+        }
+    }
+
+    private boolean sameStoredInstant(Instant requested, Object stored) {
+        Instant normalizedRequested = requested == null ? null : requested.truncatedTo(ChronoUnit.MILLIS);
+        Instant normalizedStored = stored instanceof Instant instant ? instant.truncatedTo(ChronoUnit.MILLIS) : null;
+        return Objects.equals(normalizedRequested, normalizedStored);
     }
 
     @Transactional
@@ -440,6 +469,15 @@ public class OrderMatrixService {
                        tracking_number,shipment_status,latest_event,shipped_time,received_time,
                        source,coverage_status,synced_at,raw_snapshot_hash,request_id,created_by,created_time,updated_time
                   FROM xianyu_return_shipment WHERE tenant_id=? AND request_id=?
+                """, (rs, rowNum) -> returnShipmentRow(rs), tenant(), requestId);
+    }
+
+    private List<Map<String, Object>> returnShipmentByRequestCurrent(String requestId) {
+        return jdbcTemplate.query("""
+                SELECT id,refund_case_id,direction,logistics_company_code,logistics_company_name,
+                       tracking_number,shipment_status,latest_event,shipped_time,received_time,
+                       source,coverage_status,synced_at,raw_snapshot_hash,request_id,created_by,created_time,updated_time
+                  FROM xianyu_return_shipment WHERE tenant_id=? AND request_id=? FOR UPDATE
                 """, (rs, rowNum) -> returnShipmentRow(rs), tenant(), requestId);
     }
 

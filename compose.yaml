@@ -40,7 +40,7 @@ services:
   app:
     build:
       context: .
-    image: ${APP_IMAGE:-xianyusmart:2.4.0}
+    image: ${APP_IMAGE:-xianyusmart:2.4.1}
     restart: unless-stopped
     mem_limit: 3g
     depends_on:

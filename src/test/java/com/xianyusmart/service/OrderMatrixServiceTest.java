@@ -13,6 +13,7 @@ import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.sql.ResultSet;
 import java.time.Instant;
@@ -206,6 +207,97 @@ class OrderMatrixServiceTest {
         assertEquals("NOT_PERFORMED", result.get("platformWrite"));
         assertEquals("MANUAL_PLATFORM_CONFIRMED", result.get("evidenceState"));
         assertEquals(shipment, result.get("shipment"));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void returnShipmentReplayRequiresTheEntireNormalizedPayloadToMatch() {
+        Map<String, Object> existing = returnShipment();
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> invocation.<String>getArgument(0).contains("FROM xianyu_refund_case")
+                        ? List.of(refund()) : List.of(existing));
+        OrderMatrixService.ReturnShipmentCommand exact = confirmedReturnCommand(
+                "return-replay-1", "BUYER_TO_SELLER", "SF123456", "IN_TRANSIT");
+
+        Map<String, Object> replay = service.recordReturnShipment(3L, exact);
+        assertEquals(true, replay.get("idempotentReplay"));
+
+        List<OrderMatrixService.ReturnShipmentCommand> changedPayloads = List.of(
+                confirmedReturnCommand("return-replay-1", "BUYER_TO_SELLER", "SF-DIFFERENT", "IN_TRANSIT"),
+                confirmedReturnCommand("return-replay-1", "SELLER_TO_BUYER", "SF123456", "IN_TRANSIT"),
+                confirmedReturnCommand("return-replay-1", "BUYER_TO_SELLER", "SF123456", "DELIVERED"),
+                new OrderMatrixService.ReturnShipmentCommand("return-replay-1", "BUYER_TO_SELLER", "SF", "顺丰",
+                        "SF123456", "IN_TRANSIT", "不同事件", Instant.parse("2026-09-14T08:00:00Z"), null,
+                        true, confirmationFor("BUYER_TO_SELLER", "顺丰", "SF123456")),
+                new OrderMatrixService.ReturnShipmentCommand("return-replay-1", "BUYER_TO_SELLER", "SF", "顺丰",
+                        "SF123456", "IN_TRANSIT", "买家已寄出", Instant.parse("2026-09-14T08:00:01Z"), null,
+                        true, confirmationFor("BUYER_TO_SELLER", "顺丰", "SF123456")));
+        for (OrderMatrixService.ReturnShipmentCommand changed : changedPayloads) {
+            BusinessException conflict = assertThrows(BusinessException.class,
+                    () -> service.recordReturnShipment(3L, changed));
+            assertEquals(409, conflict.getCode());
+            assertTrue(conflict.getMessage().contains("requestId 已用于不同售后物流事实"));
+        }
+
+        BusinessException otherRefund = assertThrows(BusinessException.class,
+                () -> service.recordReturnShipment(4L, exact));
+        assertEquals(409, otherRefund.getCode());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void concurrentReturnShipmentWinnerIsReplayedOnlyWhenItsPayloadMatches() {
+        AtomicBoolean winnerVisible = new AtomicBoolean(false);
+        Map<String, Object> existing = returnShipment();
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    String sql = invocation.getArgument(0);
+                    if (sql.contains("FROM xianyu_refund_case")) return List.of(refund());
+                    if (sql.contains("FROM xianyu_return_shipment") && sql.contains("FOR UPDATE")
+                            && winnerVisible.get()) return List.of(existing);
+                    return List.of();
+                });
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            if (invocation.<String>getArgument(0).contains("INSERT INTO xianyu_return_shipment")) {
+                winnerVisible.set(true);
+                throw new DuplicateKeyException("simulated concurrent winner");
+            }
+            return 1;
+        });
+
+        Map<String, Object> replay = service.recordReturnShipment(3L,
+                confirmedReturnCommand("return-replay-1", "BUYER_TO_SELLER", "SF123456", "IN_TRANSIT"));
+        assertEquals(true, replay.get("idempotentReplay"));
+    }
+
+    private OrderMatrixService.ReturnShipmentCommand confirmedReturnCommand(String requestId,
+                                                                             String direction, String tracking,
+                                                                             String status) {
+        String company = "顺丰";
+        return new OrderMatrixService.ReturnShipmentCommand(requestId, direction, "SF", company, tracking,
+                status, "买家已寄出", Instant.parse("2026-09-14T08:00:00Z"), null, true,
+                confirmationFor(direction, company, tracking));
+    }
+
+    private String confirmationFor(String direction, String company, String tracking) {
+        String directionLabel = "SELLER_TO_BUYER".equals(direction) ? "卖家补发/换货" : "买家退回";
+        return "确认记录订单O-1的" + directionLabel + "运单" + company + "/" + tracking
+                + "；该运单已在闲鱼平台确认，本系统仅保存事实";
+    }
+
+    private Map<String, Object> returnShipment() {
+        Map<String, Object> shipment = new LinkedHashMap<>();
+        shipment.put("returnShipmentId", 31L);
+        shipment.put("refundCaseId", 3L);
+        shipment.put("direction", "BUYER_TO_SELLER");
+        shipment.put("logisticsCompanyCode", "SF");
+        shipment.put("logisticsCompanyName", "顺丰");
+        shipment.put("trackingNumber", "SF123456");
+        shipment.put("shipmentStatus", "IN_TRANSIT");
+        shipment.put("latestEvent", "买家已寄出");
+        shipment.put("shippedTime", Instant.parse("2026-09-14T08:00:00Z"));
+        shipment.put("receivedTime", null);
+        return shipment;
     }
 
     private Map<String, Object> order() {
