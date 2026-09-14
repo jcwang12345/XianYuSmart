@@ -11,7 +11,9 @@ import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -75,9 +77,12 @@ public class ProductMatrixService {
         int safeTotal = total == null ? 0 : total;
         int offset = Math.min((normalized.page() - 1) * normalized.pageSize(), safeTotal);
         MapSqlParameterSource pageParams = withStatus.params().addValue("limit", normalized.pageSize()).addValue("offset", offset);
+        String exactMatchOrder = normalized.search() == null ? "" :
+                "CASE WHEN goods.xy_good_id=:exactSearch OR goods.outer_id=:exactSearch THEN 0 ELSE 1 END, ";
         List<Map<String, Object>> records = namedJdbc.query("""
                 SELECT goods.*, account.account_note, account.unb
-                """ + withStatus.fromWhere() + " ORDER BY goods.updated_time DESC, goods.id DESC LIMIT :limit OFFSET :offset",
+                """ + withStatus.fromWhere() + " ORDER BY " + exactMatchOrder
+                        + "goods.updated_time DESC, goods.id DESC LIMIT :limit OFFSET :offset",
                 pageParams, (rs, rowNum) -> productRow(rs));
         records.forEach(product -> {
             enrichWarehouseEvidence(product);
@@ -412,7 +417,7 @@ public class ProductMatrixService {
                 executionChannel, "QA_MOCK".equals(executionChannel) ? "隔离测试通道：所有执行结果均由本地持久化状态机产生，不发起平台网络请求。" : null);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Map<String, Object> createBatch(BatchRequest request) {
         BatchRequest normalized = normalizeBatchRequest(request, true);
         Long tenantId = requireTenant();
@@ -434,18 +439,29 @@ public class ProductMatrixService {
         }
         if (preview.executableCount() == 0) throw new BusinessException(409, "所选商品全部存在冲突，无法创建任务");
         String batchId = "PB-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase(Locale.ROOT);
-        jdbcTemplate.update("""
-                INSERT INTO xianyu_goods_batch_job
-                (tenant_id, batch_id, request_id, idempotency_key, operation_type, selection_mode, selection_query_json,
-                 filter_snapshot_hash,
-                 operation_params_json, execution_channel, status, selected_count, conflict_count, executable_count,
-                 max_operations_per_minute, confirmation_summary, operator_user_id, operator_username)
-                VALUES (?,?,?,?,?,?,?,?,?,?,'QUEUED',?,?,?,?,?,?,?)
-                """, tenantId, batchId, normalized.requestId(), normalized.idempotencyKey(), normalized.operationType(), normalized.selectionMode(),
-                json(selectionSnapshot(normalized)),
-                preview.previewToken(), json(normalized.operationParams()), preview.executionChannel(), preview.selectedCount(), preview.conflictCount(),
-                preview.executableCount(), normalized.maxOperationsPerMinute(), preview.confirmationSummary(),
-                UserContext.getUserId(), UserContext.getUsername());
+        try {
+            jdbcTemplate.update("""
+                    INSERT INTO xianyu_goods_batch_job
+                    (tenant_id, batch_id, request_id, idempotency_key, operation_type, selection_mode, selection_query_json,
+                     filter_snapshot_hash,
+                     operation_params_json, execution_channel, status, selected_count, conflict_count, executable_count,
+                     max_operations_per_minute, confirmation_summary, operator_user_id, operator_username)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,'QUEUED',?,?,?,?,?,?,?)
+                    """, tenantId, batchId, normalized.requestId(), normalized.idempotencyKey(), normalized.operationType(), normalized.selectionMode(),
+                    json(selectionSnapshot(normalized)),
+                    preview.previewToken(), json(normalized.operationParams()), preview.executionChannel(), preview.selectedCount(), preview.conflictCount(),
+                    preview.executableCount(), normalized.maxOperationsPerMinute(), preview.confirmationSummary(),
+                    UserContext.getUserId(), UserContext.getUsername());
+        } catch (DuplicateKeyException concurrentCreate) {
+            List<Map<String, Object>> winner = jdbcTemplate.queryForList(
+                    "SELECT id, batch_id FROM xianyu_goods_batch_job WHERE tenant_id=? AND idempotency_key=?",
+                    tenantId, normalized.idempotencyKey());
+            if (winner.isEmpty()) throw concurrentCreate;
+            Long winnerJobId = ((Number) winner.getFirst().get("id")).longValue();
+            Map<String, Object> existing = batchDetail(winnerJobId);
+            existing.put("idempotentReplay", true);
+            return existing;
+        }
         Long jobId = jdbcTemplate.queryForObject(
                 "SELECT id FROM xianyu_goods_batch_job WHERE tenant_id=? AND batch_id=?", Long.class, tenantId, batchId);
         if (jobId == null) throw new BusinessException(500, "批量任务创建后无法读取");
@@ -554,13 +570,13 @@ public class ProductMatrixService {
         Long jobId = job.get("jobId") instanceof Number number ? number.longValue() : null;
         if (jobId == null) return;
         List<Map<String, Object>> visibleItems = jdbcTemplate.queryForList("""
-                SELECT status FROM xianyu_goods_batch_item item
+                SELECT status,xianyu_account_id accountId FROM xianyu_goods_batch_item item
                  WHERE item.tenant_id=? AND item.batch_job_id=?
                 """ + itemScopeCondition("item"), requireTenant(), jobId);
         redactJobToVisibleItems(job, visibleItems);
     }
 
-    private void redactJobToVisibleItems(Map<String, Object> job, List<Map<String, Object>> visibleItems) {
+    void redactJobToVisibleItems(Map<String, Object> job, List<Map<String, Object>> visibleItems) {
         AccountScopeContext.Scope scope = AccountScopeContext.get();
         if (scope == null || scope.unrestricted()) return;
         Map<String, Long> counts = visibleItems.stream().collect(java.util.stream.Collectors.groupingBy(
@@ -573,7 +589,10 @@ public class ProductMatrixService {
         long conflicts = counts.getOrDefault("CONFLICT", 0L);
         long active = counts.getOrDefault("QUEUED", 0L) + counts.getOrDefault("RUNNING", 0L);
         long total = visibleItems.size();
+        long accountCount = visibleItems.stream().map(item -> item.get("accountId"))
+                .filter(java.util.Objects::nonNull).distinct().count();
         job.put("selectedCount", total);
+        job.put("accountCount", accountCount);
         job.put("executableCount", Math.max(0, total - conflicts));
         job.put("conflictCount", conflicts);
         job.put("successCount", success);
@@ -586,8 +605,45 @@ public class ProductMatrixService {
         int rate = job.get("maxOperationsPerMinute") instanceof Number number ? Math.max(1, number.intValue()) : 10;
         job.put("estimatedWaitSecondsUpperBound", active == 0 ? 0 : (long) Math.ceil(active * 60d / rate));
         job.put("visibleScopeOnly", true);
-        job.put("status", active > 0 ? "RUNNING" : success > 0 && failed + unknown + skipped + cancelled + conflicts > 0
-                ? "PARTIAL_SUCCESS" : success == total && total > 0 ? "SUCCEEDED" : "FAILED");
+        String visibleStatus = visibleBatchStatus(string(job.get("status")), total, active, success, failed,
+                unknown, skipped, cancelled, conflicts);
+        job.put("status", visibleStatus);
+        String action = switch (string(job.get("operationType"))) {
+            case "SYNC" -> "同步";
+            case "ON_SALE" -> "上架";
+            case "OFF_SHELF" -> "下架";
+            case "POLISH" -> "擦亮";
+            case "CHANGE_PRICE" -> "改价";
+            case "CHANGE_STOCK" -> "改库存";
+            case "DELETE" -> "删除";
+            default -> "批量操作";
+        };
+        job.put("confirmationSummary", "当前权限范围内：" + accountCount + "个店铺、" + total + "个商品，操作：" + action);
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("event", "VISIBLE_SCOPE_TERMINAL");
+        evidence.put("jobId", job.get("jobId"));
+        evidence.put("status", visibleStatus);
+        evidence.put("successCount", success);
+        evidence.put("failedCount", failed);
+        evidence.put("unknownCount", unknown);
+        evidence.put("skippedCount", skipped);
+        evidence.put("cancelledCount", cancelled);
+        evidence.put("visibleScopeOnly", true);
+        evidence.put("externalDispatched", null);
+        job.put("notificationEvidence", evidence);
+    }
+
+    static String visibleBatchStatus(String storedStatus, long total, long active, long success, long failed,
+                                     long unknown, long skipped, long cancelled, long conflicts) {
+        if (active > 0) return "CANCEL_REQUESTED".equals(storedStatus) ? "CANCEL_REQUESTED" : "RUNNING";
+        if (total <= 0) return "UNKNOWN";
+        if (success == total) return "SUCCEEDED";
+        if (failed == total) return "FAILED";
+        if (unknown == total) return "UNKNOWN";
+        if (skipped == total) return "SKIPPED";
+        if (cancelled == total) return "CANCELLED";
+        if (conflicts == total) return "CONFLICT";
+        return "PARTIAL_SUCCESS";
     }
 
     @Transactional
@@ -618,13 +674,20 @@ public class ProductMatrixService {
             if (inserted == 0) continue;
             retried += jdbcTemplate.update("""
                     UPDATE xianyu_goods_batch_item
-                       SET status='QUEUED', next_retry_time=NULL, error_message=NULL,
-                           outcome_state='UNKNOWN', completed_time=NULL
+                       SET status='QUEUED', next_retry_time=NULL,
+                           error_code=NULL, error_message=NULL, result_json=NULL,
+                           platform_request_id=NULL, claimed_by=NULL, claimed_time=NULL,
+                           started_time=NULL, outcome_state='QUEUED', completed_time=NULL
                      WHERE tenant_id=? AND id=? AND status='FAILED'
                     """, requireTenant(), itemId);
         }
         if (retried > 0) {
-            jdbcTemplate.update("UPDATE xianyu_goods_batch_job SET status='QUEUED', completed_time=NULL WHERE tenant_id=? AND id=?",
+            jdbcTemplate.update("""
+                    UPDATE xianyu_goods_batch_job
+                       SET status='QUEUED', completed_time=NULL,
+                           notification_sent=0, notification_evidence_json=NULL
+                     WHERE tenant_id=? AND id=?
+                    """,
                     requireTenant(), jobId);
         }
         audit(null, "PRODUCT_BATCH_RETRY", "重试商品批量任务失败项", requestId,
@@ -725,6 +788,7 @@ public class ProductMatrixService {
         if (filter.search() != null) {
             where.append(" AND (goods.xy_good_id LIKE :search OR goods.title LIKE :search OR goods.outer_id LIKE :search)");
             params.addValue("search", "%" + filter.search() + "%");
+            params.addValue("exactSearch", filter.search());
         }
         if (filter.source() != null) {
             where.append(" AND goods.product_source=:source");

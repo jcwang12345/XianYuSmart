@@ -1,6 +1,7 @@
 package com.xianyusmart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xianyusmart.context.AccountScopeContext;
 import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.exception.BusinessException;
@@ -11,10 +12,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.namedparam.SqlParameterSource;
+import org.springframework.dao.DuplicateKeyException;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -56,6 +60,7 @@ class ProductMatrixServiceTest {
 
     @AfterEach
     void tearDown() {
+        AccountScopeContext.clear();
         UserContext.clear();
     }
 
@@ -69,6 +74,20 @@ class ProductMatrixServiceTest {
         assertNull(summary.get("knownStockTotal"));
         assertEquals("UNSYNCED", summary.get("metricCoverageStatus"));
         assertEquals("FILTERED_RESULT", result.get("summaryScope"));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void exactGoodsOrOuterIdMatchIsRankedBeforePrefixMatches() {
+        service.list(new ProductMatrixService.ProductFilter(
+                "QA-OUTER-1", List.of(), null, "ALL", null, null, 7, 1, 20));
+
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<SqlParameterSource> params = org.mockito.ArgumentCaptor.forClass(SqlParameterSource.class);
+        verify(namedJdbc).query(sql.capture(), params.capture(), any(RowMapper.class));
+        assertTrue(sql.getValue().contains("CASE WHEN goods.xy_good_id=:exactSearch OR goods.outer_id=:exactSearch THEN 0 ELSE 1 END"));
+        assertEquals("QA-OUTER-1", params.getValue().getValue("exactSearch"));
+        assertEquals("%QA-OUTER-1%", params.getValue().getValue("search"));
     }
 
     @Test
@@ -317,6 +336,113 @@ class ProductMatrixServiceTest {
             }
         }
         assertTrue(jobShape && itemShape);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void concurrentIdempotencyWinnerIsReturnedAsSuccessfulReplay() {
+        Map<String, Object> winner = Map.of("id", 77L, "batch_id", "PB-WINNER");
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenAnswer(new org.mockito.stubbing.Answer<>() {
+                    int replayReads;
+                    @Override public List<Map<String, Object>> answer(org.mockito.invocation.InvocationOnMock call) {
+                        String sql = call.getArgument(0);
+                        if (sql.contains("idempotency_key")) return replayReads++ == 0 ? List.of() : List.of(winner);
+                        return List.of(product(0, "PLATFORM_LIST_SYNC"));
+                    }
+                });
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenAnswer(call -> {
+            if (((String) call.getArgument(0)).contains("INSERT INTO xianyu_goods_batch_job")) {
+                throw new DuplicateKeyException("concurrent winner");
+            }
+            return 1;
+        });
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class))).thenAnswer(call -> {
+            String sql = call.getArgument(0);
+            if (sql.contains("SELECT job.*")) return List.of(batch(77L));
+            return List.of();
+        });
+        ProductMatrixService.BatchRequest draft = request("SYNC", Map.of(), null);
+        ProductMatrixService.BatchPreview preview = service.previewBatch(draft);
+
+        Map<String, Object> result = service.createBatch(confirmedRequest("SYNC", Map.of(), preview));
+
+        assertEquals(77L, result.get("jobId"));
+        assertEquals(true, result.get("idempotentReplay"));
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate, atLeast(1)).update(sql.capture(), any(Object[].class));
+        assertFalse(sql.getAllValues().stream().anyMatch(value -> value.contains("INSERT INTO xianyu_goods_batch_item")));
+        verify(operationLogService, never()).log(any(com.xianyusmart.entity.XianyuOperationLog.class));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void retryClearsCurrentFailureEvidenceAndRearmsTerminalNotification() {
+        Map<String, Object> failedJob = new LinkedHashMap<>();
+        failedJob.put("jobId", 77L);
+        failedJob.put("batchId", "PB-FAIL-ONCE");
+        failedJob.put("status", "FAILED");
+        failedJob.put("maxOperationsPerMinute", 30);
+        Map<String, Object> failedItem = new LinkedHashMap<>();
+        failedItem.put("itemId", 88L);
+        failedItem.put("accountId", 2L);
+        failedItem.put("goodsId", "goods-1");
+        failedItem.put("status", "FAILED");
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> ((String) invocation.getArgument(0)).contains("SELECT job.*")
+                        ? List.of(failedJob) : List.of(failedItem));
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
+
+        Map<String, Object> result = service.retryBatchFailures(77L, "retry-fail-once", List.of(88L));
+
+        assertEquals(1, result.get("retriedCount"));
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate, atLeast(3)).update(sql.capture(), any(Object[].class));
+        assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("status='QUEUED'")
+                && value.contains("error_code=NULL") && value.contains("result_json=NULL")
+                && value.contains("platform_request_id=NULL") && value.contains("outcome_state='QUEUED'")));
+        assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("notification_sent=0")
+                && value.contains("notification_evidence_json=NULL")));
+    }
+
+    @Test
+    void restrictedBatchStatusDoesNotTurnAllCancelledOrUnknownIntoFailed() {
+        assertEquals("CANCELLED", ProductMatrixService.visibleBatchStatus(
+                "CANCELLED", 334, 0, 0, 0, 0, 0, 334, 0));
+        assertEquals("UNKNOWN", ProductMatrixService.visibleBatchStatus(
+                "FAILED", 34, 0, 0, 0, 34, 0, 0, 0));
+        assertEquals("SKIPPED", ProductMatrixService.visibleBatchStatus(
+                "FAILED", 10, 0, 0, 0, 0, 10, 0, 0));
+        assertEquals("PARTIAL_SUCCESS", ProductMatrixService.visibleBatchStatus(
+                "PARTIAL_SUCCESS", 34, 0, 32, 0, 2, 0, 0, 0));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void restrictedBatchRedactsFullScopeConfirmationAndNotificationEvidence() {
+        AccountScopeContext.set(false, Set.of(101L));
+        Map<String, Object> job = new LinkedHashMap<>();
+        job.put("jobId", 3L);
+        job.put("operationType", "SYNC");
+        job.put("status", "PARTIAL_SUCCESS");
+        job.put("maxOperationsPerMinute", 30);
+        job.put("confirmationSummary", "确认对3个店铺的100个商品执行同步");
+        job.put("notificationEvidence", Map.of("successCount", 80, "failedCount", 15, "unknownCount", 5));
+        List<Map<String, Object>> visible = new ArrayList<>();
+        for (int index = 0; index < 32; index++) visible.add(Map.of("status", "SUCCEEDED", "accountId", 101L));
+        for (int index = 0; index < 2; index++) visible.add(Map.of("status", "UNKNOWN", "accountId", 101L));
+
+        service.redactJobToVisibleItems(job, visible);
+
+        assertEquals(34L, job.get("selectedCount"));
+        assertEquals(1L, job.get("accountCount"));
+        assertEquals("PARTIAL_SUCCESS", job.get("status"));
+        assertEquals("当前权限范围内：1个店铺、34个商品，操作：同步", job.get("confirmationSummary"));
+        Map<String, Object> evidence = (Map<String, Object>) job.get("notificationEvidence");
+        assertEquals(32L, evidence.get("successCount"));
+        assertEquals(2L, evidence.get("unknownCount"));
+        assertEquals(true, evidence.get("visibleScopeOnly"));
+        assertNull(evidence.get("externalDispatched"));
     }
 
     private ProductMatrixService.BatchRequest request(String operation, Map<String, Object> params, String confirmation) {

@@ -230,7 +230,9 @@ public class ProductBatchExecutionService {
                     ? "PLATFORM_CONFIRMED" : "PLATFORM_CONFIRMED_LOCAL_PENDING";
             jdbcTemplate.update("""
                     UPDATE xianyu_goods_batch_item
-                       SET status='SUCCEEDED', outcome_state=?, result_json=?, error_message=?, completed_time=NOW(3)
+                       SET status='SUCCEEDED', outcome_state=?, result_json=?,
+                           error_code=NULL, error_message=?, next_retry_time=NULL,
+                           claimed_by=NULL, claimed_time=NULL, completed_time=NOW(3)
                      WHERE tenant_id=? AND id=?
                     """, outcome, json(result), qaMock || localUpdated || "SYNC".equals(operation) ? null : "平台已成功，本地状态待修复",
                     tenantId, itemId);
@@ -287,7 +289,8 @@ public class ProductBatchExecutionService {
                  after_json, error_message)
                 VALUES (?,?,?,?, 'BATCH_TASK',?,?, ?,?,?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state), after_json=VALUES(after_json),
-                 error_message=VALUES(error_message)
+                 platform_request_id=VALUES(platform_request_id), error_message=VALUES(error_message),
+                 created_time=NOW(3)
                 """, number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id")),
                 "BATCH_" + text(item.get("operation_type")), outcome,
                 qaMockService.isEligible(number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id"))) ? "QA_MOCK" : "PLATFORM_WEB",
@@ -417,13 +420,15 @@ public class ProductBatchExecutionService {
                 json(evidence), tenantId, jobId);
         if ("QA_MOCK".equals(channel)) {
             jdbcTemplate.update("""
-                    INSERT IGNORE INTO xianyu_goods_event
+                    INSERT INTO xianyu_goods_event
                     (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
                      request_id,batch_job_id,batch_item_id,after_json)
                     SELECT item.tenant_id,item.xianyu_account_id,item.xy_goods_id,'BATCH_NOTIFICATION','SYSTEM',?,
                            'QA_MOCK',job.request_id,job.id,item.id,?
                       FROM xianyu_goods_batch_job job JOIN xianyu_goods_batch_item item ON item.batch_job_id=job.id
                      WHERE job.tenant_id=? AND job.id=? ORDER BY item.id LIMIT 1
+                    ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state),after_json=VALUES(after_json),
+                                            created_time=NOW(3)
                     """, status, json(evidence), tenantId, jobId);
             return;
         }

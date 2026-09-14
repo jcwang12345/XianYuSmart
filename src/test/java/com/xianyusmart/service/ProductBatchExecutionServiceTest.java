@@ -193,6 +193,14 @@ class ProductBatchExecutionServiceTest {
         service.executeJob(job);
 
         verify(qaMock).execute(job, item);
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc, atLeast(1)).update(sql.capture(), any(Object[].class));
+        assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("status='SUCCEEDED'")
+                && value.contains("error_code=NULL") && value.contains("next_retry_time=NULL")));
+        assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("BATCH_NOTIFICATION")
+                && value.contains("ON DUPLICATE KEY UPDATE") && value.contains("after_json=VALUES(after_json)")));
+        assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("platform_request_id=VALUES(platform_request_id)")
+                && value.contains("error_message=VALUES(error_message)")));
         verify(platform, never()).changeListingStatus(any(), anyString(), anyBoolean());
         verify(platform, never()).delete(any(), anyString());
         verify(notifications, never()).dispatch(anyString(), any(), anyString(), anyString(), any());

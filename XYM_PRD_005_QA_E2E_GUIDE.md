@@ -1,6 +1,6 @@
 # XYM-PRD-005：PRD-04 隔离 E2E 验收指南
 
-版本：`v2.3.5`
+版本：`v2.3.6`
 隔离地址：`http://127.0.0.1:12401`
 安全对象：Tenant-A、店铺 `101/102/103`、商品 ID 前缀 `QA-`
 生产端口 `2000` 和真实平台商品不在测试范围内。
@@ -105,9 +105,9 @@ curl -H "Authorization: Bearer $QA_TOKEN" \
 
 ## 6. 本次开发验证结果
 
-- Flyway：36 个迁移校验通过，V36 在 MySQL 5.7.18 成功应用。
-- 后端：130 tests，0 failures，0 errors，0 skipped。
-- 前端：`vue-tsc --build` 通过；Vite 生产构建 342 modules 通过。
+- Flyway：38 个迁移校验通过，V37/V38 在 MySQL 5.7.18 成功应用。
+- 后端：135 tests，0 failures，0 errors，0 skipped。
+- 前端：按 `package-lock` 安装后 `vue-tsc --build` 通过；Vite 生产构建 338 modules 通过。
 - API：五种动作 `SYNC/ON_SALE/OFF_SHELF/POLISH/DELETE` 均可在 QA Mock 预检且 `executableCount=1`。
 - 数据库：job 3 共 100 子项；重试后 95 成功、5 未知、15 项 `attemptCount=2`。job 9 共 1000 子项并安全取消。
 - 事件与审计：QA Mock 商品事件 112 条、覆盖 8 个任务；`qa-005-*` 统一审计 23 条。
