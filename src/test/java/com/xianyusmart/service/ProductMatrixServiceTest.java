@@ -36,6 +36,7 @@ class ProductMatrixServiceTest {
     private NamedParameterJdbcTemplate namedJdbc;
     private AccountAccessService accountAccessService;
     private OperationLogService operationLogService;
+    private ProductBatchQaMockService qaMockService;
     private ProductMatrixService service;
 
     @BeforeEach
@@ -45,8 +46,9 @@ class ProductMatrixServiceTest {
         namedJdbc = mock(NamedParameterJdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
+        qaMockService = mock(ProductBatchQaMockService.class);
         service = new ProductMatrixService(jdbcTemplate, namedJdbc, accountAccessService,
-                operationLogService, new ObjectMapper());
+                operationLogService, new ObjectMapper(), qaMockService);
         UserContext.set(4L, "product-tester", 9L);
         when(namedJdbc.queryForObject(anyString(), any(SqlParameterSource.class), eq(Integer.class))).thenReturn(0);
         when(namedJdbc.query(anyString(), any(SqlParameterSource.class), any(RowMapper.class))).thenReturn(List.of());
@@ -212,6 +214,20 @@ class ProductMatrixServiceTest {
     }
 
     @Test
+    void qaMockPreviewBypassesPlatformReadinessButMakesIsolationExplicit() {
+        when(qaMockService.isEligible(9L, 2L, "goods-1")).thenReturn(true);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenReturn(List.of(product(1, "MANUAL_IMPORT")));
+
+        ProductMatrixService.BatchPreview preview = service.previewBatch(request("DELETE", Map.of(), null));
+
+        assertEquals("QA_MOCK", preview.executionChannel());
+        assertEquals(1, preview.executableCount());
+        assertTrue(preview.confirmationSummary().contains("不触达平台"));
+        assertTrue(preview.executionNotice().contains("不发起平台网络请求"));
+    }
+
+    @Test
     void batchPricePreviewRejectsMoreThanTwoDecimalPlacesBeforeCreatingToken() {
         for (String price : List.of("0.001", "1.234")) {
             ProductMatrixService.BatchRequest request = request("CHANGE_PRICE", Map.of("price", price), null);
@@ -292,7 +308,7 @@ class ProductMatrixServiceTest {
         boolean itemShape = false;
         for (int i = 0; i < sql.getAllValues().size(); i++) {
             if (sql.getAllValues().get(i).contains("INSERT INTO xianyu_goods_batch_job")) {
-                assertEquals(16, args.getAllValues().get(i).length);
+                assertEquals(17, args.getAllValues().get(i).length);
                 jobShape = true;
             }
             if (sql.getAllValues().get(i).contains("INSERT INTO xianyu_goods_batch_item")) {

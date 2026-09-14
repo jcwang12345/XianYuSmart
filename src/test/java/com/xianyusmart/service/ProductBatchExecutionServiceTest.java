@@ -27,7 +27,8 @@ class ProductBatchExecutionServiceTest {
         when(jdbc.update(anyString())).thenReturn(2, 1);
         ProductBatchExecutionService service = new ProductBatchExecutionService(
                 jdbc, mock(PlatformPublishService.class), mock(ItemDetailSyncService.class),
-                mock(GoodsAutomationService.class), new ObjectMapper(), mock(NotificationCenterService.class));
+                mock(GoodsAutomationService.class), new ObjectMapper(), mock(NotificationCenterService.class),
+                mock(ProductBatchQaMockService.class), true);
 
         service.recoverInterruptedWork();
 
@@ -44,7 +45,8 @@ class ProductBatchExecutionServiceTest {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         ProductBatchExecutionService service = new ProductBatchExecutionService(
                 jdbc, mock(PlatformPublishService.class), mock(ItemDetailSyncService.class),
-                mock(GoodsAutomationService.class), new ObjectMapper(), mock(NotificationCenterService.class));
+                mock(GoodsAutomationService.class), new ObjectMapper(), mock(NotificationCenterService.class),
+                mock(ProductBatchQaMockService.class), true);
         Map<String, Object> job = job();
         job.put("status", "CANCEL_REQUESTED");
         when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
@@ -76,7 +78,8 @@ class ProductBatchExecutionServiceTest {
         ItemDetailSyncService sync = mock(ItemDetailSyncService.class);
         GoodsAutomationService automation = mock(GoodsAutomationService.class);
         ProductBatchExecutionService service = new ProductBatchExecutionService(
-                jdbc, platform, sync, automation, new ObjectMapper(), mock(NotificationCenterService.class));
+                jdbc, platform, sync, automation, new ObjectMapper(), mock(NotificationCenterService.class),
+                mock(ProductBatchQaMockService.class), true);
         Map<String, Object> job = job();
         Map<String, Object> item = item("OFF_SHELF");
         when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(item));
@@ -96,7 +99,7 @@ class ProductBatchExecutionServiceTest {
             if (sql.getAllValues().get(i).contains("SET status=?, outcome_state=?")
                     && "UNKNOWN".equals(args.getAllValues().get(i)[0])
                     && "UNKNOWN".equals(args.getAllValues().get(i)[1])
-                    && args.getAllValues().get(i)[3] == null) {
+                    && args.getAllValues().get(i)[4] == null) {
                 unknownPersisted = true;
             }
         }
@@ -109,7 +112,7 @@ class ProductBatchExecutionServiceTest {
         PlatformPublishService platform = mock(PlatformPublishService.class);
         ProductBatchExecutionService service = new ProductBatchExecutionService(
                 jdbc, platform, mock(ItemDetailSyncService.class), mock(GoodsAutomationService.class), new ObjectMapper(),
-                mock(NotificationCenterService.class));
+                mock(NotificationCenterService.class), mock(ProductBatchQaMockService.class), true);
         Map<String, Object> job = job();
         Map<String, Object> item = item("OFF_SHELF");
         when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(item));
@@ -141,7 +144,7 @@ class ProductBatchExecutionServiceTest {
         PlatformPublishService platform = mock(PlatformPublishService.class);
         ProductBatchExecutionService service = new ProductBatchExecutionService(
                 jdbc, platform, mock(ItemDetailSyncService.class), mock(GoodsAutomationService.class),
-                new ObjectMapper(), mock(NotificationCenterService.class));
+                new ObjectMapper(), mock(NotificationCenterService.class), mock(ProductBatchQaMockService.class), true);
         when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(item("OFF_SHELF")));
         when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Integer.class), any(Object[].class))).thenReturn(0);
         when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
@@ -158,6 +161,41 @@ class ProductBatchExecutionServiceTest {
         assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("AUTHORIZATION_REVOKED")
                 && value.contains("status='SKIPPED'")));
         verify(platform, never()).changeListingStatus(any(), anyString(), anyBoolean());
+    }
+
+    @Test
+    void qaMockExecutesPersistentStateWithoutCallingPlatformOrExternalNotification() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        PlatformPublishService platform = mock(PlatformPublishService.class);
+        NotificationCenterService notifications = mock(NotificationCenterService.class);
+        ProductBatchQaMockService qaMock = mock(ProductBatchQaMockService.class);
+        ProductBatchExecutionService service = new ProductBatchExecutionService(
+                jdbc, platform, mock(ItemDetailSyncService.class), mock(GoodsAutomationService.class),
+                new ObjectMapper(), notifications, qaMock, false);
+        Map<String, Object> job = job();
+        job.put("execution_channel", "QA_MOCK");
+        Map<String, Object> item = item("OFF_SHELF");
+        item.put("expected_goods_version", 1L);
+        when(qaMock.isEligible(9L, 2L, "goods-1")).thenReturn(true);
+        when(qaMock.bypassRateLimit(job)).thenReturn(true);
+        when(qaMock.execute(job, item)).thenReturn(Map.of(
+                "success", true, "executionChannel", "QA_MOCK", "platformNetworkCalled", false));
+        when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(item));
+        when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Integer.class), any(Object[].class))).thenReturn(1);
+        when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(String.class), any(Object[].class)))
+                .thenReturn("RUNNING", "QA_MOCK");
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        when(jdbc.queryForMap(anyString(), any(Object[].class))).thenReturn(Map.of(
+                "total", 1L, "succeeded", 1L, "failed", 0L, "unknown_count", 0L,
+                "active", 0L, "skipped", 0L, "cancelled", 0L, "conflicts", 0L));
+
+        service.executeJob(job);
+
+        verify(qaMock).execute(job, item);
+        verify(platform, never()).changeListingStatus(any(), anyString(), anyBoolean());
+        verify(platform, never()).delete(any(), anyString());
+        verify(notifications, never()).dispatch(anyString(), any(), anyString(), anyString(), any());
     }
 
     private Map<String, Object> job() {

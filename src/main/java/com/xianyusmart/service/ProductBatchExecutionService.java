@@ -3,8 +3,10 @@ package com.xianyusmart.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
@@ -27,6 +29,8 @@ public class ProductBatchExecutionService {
     private final GoodsAutomationService goodsAutomationService;
     private final ObjectMapper objectMapper;
     private final NotificationCenterService notificationCenterService;
+    private final ProductBatchQaMockService qaMockService;
+    private final boolean dispatchEnabled;
     private final String workerId = "product-batch-" + java.util.UUID.randomUUID().toString().substring(0, 8);
 
     public ProductBatchExecutionService(JdbcTemplate jdbcTemplate,
@@ -34,13 +38,17 @@ public class ProductBatchExecutionService {
                                         ItemDetailSyncService itemDetailSyncService,
                                         GoodsAutomationService goodsAutomationService,
                                         ObjectMapper objectMapper,
-                                        NotificationCenterService notificationCenterService) {
+                                        NotificationCenterService notificationCenterService,
+                                        ProductBatchQaMockService qaMockService,
+                                        @Value("${app.product-batch.dispatch-enabled:true}") boolean dispatchEnabled) {
         this.jdbcTemplate = jdbcTemplate;
         this.platformPublishService = platformPublishService;
         this.itemDetailSyncService = itemDetailSyncService;
         this.goodsAutomationService = goodsAutomationService;
         this.objectMapper = objectMapper;
         this.notificationCenterService = notificationCenterService;
+        this.qaMockService = qaMockService;
+        this.dispatchEnabled = dispatchEnabled;
     }
 
     @PostConstruct
@@ -63,6 +71,7 @@ public class ProductBatchExecutionService {
 
     @Scheduled(fixedDelayString = "${app.product-batch.dispatch-delay-ms:5000}", initialDelay = 30000)
     public void dispatch() {
+        if (!dispatchEnabled) return;
         List<Map<String, Object>> jobs = jdbcTemplate.queryForList("""
                 SELECT * FROM xianyu_goods_batch_job
                  WHERE status IN ('QUEUED','RUNNING','CANCEL_REQUESTED') ORDER BY created_time, id LIMIT 10
@@ -70,6 +79,65 @@ public class ProductBatchExecutionService {
         for (Map<String, Object> job : jobs) {
             executeJob(job);
         }
+    }
+
+    /** QA 控制器使用的单步调度；只接受已经持久化为 QA_MOCK 的任务。 */
+    public Map<String, Object> dispatchOneQaJob(Long tenantId, Long jobId) {
+        Map<String, Object> job = requireQaJob(tenantId, jobId);
+        executeJob(job);
+        return qaJobState(tenantId, jobId);
+    }
+
+    /** 可控排空便于验证 100/1000 子项；遇到限速无进展会停止，不伪造进度。 */
+    public Map<String, Object> drainQaJob(Long tenantId, Long jobId, int requestedCycles) {
+        int maxCycles = Math.max(1, Math.min(requestedCycles, 2000));
+        int cycles = 0;
+        int unchanged = 0;
+        long previousCompleted = -1;
+        while (cycles++ < maxCycles) {
+            Map<String, Object> job = requireQaJob(tenantId, jobId);
+            if (!List.of("QUEUED", "RUNNING", "CANCEL_REQUESTED").contains(text(job.get("status")))) break;
+            executeJob(job);
+            Map<String, Object> state = qaJobState(tenantId, jobId);
+            long completed = longValue(state.get("completed"));
+            unchanged = completed == previousCompleted ? unchanged + 1 : 0;
+            previousCompleted = completed;
+            if (unchanged >= 2) break;
+        }
+        Map<String, Object> result = qaJobState(tenantId, jobId);
+        result.put("cycles", cycles - 1);
+        result.put("stoppedForRateLimit", longValue(result.get("active")) > 0 && unchanged >= 2);
+        return result;
+    }
+
+    public Map<String, Object> prepareQaRestartFault(Long tenantId, Long jobId) {
+        requireQaJob(tenantId, jobId);
+        int changed = jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_item SET status='RUNNING',outcome_state='RUNNING',
+                       claimed_by='QA-RESTART-FAULT',claimed_time=NOW(3),started_time=NOW(3)
+                 WHERE tenant_id=? AND batch_job_id=? AND status='QUEUED' ORDER BY id LIMIT 1
+                """, tenantId, jobId);
+        if (changed != 1) throw new BusinessException(409, "任务没有可用于重启恢复验证的排队子项");
+        jdbcTemplate.update("UPDATE xianyu_goods_batch_job SET status='RUNNING' WHERE tenant_id=? AND id=?", tenantId, jobId);
+        return qaJobState(tenantId, jobId);
+    }
+
+    public Map<String, Object> recoverQaJob(Long tenantId, Long jobId) {
+        requireQaJob(tenantId, jobId);
+        int unknown = jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_item SET status='UNKNOWN',outcome_state='UNKNOWN',error_code='WORKER_RESTART',
+                       error_message='隔离 QA 重启恢复：执行中子项结果未知',completed_time=NOW(3)
+                 WHERE tenant_id=? AND batch_job_id=? AND status='RUNNING'
+                """, tenantId, jobId);
+        int requeued = jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_job SET status='QUEUED',recovery_count=recovery_count+1,last_dispatch_time=NULL
+                 WHERE tenant_id=? AND id=? AND execution_channel='QA_MOCK'
+                   AND EXISTS (SELECT 1 FROM xianyu_goods_batch_item item WHERE item.batch_job_id=? AND item.status='QUEUED')
+                """, tenantId, jobId, jobId);
+        Map<String, Object> result = qaJobState(tenantId, jobId);
+        result.put("recoveredUnknown", unknown);
+        result.put("requeuedJobs", requeued);
+        return result;
     }
 
     void executeJob(Map<String, Object> job) {
@@ -116,7 +184,8 @@ public class ProductBatchExecutionService {
         Long accountId = number(item.get("xianyu_account_id"));
         String goodsId = text(item.get("xy_goods_id"));
         String operation = text(item.get("operation_type")).toUpperCase(Locale.ROOT);
-        if (!authorizationStillValid(job, accountId)) {
+        boolean qaMock = qaMockService.isEligible(tenantId, accountId, goodsId);
+        if ((qaMock && qaMockService.simulateAuthorizationRevoked(job)) || !authorizationStillValid(job, accountId)) {
             jdbcTemplate.update("""
                     UPDATE xianyu_goods_batch_item SET status='SKIPPED',outcome_state='AUTHORIZATION_REVOKED',
                            error_code='AUTHORIZATION_REVOKED',error_message='任务创建人的商品操作权限或店铺范围已被撤销',completed_time=NOW(3)
@@ -125,7 +194,8 @@ public class ProductBatchExecutionService {
             recordEvent(job, item, "AUTHORIZATION_REVOKED", null, "执行前实时权限复核未通过");
             return;
         }
-        if (!versionMatches(tenantId, accountId, goodsId, item.get("expected_goods_version"))) {
+        if ((qaMock && qaMockService.simulateStaleVersion(job))
+                || !versionMatches(tenantId, accountId, goodsId, item.get("expected_goods_version"))) {
             jdbcTemplate.update("""
                     UPDATE xianyu_goods_batch_item SET status='SKIPPED',outcome_state='PRECHECK_CONFLICT',
                            error_code='STALE_PRODUCT_VERSION',error_message='商品已在预检后发生变化，请重新预检',completed_time=NOW(3)
@@ -135,8 +205,8 @@ public class ProductBatchExecutionService {
             return;
         }
         int rate = integer(job.get("max_operations_per_minute"), 10);
-        if (!acquireRateSlot(tenantId, accountId, rate)) return;
-        String platformRequestId = "PR-" + java.util.UUID.randomUUID().toString();
+        if (!(qaMock && qaMockService.bypassRateLimit(job)) && !acquireRateSlot(tenantId, accountId, rate)) return;
+        String platformRequestId = (qaMock ? "QA-MOCK-" : "PR-") + java.util.UUID.randomUUID();
         int claimed = jdbcTemplate.update("""
                 UPDATE xianyu_goods_batch_item
                    SET status='RUNNING', started_time=NOW(3), attempt_count=attempt_count+1,
@@ -146,7 +216,7 @@ public class ProductBatchExecutionService {
         if (claimed != 1) return;
         item.put("platform_request_id", platformRequestId);
         try {
-            Map<String, Object> result = switch (operation) {
+            Map<String, Object> result = qaMock ? qaMockService.execute(job, item) : switch (operation) {
                 case "SYNC" -> sync(accountId, goodsId);
                 case "ON_SALE" -> platformPublishService.changeListingStatus(accountId, goodsId, true);
                 case "OFF_SHELF" -> platformPublishService.changeListingStatus(accountId, goodsId, false);
@@ -155,29 +225,33 @@ public class ProductBatchExecutionService {
                 default -> throw new IllegalStateException("当前接入通道不支持" + operation);
             };
             if (!Boolean.TRUE.equals(result.get("success"))) throw new IllegalStateException("平台操作未确认成功");
-            boolean localUpdated = updateLocalState(tenantId, accountId, goodsId, operation);
-            String outcome = localUpdated || "SYNC".equals(operation)
+            boolean localUpdated = qaMock || updateLocalState(tenantId, accountId, goodsId, operation);
+            String outcome = qaMock ? "QA_MOCK_CONFIRMED" : localUpdated || "SYNC".equals(operation)
                     ? "PLATFORM_CONFIRMED" : "PLATFORM_CONFIRMED_LOCAL_PENDING";
             jdbcTemplate.update("""
                     UPDATE xianyu_goods_batch_item
                        SET status='SUCCEEDED', outcome_state=?, result_json=?, error_message=?, completed_time=NOW(3)
                      WHERE tenant_id=? AND id=?
-                    """, outcome, json(result), localUpdated || "SYNC".equals(operation) ? null : "平台已成功，本地状态待修复",
+                    """, outcome, json(result), qaMock || localUpdated || "SYNC".equals(operation) ? null : "平台已成功，本地状态待修复",
                     tenantId, itemId);
             updateRateOutcome(tenantId, accountId, true, rate);
             recordEvent(job, item, outcome, result, null);
         } catch (Exception e) {
             String message = limit(e.getMessage());
             int attempts = integer(item.get("attempt_count"), 0) + 1;
+            boolean manualRetry = e instanceof ProductBatchQaMockService.ManualRetryRequiredException;
             boolean unknown = isUnknownResult(message);
             boolean exhausted = attempts >= integer(item.get("max_attempts"), 3);
             String status = unknown ? "UNKNOWN" : "FAILED";
-            LocalDateTime retryAt = unknown || exhausted ? null : LocalDateTime.now().plusSeconds(Math.min(300, attempts * 30L));
+            LocalDateTime retryAt = unknown || exhausted ? null : manualRetry
+                    ? LocalDateTime.now().plusYears(1) : LocalDateTime.now().plusSeconds(Math.min(300, attempts * 30L));
+            String errorCode = unknown ? (qaMock ? "QA_MOCK_UNKNOWN" : "PLATFORM_RESULT_UNKNOWN")
+                    : manualRetry ? "QA_MOCK_RETRY_REQUIRED" : "EXECUTION_FAILED";
             jdbcTemplate.update("""
                     UPDATE xianyu_goods_batch_item
-                       SET status=?, outcome_state=?, error_message=?, next_retry_time=?, completed_time=NOW(3)
+                       SET status=?, outcome_state=?, error_code=?, error_message=?, next_retry_time=?, completed_time=NOW(3)
                      WHERE tenant_id=? AND id=?
-                    """, status, unknown ? "UNKNOWN" : "FAILED", message, retryAt, tenantId, itemId);
+                    """, status, unknown ? "UNKNOWN" : "FAILED", errorCode, message, retryAt, tenantId, itemId);
             updateRateOutcome(tenantId, accountId, false, rate);
             recordEvent(job, item, unknown ? "UNKNOWN" : "FAILED", null, message);
         }
@@ -211,11 +285,13 @@ public class ProductBatchExecutionService {
                  data_source, operator_user_id, operator_username, request_id, idempotency_key,
                  batch_job_id,batch_item_id,platform_request_id,
                  after_json, error_message)
-                VALUES (?,?,?,?, 'BATCH_TASK',?,'PLATFORM_WEB',?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?, 'BATCH_TASK',?,?, ?,?,?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state), after_json=VALUES(after_json),
                  error_message=VALUES(error_message)
                 """, number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id")),
-                "BATCH_" + text(item.get("operation_type")), outcome, number(job.get("operator_user_id")),
+                "BATCH_" + text(item.get("operation_type")), outcome,
+                qaMockService.isEligible(number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id"))) ? "QA_MOCK" : "PLATFORM_WEB",
+                number(job.get("operator_user_id")),
                 job.get("operator_username"), job.get("request_id"), job.get("idempotency_key"), number(job.get("id")),
                 number(item.get("id")), item.get("platform_request_id"), json(result), error);
     }
@@ -329,11 +405,56 @@ public class ProductBatchExecutionService {
         if (claimed != 1) return;
         String event = "SUCCEEDED".equals(status) ? "PRODUCT_BATCH_SUCCEEDED"
                 : "FAILED".equals(status) ? "PRODUCT_BATCH_FAILED" : "PRODUCT_BATCH_PARTIAL";
+        String channel = jdbcTemplate.queryForObject(
+                "SELECT execution_channel FROM xianyu_goods_batch_job WHERE tenant_id=? AND id=?",
+                String.class, tenantId, jobId);
+        Map<String, Object> evidence = Map.of("event", event, "jobId", jobId, "status", status,
+                "successCount", success, "failedCount", failed, "unknownCount", unknown,
+                "skippedCount", skipped, "cancelledCount", cancelled,
+                "route", "QA_MOCK".equals(channel) ? "QA_TEST_SINK" : "NOTIFICATION_CENTER",
+                "externalDispatched", !"QA_MOCK".equals(channel));
+        jdbcTemplate.update("UPDATE xianyu_goods_batch_job SET notification_evidence_json=? WHERE tenant_id=? AND id=?",
+                json(evidence), tenantId, jobId);
+        if ("QA_MOCK".equals(channel)) {
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO xianyu_goods_event
+                    (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
+                     request_id,batch_job_id,batch_item_id,after_json)
+                    SELECT item.tenant_id,item.xianyu_account_id,item.xy_goods_id,'BATCH_NOTIFICATION','SYSTEM',?,
+                           'QA_MOCK',job.request_id,job.id,item.id,?
+                      FROM xianyu_goods_batch_job job JOIN xianyu_goods_batch_item item ON item.batch_job_id=job.id
+                     WHERE job.tenant_id=? AND job.id=? ORDER BY item.id LIMIT 1
+                    """, status, json(evidence), tenantId, jobId);
+            return;
+        }
         notificationCenterService.dispatch(event, null, "商品批量任务" + status,
                 "任务 " + jobId + "：成功 " + success + "，失败 " + failed + "，未知 " + unknown
                         + "，跳过 " + skipped + "，取消 " + cancelled,
                 Map.of("jobId", jobId, "status", status, "successCount", success, "failedCount", failed,
                         "unknownCount", unknown, "skippedCount", skipped, "cancelledCount", cancelled));
+    }
+
+    private Map<String, Object> requireQaJob(Long tenantId, Long jobId) {
+        List<Map<String, Object>> jobs = jdbcTemplate.queryForList(
+                "SELECT * FROM xianyu_goods_batch_job WHERE tenant_id=? AND id=? AND execution_channel='QA_MOCK'",
+                tenantId, jobId);
+        if (jobs.isEmpty()) throw new BusinessException(404, "隔离 QA 任务不存在，或任务并非 QA_MOCK 通道");
+        return jobs.getFirst();
+    }
+
+    private Map<String, Object> qaJobState(Long tenantId, Long jobId) {
+        return new LinkedHashMap<>(jdbcTemplate.queryForMap("""
+                SELECT job.id jobId,job.batch_id batchId,job.status,job.execution_channel executionChannel,
+                       job.recovery_count recoveryCount,job.notification_sent notificationSent,
+                       COUNT(item.id) total,
+                       SUM(item.status IN ('SUCCEEDED','FAILED','UNKNOWN','SKIPPED','CANCELLED','CONFLICT')) completed,
+                       SUM(item.status IN ('QUEUED','RUNNING')) active,
+                       SUM(item.status='SUCCEEDED') succeeded,SUM(item.status='FAILED') failed,
+                       SUM(item.status='UNKNOWN') unknownCount,SUM(item.status='SKIPPED') skipped,
+                       SUM(item.status='CANCELLED') cancelled
+                  FROM xianyu_goods_batch_job job JOIN xianyu_goods_batch_item item ON item.batch_job_id=job.id
+                 WHERE job.tenant_id=? AND job.id=? GROUP BY job.id
+                """, tenantId, jobId));
     }
 
     private boolean isUnknownResult(String message) {

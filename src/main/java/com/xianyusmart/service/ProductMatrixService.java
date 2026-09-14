@@ -51,17 +51,20 @@ public class ProductMatrixService {
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
     private final ObjectMapper objectMapper;
+    private final ProductBatchQaMockService productBatchQaMockService;
 
     public ProductMatrixService(JdbcTemplate jdbcTemplate,
                                 NamedParameterJdbcTemplate namedJdbc,
                                 AccountAccessService accountAccessService,
                                 OperationLogService operationLogService,
-                                ObjectMapper objectMapper) {
+                                ObjectMapper objectMapper,
+                                ProductBatchQaMockService productBatchQaMockService) {
         this.jdbcTemplate = jdbcTemplate;
         this.namedJdbc = namedJdbc;
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
+        this.productBatchQaMockService = productBatchQaMockService;
     }
 
     public Map<String, Object> list(ProductFilter filter) {
@@ -376,27 +379,37 @@ public class ProductMatrixService {
     public BatchPreview previewBatch(BatchRequest request) {
         BatchRequest normalized = normalizeBatchRequest(request, false);
         List<ProductRef> selected = resolveSelection(normalized);
+        Long tenantId = requireTenant();
         List<BatchCandidate> candidates = new ArrayList<>();
         int conflicts = 0;
+        int qaMockCount = 0;
         Set<Long> accounts = new LinkedHashSet<>();
         for (ProductRef ref : selected) {
             Map<String, Object> product = findProduct(ref.accountId(), ref.goodsId());
-            String conflict = conflict(normalized.operationType(), normalized.operationParams(), product);
+            boolean qaMock = productBatchQaMockService.isEligible(tenantId, ref.accountId(), ref.goodsId());
+            String conflict = qaMock ? null : conflict(normalized.operationType(), normalized.operationParams(), product);
+            if (qaMock) qaMockCount++;
             if (conflict != null) conflicts++;
             accounts.add(ref.accountId());
             candidates.add(new BatchCandidate(ref.accountId(), ref.goodsId(), string(product.get("title")),
                     integer(product.get("status")), longValue(product.get("row_version")),
                     oldValue(product), conflict == null, conflict));
         }
+        if (qaMockCount > 0 && qaMockCount < selected.size()) {
+            throw new BusinessException(400, "隔离 QA 商品不能与平台商品混合创建任务");
+        }
         int executable = selected.size() - conflicts;
+        String executionChannel = executable > 0 && qaMockCount == selected.size() ? "QA_MOCK" : "PLATFORM";
         String previewToken = sha256(normalized.operationType() + "|" + json(normalized.operationParams()) + "|"
                 + candidates.stream().map(item -> item.accountId() + ":" + item.goodsId() + ":" + item.status()
                 + ":" + item.executable()).toList());
         String confirmation = "确认对" + accounts.size() + "个店铺的" + executable + "个商品执行"
                 + operationLabel(normalized.operationType()) + "，冲突" + conflicts + "个"
-                + ("DELETE".equals(normalized.operationType()) ? "；删除不可恢复" : "");
+                + ("DELETE".equals(normalized.operationType()) ? "；删除不可恢复" : "")
+                + ("QA_MOCK".equals(executionChannel) ? "；隔离 QA Mock，不触达平台" : "");
         return new BatchPreview(normalized.operationType(), normalized.selectionMode(), selected.size(),
-                accounts.size(), conflicts, executable, confirmation, previewToken, List.copyOf(candidates));
+                accounts.size(), conflicts, executable, confirmation, previewToken, List.copyOf(candidates),
+                executionChannel, "QA_MOCK".equals(executionChannel) ? "隔离测试通道：所有执行结果均由本地持久化状态机产生，不发起平台网络请求。" : null);
     }
 
     @Transactional
@@ -425,12 +438,12 @@ public class ProductMatrixService {
                 INSERT INTO xianyu_goods_batch_job
                 (tenant_id, batch_id, request_id, idempotency_key, operation_type, selection_mode, selection_query_json,
                  filter_snapshot_hash,
-                 operation_params_json, status, selected_count, conflict_count, executable_count,
+                 operation_params_json, execution_channel, status, selected_count, conflict_count, executable_count,
                  max_operations_per_minute, confirmation_summary, operator_user_id, operator_username)
-                VALUES (?,?,?,?,?,?,?,?,?,'QUEUED',?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,'QUEUED',?,?,?,?,?,?,?)
                 """, tenantId, batchId, normalized.requestId(), normalized.idempotencyKey(), normalized.operationType(), normalized.selectionMode(),
                 json(selectionSnapshot(normalized)),
-                preview.previewToken(), json(normalized.operationParams()), preview.selectedCount(), preview.conflictCount(),
+                preview.previewToken(), json(normalized.operationParams()), preview.executionChannel(), preview.selectedCount(), preview.conflictCount(),
                 preview.executableCount(), normalized.maxOperationsPerMinute(), preview.confirmationSummary(),
                 UserContext.getUserId(), UserContext.getUsername());
         Long jobId = jdbcTemplate.queryForObject(
@@ -522,6 +535,17 @@ public class ProductMatrixService {
         result.put("estimatedWaitSeconds", remaining == 0 ? 0 : (long) Math.ceil(remaining * 60d / rate));
         result.put("unknownRequiresManualReview", items.stream().anyMatch(item -> "UNKNOWN".equals(item.get("status"))));
         return result;
+    }
+
+    /** 仅供 qa profile 的隔离控制器记录故障注入/人工调度证据。 */
+    public void recordQaControl(Long jobId, String action, String requestId, Map<String, Object> result) {
+        requireText(requestId, "requestId", 80);
+        Map<String, Object> batch = batchDetail(jobId);
+        if (!"QA_MOCK".equals(batch.get("executionChannel"))) {
+            throw new BusinessException(404, "任务不是隔离 QA Mock 任务");
+        }
+        audit(null, "PRODUCT_BATCH_QA_" + upper(action), "隔离 QA 批任务控制", requestId,
+                "LOCAL_SUCCESS", Map.of("jobId", jobId, "action", action), result);
     }
 
     private void redactJobToVisibleScope(Map<String, Object> job) {
@@ -968,6 +992,8 @@ public class ProductMatrixService {
         job.put("operationType", rs.getString("operation_type"));
         job.put("selectionMode", rs.getString("selection_mode"));
         job.put("operationParams", readJson(rs.getString("operation_params_json")));
+        job.put("executionChannel", rs.getString("execution_channel"));
+        job.put("notificationEvidence", readJson(rs.getString("notification_evidence_json")));
         job.put("status", rs.getString("status"));
         job.put("selectedCount", rs.getInt("selected_count"));
         job.put("conflictCount", rs.getInt("conflict_count"));
@@ -1444,5 +1470,6 @@ public class ProductMatrixService {
 
     public record BatchPreview(String operationType, String selectionMode, int selectedCount,
                                int accountCount, int conflictCount, int executableCount,
-                               String confirmationSummary, String previewToken, List<BatchCandidate> items) {}
+                               String confirmationSummary, String previewToken, List<BatchCandidate> items,
+                               String executionChannel, String executionNotice) {}
 }
