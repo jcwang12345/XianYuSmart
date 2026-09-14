@@ -48,8 +48,7 @@ export const MENU_GROUPS: MenuGroupDefinition[] = [
     id: 'overview',
     label: '概览',
     items: [
-      { id: 'dashboard', label: '面板', path: '/dashboard', permission: 'menu:dashboard', icon: 'chart' },
-      { id: 'data-panel', label: '数据看板', path: '/data-panel', permission: 'menu:dashboard', icon: 'dashboard' },
+      { id: 'dashboard', label: '经营罗盘', path: '/dashboard', permission: 'menu:dashboard', icon: 'chart' },
       { id: 'command-center', label: '运营驾驶舱', path: '/command-center', permission: 'menu:command-center', icon: 'alert' }
     ]
   },

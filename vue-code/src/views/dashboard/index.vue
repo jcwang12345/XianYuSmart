@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDashboard } from './useDashboard'
+import RealtimeServicePanel from './RealtimeServicePanel.vue'
 
 const route = useRoute()
 const router = useRouter()
+const activeView = computed<'overview' | 'realtime'>(() => route.query.view === 'realtime' ? 'realtime' : 'overview')
 const {
   loading, error, periodMode, accountId, groupId, customStart, customEnd, accounts,
-  analytics, accountSummary, groups, operations, queryDates, scopeError, scopeLoading,
+  analytics, accountSummary, groups, operations, operationsReady, queryDates, scopeError, scopeLoading,
   selectAccount, selectGroup, loadStatistics, loadScopes
 } = useDashboard()
 
@@ -87,7 +89,10 @@ const funnel = computed(() => {
   })
 })
 
-const todoCount = computed(() => operations.value.pendingTaskCount + operations.value.reviewRequiredCount + operations.value.failedTaskCount + operations.value.lowStockConfigCount)
+const todoCount = computed(() => operationsReady.value
+  ? operations.value.pendingTaskCount + operations.value.reviewRequiredCount + operations.value.failedTaskCount + operations.value.lowStockConfigCount
+  : null)
+const operationValue = (value: number) => operationsReady.value ? value.toLocaleString('zh-CN') : '—'
 const rankingType = ref<'shop'|'product'>('shop')
 const rankingDirection = ref<'top'|'bottom'>('top')
 const shopMetric = ref<'gmv'|'paidOrderCount'|'inquiryCount'|'replyRate'|'refundRate'>('gmv')
@@ -184,9 +189,27 @@ const hydrateScopeFromRoute = async () => {
 const retryScope = async () => {
   if (await hydrateScopeFromRoute()) await loadStatistics()
 }
+const selectView = async (view: 'overview' | 'realtime') => {
+  await router.replace({ path: '/dashboard', query: { ...route.query, view: view === 'realtime' ? 'realtime' : undefined } })
+  if (view === 'overview' && !analytics.value) {
+    if (await hydrateScopeFromRoute()) await loadStatistics()
+  }
+}
+const moveViewFocus = async (event: KeyboardEvent, current: 'overview' | 'realtime') => {
+  if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const target: 'overview' | 'realtime' = event.key === 'Home'
+    ? 'overview'
+    : event.key === 'End'
+      ? 'realtime'
+      : current === 'overview' ? 'realtime' : 'overview'
+  await selectView(target)
+  await nextTick()
+  document.getElementById(`dashboard-tab-${target}`)?.focus()
+}
 onMounted(async () => {
-  if (await hydrateScopeFromRoute()) await loadStatistics()
-  timer = setInterval(() => document.visibilityState === 'visible' && loadStatistics(), 60000)
+  if (activeView.value === 'overview' && await hydrateScopeFromRoute()) await loadStatistics()
+  timer = setInterval(() => document.visibilityState === 'visible' && activeView.value === 'overview' && loadStatistics(), 60000)
 })
 onUnmounted(() => timer && clearInterval(timer))
 </script>
@@ -195,9 +218,15 @@ onUnmounted(() => timer && clearInterval(timer))
   <main class="workbench dashboard" :aria-busy="loading">
     <header class="workbench__header dashboard__header">
       <div><span class="eyebrow">BUSINESS COMPASS</span><h1>经营罗盘</h1><p>从全店趋势定位异常，再下钻到具体店铺、商品和订单。</p></div>
-      <button class="workbench__btn" :disabled="loading" @click="loadStatistics">{{ loading ? '读取中' : '刷新数据' }}</button>
+      <button v-if="activeView === 'overview'" class="workbench__btn" :disabled="loading" @click="loadStatistics">{{ loading ? '读取中' : '刷新数据' }}</button>
     </header>
 
+    <nav class="dashboard__view-tabs" role="tablist" aria-label="经营罗盘视图">
+      <button id="dashboard-tab-overview" role="tab" aria-controls="dashboard-panel-overview" :aria-selected="activeView === 'overview'" :tabindex="activeView === 'overview' ? 0 : -1" @keydown="moveViewFocus($event, 'overview')" @click="selectView('overview')">经营总览</button>
+      <button id="dashboard-tab-realtime" role="tab" aria-controls="dashboard-panel-realtime" :aria-selected="activeView === 'realtime'" :tabindex="activeView === 'realtime' ? 0 : -1" @keydown="moveViewFocus($event, 'realtime')" @click="selectView('realtime')">实时服务</button>
+    </nav>
+
+    <div v-if="activeView === 'overview'" id="dashboard-panel-overview" role="tabpanel" aria-labelledby="dashboard-tab-overview">
     <section class="workbench__card dashboard__filters" aria-label="经营数据范围">
       <label><span>单个店铺</span><select v-model="accountId" class="workbench__select" @change="handleAccountChange"><option :value="undefined">全部可见店铺</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb || `店铺 ${account.id}` }}</option></select></label>
       <label><span>店铺分组</span><select v-model="groupId" class="workbench__select" @change="handleGroupChange"><option :value="undefined">不限定分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.groupName }}</option></select></label>
@@ -231,9 +260,9 @@ onUnmounted(() => timer && clearInterval(timer))
     </section>
 
     <section class="dashboard__columns dashboard__columns--secondary">
-      <article class="workbench__card dashboard__attention"><div class="dashboard__section-head"><div><h2>履约与连接待办</h2><p>{{ todoCount }} 项本地待办</p></div><button class="dashboard__link" @click="router.push('/operations-health')">进入诊断</button></div><button @click="router.push('/orders?deliveryStatus=REVIEW_REQUIRED')"><span class="dot red"></span><span>履约需人工核对</span><strong>{{ operations.reviewRequiredCount }}</strong></button><button @click="router.push('/orders?deliveryStatus=FAILED')"><span class="dot orange"></span><span>履约失败</span><strong>{{ operations.failedTaskCount }}</strong></button><button @click="router.push('/kami-config?lowStock=1')"><span class="dot yellow"></span><span>卡密库存预警</span><strong>{{ operations.lowStockConfigCount }}</strong></button><button @click="router.push('/accounts')"><span class="dot blue"></span><span>店铺连接或风险</span><strong>{{ accountSummary?.attentionAccountCount ?? '—' }}</strong></button></article>
+      <article class="workbench__card dashboard__attention"><div class="dashboard__section-head"><div><h2>履约与连接待办</h2><p>{{ todoCount === null ? '本地待办读取中' : `${todoCount} 项本地待办` }}</p></div><button class="dashboard__link" @click="router.push('/operations-health')">进入诊断</button></div><button @click="router.push('/orders?deliveryStatus=REVIEW_REQUIRED')"><span class="dot red"></span><span>履约需人工核对</span><strong>{{ operationValue(operations.reviewRequiredCount) }}</strong></button><button @click="router.push('/orders?deliveryStatus=FAILED')"><span class="dot orange"></span><span>履约失败</span><strong>{{ operationValue(operations.failedTaskCount) }}</strong></button><button @click="router.push('/kami-config?lowStock=1')"><span class="dot yellow"></span><span>卡密库存预警</span><strong>{{ operationValue(operations.lowStockConfigCount) }}</strong></button><button @click="router.push('/accounts')"><span class="dot blue"></span><span>店铺连接或风险</span><strong>{{ accountSummary?.attentionAccountCount ?? '—' }}</strong></button></article>
 
-      <article class="workbench__card dashboard__anomalies"><div class="dashboard__section-head"><div><h2>经营异常</h2><p>只根据已同步证据生成，不把缺失数据当成 0。</p></div><span>{{ anomalies.length }} 项</span></div><div v-if="anomalies.length" class="dashboard__anomaly-list"><article v-for="(item,index) in anomalies.slice(0,8)" :key="`${item.domain}-${item.accountId}-${item.goodsId||item.metricDate}-${index}`"><div><span :class="['status',item.severity==='HIGH'?'bad':'warn']">{{ item.severity==='HIGH'?'重点':'提醒' }}</span><small>{{ accountName(item.accountId) }} · {{ item.domain==='PRODUCT'?'商品':'店铺' }}</small></div><strong>{{ item.title || item.anomalyType }}</strong><p>{{ anomalyEvidence(item) }}</p><em>{{ item.recommendation }}</em><button class="dashboard__link" @click="navigateSafe(item.targetRoute)">查看并处理</button></article></div><div v-else class="dashboard__empty">当前同步范围内没有命中经营异常；这不代表未同步数据没有风险。</div></article>
+      <article class="workbench__card dashboard__anomalies"><div class="dashboard__section-head"><div><h2>经营异常</h2><p>只根据已同步证据生成，不把缺失数据当成 0。</p></div><span>{{ analytics ? `${anomalies.length} 项` : '—' }}</span></div><div v-if="anomalies.length" class="dashboard__anomaly-list"><article v-for="(item,index) in anomalies.slice(0,8)" :key="`${item.domain}-${item.accountId}-${item.goodsId||item.metricDate}-${index}`"><div><span :class="['status',item.severity==='HIGH'?'bad':'warn']">{{ item.severity==='HIGH'?'重点':'提醒' }}</span><small>{{ accountName(item.accountId) }} · {{ item.domain==='PRODUCT'?'商品':'店铺' }}</small></div><strong>{{ item.title || item.anomalyType }}</strong><p>{{ anomalyEvidence(item) }}</p><em>{{ item.recommendation }}</em><button class="dashboard__link" @click="navigateSafe(item.targetRoute)">查看并处理</button></article></div><div v-else-if="analytics" class="dashboard__empty">当前同步范围内没有命中经营异常；这不代表未同步数据没有风险。</div><div v-else class="dashboard__empty">经营异常仍在读取，尚未形成可信结论。</div></article>
     </section>
 
     <section class="workbench__card dashboard__ranking">
@@ -243,6 +272,8 @@ onUnmounted(() => timer && clearInterval(timer))
     </section>
 
     <details class="workbench__card dashboard__definitions"><summary>数据口径与覆盖说明</summary><dl><div v-for="(description,key) in analytics?.definitions" :key="key"><dt>{{ key }}</dt><dd>{{ description }}</dd></div></dl><p>当前区间：{{ queryDates.start }} 至 {{ queryDates.end }}。不同来源、不同覆盖度的数据不会被静默合并成“完整数据”。</p></details>
+    </div>
+    <RealtimeServicePanel v-else id="dashboard-panel-realtime" role="tabpanel" aria-labelledby="dashboard-tab-realtime" />
   </main>
 </template>
 
@@ -250,6 +281,31 @@ onUnmounted(() => timer && clearInterval(timer))
 <style scoped>
 .dashboard__columns > .workbench__card {
   min-width: 0;
+}
+.dashboard__view-tabs {
+  display: flex;
+  gap: 4px;
+  margin: -4px 0 16px;
+  border-bottom: 1px solid #d9d6cc;
+}
+.dashboard__view-tabs button {
+  min-height: 42px;
+  padding: 0 18px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: #6f6c65;
+  background: transparent;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+.dashboard__view-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--xy-yellow-strong);
+  color: #171717;
+}
+.dashboard__view-tabs button:focus-visible {
+  outline: 3px solid rgba(247,193,33,.42);
+  outline-offset: -2px;
 }
 
 @media (max-width: 980px) {

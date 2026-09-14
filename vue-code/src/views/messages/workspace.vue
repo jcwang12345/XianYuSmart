@@ -483,11 +483,15 @@ const switchInbox = async (mode: 'conversations' | 'notifications' | 'handoffs')
 const inboxTabs: Array<'conversations' | 'notifications' | 'handoffs'> = ['conversations', 'notifications', 'handoffs']
 const moveInboxFocus = async (event: KeyboardEvent, current: 'conversations' | 'notifications' | 'handoffs') => {
   const direction = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
-  if (!direction) return
+  const edgeIndex = event.key === 'Home' ? 0 : event.key === 'End' ? inboxTabs.length - 1 : -1
+  if (!direction && edgeIndex < 0) return
   event.preventDefault()
-  const nextIndex = (inboxTabs.indexOf(current) + direction + inboxTabs.length) % inboxTabs.length
+  const nextIndex = edgeIndex >= 0
+    ? edgeIndex
+    : (inboxTabs.indexOf(current) + direction + inboxTabs.length) % inboxTabs.length
   const nextMode = inboxTabs[nextIndex]!
   await switchInbox(nextMode)
+  await nextTick()
   document.getElementById(`support-tab-${nextMode}`)?.focus()
 }
 

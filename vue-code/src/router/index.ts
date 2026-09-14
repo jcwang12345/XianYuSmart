@@ -15,8 +15,8 @@ const router = createRouter({
     {
       path: '/data-panel',
       name: 'data-panel',
-      component: () => import('@/views/data-panel/index.vue'),
-      meta: { title: '数据看板', icon: '▥', permission: 'menu:dashboard' }
+      component: () => import('@/views/legacy/DataPanelNotice.vue'),
+      meta: { title: '数据看板（已合并）', icon: '▥', permission: 'menu:dashboard' }
     },
     {
       path: '/command-center',
@@ -57,8 +57,8 @@ const router = createRouter({
     {
       path: '/automation',
       name: 'automation',
-      component: () => import('@/views/automation/index.vue'),
-      meta: { title: '自动化', icon: '⚙', permission: 'menu:operations', writePermission: 'action:operations-write' }
+      component: () => import('@/views/legacy/AutomationNotice.vue'),
+      meta: { title: '自动化（已拆分）', icon: '⚙', permission: 'menu:operations' }
     },
     {
       path: '/login',
@@ -74,7 +74,7 @@ const router = createRouter({
       path: '/dashboard',
       name: 'dashboard',
       component: () => import('@/views/dashboard/index.vue'),
-      meta: { title: '面板', icon: '📊', permission: 'menu:dashboard' }
+      meta: { title: '经营罗盘', icon: '📊', permission: 'menu:dashboard' }
     },
     {
       path: '/accounts',
@@ -145,8 +145,8 @@ const router = createRouter({
     {
       path: '/pending-orders',
       name: 'pending-orders',
-      component: () => import('@/views/pending-orders/index.vue'),
-      meta: { title: '待发货订单', icon: '📦', hidden: true, permission: 'menu:orders', writePermission: 'action:order-write' }
+      component: () => import('@/views/legacy/PendingOrdersNotice.vue'),
+      meta: { title: '待发货订单（已合并）', icon: '📦', hidden: true, permission: 'menu:orders' }
     },
     {
       path: '/kami-config',

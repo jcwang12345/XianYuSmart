@@ -589,3 +589,36 @@
 - 本轮内嵌浏览器仍无法产出真实1920×1080/3840×2160视口；独立测试需补1366、1080P、4K和200%证据。
 - 全站首帧0值、所有长弹窗固定底部、重复入口退场和统一事件中文化属于后续Wave 1，不在本批宣称完成。
 - 未执行生产发布、改价、上下架、发货、退款、删除、申诉、消息发送、成员保存或外部通知。
+
+## 批次 14：V5 Wave 1 经营入口收拢与键盘焦点回归（v2.8.0 增量）
+
+### 需求与缺陷
+
+- `V5-IA-01`：将原独立 `/data-panel` 的实时成交、履约与客服信号并入 `/dashboard?view=realtime`，经营罗盘形成“经营总览 / 实时服务”双页签。
+- `V5-IA-04`：`/data-panel`、`/automation`、`/pending-orders` 改为只读迁移页；旧地址仍可达，但不再独立取数或执行发货等动作。
+- `V5-BASE-01/02`：实时服务与运营驾驶舱首载显示 `—` 和加载状态；无可信样本时不把初始化值解释成业务 0。
+- `V5-BASE-09`、`XYM-V5-W0-001`：客服页签切换后等待 Vue DOM 更新再聚焦新页签，支持连续左右方向键与 Home/End；运营驾驶舱和经营罗盘页签使用同一键盘语义。
+- `V5-IA-02`：运营驾驶舱保留可执行账号、异常、客服和能力队列；加载失败显示可恢复错误，不与经营罗盘竞争经营统计口径。
+
+### 变更文件、迁移与 API
+
+- 前端：`vue-code/src/views/dashboard/index.vue`、`useDashboard.ts`、`RealtimeServicePanel.vue`、`views/command-center/index.vue`、`views/messages/workspace.vue`、`components/navigation/LegacyRouteNotice.vue`、`views/legacy/*.vue`、路由和菜单配置，以及最终生产静态资源。
+- 后端 API：沿用 `/business-analytics/*` 作为经营总览真值，沿用 `/data-panel/*` 作为经营罗盘内部“实时服务”事件视图；没有新增或伪造平台数据。
+- 数据库迁移：无；Flyway 仍为 V46，MySQL 5.7 QA 数据库复用现有 schema。
+
+### 测试与 Product Design QA
+
+- `scripts/local-toolchain.sh npm --prefix vue-code run type-check`：通过。
+- `scripts/local-toolchain.sh npm --prefix vue-code run build-only`：通过，Vite 355 个模块；最终源码静态资源已重新生成。
+- `scripts/local-toolchain.sh ./mvnw test`：195 项通过，0 失败、0 错误、0 跳过。
+- `scripts/native-qa.sh deploy`：Maven package 成功，不可变 JAR 原子切换成功；macOS 原生应用 `127.0.0.1:3000` 健康，Docker MySQL 5.7 仅在 `127.0.0.1:13306`。
+- 桌面截图：经营罗盘双页签、实时服务来源提示、四项指标和趋势同屏，页面无横向溢出。
+- 390×844：三个迁移页单列显示，`scrollWidth=innerWidth=390`；集成客服无横向溢出，核心处置仍可见。
+- 键盘回归：客服焦点实际按“买家会话→通知消息→AI 待接管”连续移动，`aria-selected`、`tabindex`、焦点和 `tabpanel` 一致；经营罗盘与驾驶舱页签也能用方向键切换并聚焦。
+- 旧待发货页验证：checkbox=0，精确名称“刷新”“发货”旧按钮均为0，只保留订单中心、自动发货配置和履约异常三个安全去向。
+
+### 残余范围与安全边界
+
+- 本批完成 Wave 1 的入口唯一化增量，不宣称统一任务模型、全局事件字典、1000 条虚拟化、1080P/4K/200%或七类状态全部完成。
+- `/data-panel` 后端事件接口暂保留供经营罗盘实时页签消费；后续需统一 `DataEvidence` 响应元数据，不能仅以 `hasData` 推断各个指标覆盖。
+- 未点击运营异常的认领/解决/忽略，也未执行生产发布、改价、上下架、发货、退款、删除、申诉、消息发送、权限保存或外部通知。

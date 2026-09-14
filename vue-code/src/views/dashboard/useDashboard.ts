@@ -15,6 +15,7 @@ export function useDashboard() {
   const error = ref('')
   const scopeLoading = ref(false)
   const scopeError = ref('')
+  const operationsReady = ref(false)
   const periodMode = ref<'1'|'7'|'30'|'custom'>('7')
   const accountId = ref<number | undefined>()
   const groupId = ref<number | undefined>()
@@ -84,9 +85,12 @@ export function useDashboard() {
       applyScopes(scopeResult.value.data)
       scopeError.value = ''
     } else scopeError.value = '店铺与分组范围暂时无法读取；当前筛选未自动扩大，请重试。'
-    if (operationResult.status === 'fulfilled' && operationResult.value.data) operations.value = operationResult.value.data
+    if (operationResult.status === 'fulfilled' && operationResult.value.data) {
+      operations.value = operationResult.value.data
+      operationsReady.value = true
+    }
     loading.value = false
   }
   return { loading, error, scopeLoading, scopeError, periodMode, accountId, groupId, customStart, customEnd, accounts,
-    analytics, accountSummary, groups, operations, queryDates, selectAccount, selectGroup, loadStatistics, loadScopes }
+    analytics, accountSummary, groups, operations, operationsReady, queryDates, selectAccount, selectGroup, loadStatistics, loadScopes }
 }
