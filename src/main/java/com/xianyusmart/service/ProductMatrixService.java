@@ -165,6 +165,43 @@ public class ProductMatrixService {
         if (command == null) throw new BusinessException(400, "自动化配置不能为空");
         String requestId = requireText(command.requestId(), "requestId", 80);
         Map<String, Object> before = marketing(accountId, goodsId);
+        Map<String, Object> beforeSnapshot = automationSnapshot(before);
+        Map<String, Object> requestedSnapshot = automationCommandSnapshot(command);
+        int reserved = jdbcTemplate.update("""
+                INSERT IGNORE INTO xianyu_goods_event
+                (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
+                 operator_user_id,operator_username,request_id,idempotency_key,before_json)
+                VALUES (?,?,?,'AUTOMATION_CONFIG_CHANGED','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?)
+                """, requireTenant(), accountId, goodsId, UserContext.getUserId(), UserContext.getUsername(),
+                requestId, requestId, json(beforeSnapshot));
+        if (reserved == 0) {
+            List<Map<String, Object>> existing = jdbcTemplate.queryForList("""
+                    SELECT after_json FROM xianyu_goods_event
+                     WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
+                       AND event_type='AUTOMATION_CONFIG_CHANGED' AND request_id=?
+                     FOR UPDATE
+                    """, requireTenant(), accountId, goodsId, requestId);
+            Map<String, Object> recordedSnapshot = null;
+            if (!existing.isEmpty()) {
+                Object recordedAfter = readJson(string(existing.getFirst().get("after_json")));
+                if (recordedAfter instanceof Map<?, ?> recordedMap) {
+                    recordedSnapshot = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : recordedMap.entrySet()) {
+                        recordedSnapshot.put(String.valueOf(entry.getKey()), entry.getValue());
+                    }
+                    if (!Objects.equals(recordedSnapshot, requestedSnapshot)) {
+                        throw new BusinessException(409, "requestId 已用于不同的自动化配置，请生成新的 requestId");
+                    }
+                }
+            }
+            Map<String, Object> replay = new LinkedHashMap<>(marketing(accountId, goodsId));
+            // A concurrent retry can retain a pre-reservation REPEATABLE READ snapshot.
+            // The locking event read observes the winner's committed automation state.
+            if (recordedSnapshot != null) replay.putAll(recordedSnapshot);
+            replay.put("requestId", requestId);
+            replay.put("idempotentReplay", true);
+            return replay;
+        }
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_config
                 (tenant_id,xianyu_account_id,xy_goods_id,xianyu_auto_delivery_on,xianyu_auto_reply_on,
@@ -177,22 +214,20 @@ public class ProductMatrixService {
                 bool(command.autoRate()), XianyuGoodsConfig.DEFAULT_AUTO_RATE_CONTENT,
                 bool(command.autoPolish()), bool(command.humanTakeover()));
         Map<String, Object> current = marketing(accountId, goodsId);
-        Map<String, Object> beforeSnapshot = automationSnapshot(before);
         Map<String, Object> afterSnapshot = automationSnapshot(current);
         Map<String, Object> fieldDiff = fieldDiff("LOCAL_ONLY", beforeSnapshot, afterSnapshot, Map.of(
                 "autoDeliveryEnabled", "自动发货", "autoReplyEnabled", "自动回复",
                 "autoRateEnabled", "自动评价", "autoPolishEnabled", "自动擦亮",
                 "humanTakeoverEnabled", "人工接管"));
         jdbcTemplate.update("""
-                INSERT INTO xianyu_goods_event
-                (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
-                 operator_user_id,operator_username,request_id,idempotency_key,before_json,after_json,field_diff_json)
-                VALUES (?,?,?,'AUTOMATION_CONFIG_CHANGED','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?,?,?)
-                ON DUPLICATE KEY UPDATE id=id
-                """, requireTenant(), accountId, goodsId, UserContext.getUserId(), UserContext.getUsername(),
-                requestId, requestId, json(beforeSnapshot), json(afterSnapshot), json(fieldDiff));
+                UPDATE xianyu_goods_event SET after_json=?,field_diff_json=?
+                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
+                   AND event_type='AUTOMATION_CONFIG_CHANGED' AND request_id=?
+                """, json(afterSnapshot), json(fieldDiff), requireTenant(), accountId, goodsId, requestId);
         auditChange(accountId, goodsId, "PRODUCT_AUTOMATION_UPDATE", "更新商品自动化配置", requestId,
                 "LOCAL_SUCCESS", command, beforeSnapshot, afterSnapshot, fieldDiff);
+        current.put("requestId", requestId);
+        current.put("idempotentReplay", false);
         return current;
     }
 
@@ -1200,6 +1235,16 @@ public class ProductMatrixService {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         for (String field : List.of("autoDeliveryEnabled", "autoReplyEnabled", "autoRateEnabled",
                 "autoPolishEnabled", "humanTakeoverEnabled")) snapshot.put(field, marketing.get(field));
+        return snapshot;
+    }
+
+    private static Map<String, Object> automationCommandSnapshot(AutomationUpdate command) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("autoDeliveryEnabled", Boolean.TRUE.equals(command.autoDelivery()));
+        snapshot.put("autoReplyEnabled", Boolean.TRUE.equals(command.autoReply()));
+        snapshot.put("autoRateEnabled", Boolean.TRUE.equals(command.autoRate()));
+        snapshot.put("autoPolishEnabled", Boolean.TRUE.equals(command.autoPolish()));
+        snapshot.put("humanTakeoverEnabled", Boolean.TRUE.equals(command.humanTakeover()));
         return snapshot;
     }
 

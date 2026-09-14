@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -134,6 +135,7 @@ class ProductMatrixServiceTest {
 
     @Test
     void automationFirstSaveSuppliesRequiredRatingContent() {
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(1);
         ProductMatrixService.AutomationUpdate command = new ProductMatrixService.AutomationUpdate(
                 true, true, false, true, false, "req-automation-first-save");
 
@@ -152,6 +154,45 @@ class ProductMatrixServiceTest {
             }
         }
         assertTrue(found);
+    }
+
+    @Test
+    void automationReplayReturnsWithoutUpdatingOrAuditingAgain() {
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(0);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of(
+                "after_json", "{\"autoDeliveryEnabled\":false,\"autoReplyEnabled\":true,"
+                        + "\"autoRateEnabled\":false,\"autoPolishEnabled\":false,"
+                        + "\"humanTakeoverEnabled\":false}")));
+        ProductMatrixService.AutomationUpdate command = new ProductMatrixService.AutomationUpdate(
+                false, true, false, false, false, "req-automation-replay");
+
+        Map<String, Object> result = service.updateAutomation(2L, "goods-1", command);
+
+        assertEquals(true, result.get("idempotentReplay"));
+        assertEquals(true, result.get("autoReplyEnabled"));
+        assertEquals("req-automation-replay", result.get("requestId"));
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(jdbcTemplate).update(sql.capture(), any(Object[].class));
+        assertTrue(sql.getValue().contains("INSERT IGNORE INTO xianyu_goods_event"));
+        verify(operationLogService, never()).log(any(com.xianyusmart.entity.XianyuOperationLog.class));
+    }
+
+    @Test
+    void automationReplayRejectsRequestIdReusedForDifferentPayload() {
+        when(jdbcTemplate.update(anyString(), any(Object[].class))).thenReturn(0);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of(
+                "after_json", "{\"autoDeliveryEnabled\":false,\"autoReplyEnabled\":false,"
+                        + "\"autoRateEnabled\":false,\"autoPolishEnabled\":false,"
+                        + "\"humanTakeoverEnabled\":false}")));
+        ProductMatrixService.AutomationUpdate command = new ProductMatrixService.AutomationUpdate(
+                false, true, false, false, false, "req-automation-conflict");
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.updateAutomation(2L, "goods-1", command));
+
+        assertEquals(409, error.getCode());
+        assertTrue(error.getMessage().contains("不同的自动化配置"));
+        verify(operationLogService, never()).log(any(com.xianyusmart.entity.XianyuOperationLog.class));
     }
 
     @Test
