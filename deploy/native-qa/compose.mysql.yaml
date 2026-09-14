@@ -1,0 +1,35 @@
+services:
+  mysql:
+    image: mysql:5.7.18
+    container_name: xianyusmart-native-qa-mysql
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${NATIVE_QA_MYSQL_PORT:-13306}:3306"
+    environment:
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      - --default-time-zone=+08:00
+      - --max-connections=100
+      - --innodb-file-per-table=ON
+      - --log-bin-trust-function-creators=1
+    volumes:
+      # 只复用隔离 QA 数据卷；不得替换成生产卷 xianyusmart_mysql57-data-recovered。
+      - handoff-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  handoff-mysql:
+    external: true
+    name: xianyusmart_matrix_handoff_mysql

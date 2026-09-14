@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted } from 'vue'
+import { computed, nextTick, ref, onMounted, watch } from 'vue'
 import { checkUserExists, login, register } from '@/api/auth'
 import { setAuthToken, isLoggedIn } from '@/utils/request'
 import { evaluateRegistrationPassword } from '@/utils/registration-password'
@@ -12,6 +12,8 @@ const username = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const totpCode = ref('')
+const totpRequired = ref(false)
+const totpInput = ref<HTMLInputElement | null>(null)
 
 const showPassword = ref(false)
 const showConfirmPassword = ref(false)
@@ -33,7 +35,14 @@ const switchMode = (targetMode: 'login' | 'register') => {
   mode.value = targetMode
   password.value = ''
   confirmPassword.value = ''
+  totpCode.value = ''
+  totpRequired.value = false
 }
+
+watch(username, () => {
+  totpCode.value = ''
+  totpRequired.value = false
+})
 
 onMounted(async () => {
   // 已登录则跳转首页
@@ -58,6 +67,11 @@ onMounted(async () => {
 async function handleLogin() {
   if (!username.value.trim()) return
   if (!password.value) return
+  if (totpRequired.value && !totpCode.value.trim()) {
+    await nextTick()
+    totpInput.value?.focus()
+    return
+  }
   loading.value = true
   try {
     const res = await login({ username: username.value.trim(), password: password.value, totpCode: totpCode.value.trim() || undefined })
@@ -68,6 +82,12 @@ async function handleLogin() {
       console.error('[Login] login response invalid:', res)
     }
   } catch (e) {
+    const message = e instanceof Error ? e.message : ''
+    if (message.includes('两步验证码') || message.includes('恢复码')) {
+      totpRequired.value = true
+      await nextTick()
+      totpInput.value?.focus()
+    }
     console.error('[Login] login failed:', e)
   } finally {
     loading.value = false
@@ -139,14 +159,6 @@ function handleKeydown(e: KeyboardEvent) {
         </div>
 
         <div class="login-field">
-          <label class="login-label">两步验证码 <small>（启用后填写）</small></label>
-          <div class="login-input-wrap">
-            <input v-model="totpCode" type="text" inputmode="numeric" autocomplete="one-time-code"
-              maxlength="11" class="login-input" placeholder="6 位验证码或恢复码" :disabled="loading" @keydown="handleKeydown" />
-          </div>
-        </div>
-
-        <div class="login-field">
           <label class="login-label">密码</label>
           <div class="login-input-wrap">
             <input
@@ -162,6 +174,16 @@ function handleKeydown(e: KeyboardEvent) {
               {{ showPassword ? '隐藏' : '显示' }}
             </button>
           </div>
+        </div>
+
+        <div v-if="totpRequired" class="login-field login-totp-field" aria-live="polite">
+          <label class="login-label">两步验证码</label>
+          <div class="login-input-wrap">
+            <input ref="totpInput" v-model="totpCode" type="text" inputmode="numeric"
+              autocomplete="one-time-code" maxlength="11" class="login-input"
+              placeholder="请输入 6 位验证码或恢复码" :disabled="loading" @keydown="handleKeydown" />
+          </div>
+          <p class="login-field-message is-pending">此账号已启用两步验证，请完成第三步。</p>
         </div>
 
         <button class="login-btn" :disabled="loading" @click="handleLogin">

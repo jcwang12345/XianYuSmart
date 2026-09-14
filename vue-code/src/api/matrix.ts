@@ -130,8 +130,18 @@ export interface BusinessAnalyticsOverview {
   generatedAt: string
 }
 
+export interface BusinessAnalyticsScopes {
+  accounts: Array<{ id: number; accountNote?: string }>
+  groups: AccountGroup[]
+  accountSummary: AccountMatrixSummary
+}
+
 export function getBusinessAnalytics(params: { start?: string; end?: string; accountId?: number; groupId?: number }) {
   return request<BusinessAnalyticsOverview>({ url: '/business-analytics/overview', method: 'GET', params })
+}
+
+export function getBusinessAnalyticsScopes() {
+  return request<BusinessAnalyticsScopes>({ url: '/business-analytics/scopes', method: 'GET' })
 }
 
 export interface ProductFilter {

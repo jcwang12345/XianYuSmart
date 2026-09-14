@@ -22,6 +22,11 @@ public class BusinessAnalyticsController {
         return ResultObject.success(service.overview(start,end,accountId,groupId));
     }
 
+    @GetMapping("/scopes")
+    public ResultObject<Map<String,Object>> scopes(){
+        return ResultObject.success(service.scopeOptions());
+    }
+
     @PostMapping("/refresh-local")
     public ResultObject<Map<String,Object>> refresh(
             @RequestParam(required=false) @DateTimeFormat(iso=DateTimeFormat.ISO.DATE) LocalDate start,

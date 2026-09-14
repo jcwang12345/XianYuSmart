@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getAccountList } from '@/api/account'
 import { createProductBatch, getAccountGroups, getProductBatches, getProductMatrixDetail, getSavedProductFilters, newRequestId, previewProductBatch, queryProductMatrix, saveProductFilter, updateProductAutomation, updateProductLocalDetails, type AccountGroup, type MatrixProduct, type ProductBatchRequest, type ProductFilter } from '@/api/matrix'
 import type { Account } from '@/types'
@@ -9,8 +9,9 @@ import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 type Detail = Record<string, any>
 type EventDiffChange = { field: string; label?: string; before?: unknown; after?: unknown }
-const router=useRouter(), loading=ref(false), loadError=ref(''), accounts=ref<Account[]>([]), groups=ref<AccountGroup[]>([]), products=ref<MatrixProduct[]>([]), total=ref(0), page=ref(1), statusCounts=ref<Record<string,number>>({}), summary=ref<Record<string,any>>({}), notice=ref('')
-const filter=reactive({search:'',accountId:undefined as number|undefined,groupId:undefined as number|undefined,statusBucket:'ALL',source:'',publishChannel:'',metricWindowDays:7 as 1|7|30})
+const route=useRoute(),router=useRouter(), loading=ref(false), loadError=ref(''), accounts=ref<Account[]>([]), groups=ref<AccountGroup[]>([]), products=ref<MatrixProduct[]>([]), total=ref(0), page=ref(1), statusCounts=ref<Record<string,number>>({}), summary=ref<Record<string,any>>({}), notice=ref('')
+const routeAccountId=Number(route.query.accountId)
+const filter=reactive({search:String(route.query.search||''),accountId:Number.isSafeInteger(routeAccountId)&&routeAccountId>0?routeAccountId:undefined as number|undefined,groupId:undefined as number|undefined,statusBucket:'ALL',source:'',publishChannel:'',metricWindowDays:7 as 1|7|30})
 const selectedKeys=ref<string[]>([]), excludedKeys=ref<string[]>([]), savedFilters=ref<Detail[]>([]), batches=ref<Detail[]>([]), selected=ref<Detail|null>(null), detailLoading=ref(false), detailDialog=ref(false), activeTab=ref<'basic'|'sku'|'marketing'|'metrics'|'timeline'>('basic')
 const batchDialog=ref(false), batchLoading=ref(false), batchPreview=ref<Detail|null>(null), batch=reactive({operationType:'SYNC',selectionMode:'EXPLICIT_IDS' as 'EXPLICIT_IDS'|'FILTER_SNAPSHOT',value:'',speed:10,confirmationText:'',requestId:'',idempotencyKey:''})
 const imageFailures=reactive<Record<string,boolean>>({}), saveFilterDialog=ref(false), filterName=ref(''), editDialog=ref(false), editSaving=ref(false)

@@ -8,7 +8,8 @@ import type { Account } from '@/types'
 import { showError, showSuccess } from '@/utils'
 
 const route=useRoute(),router=useRouter(),loading=ref(false),accounts=ref<Account[]>([]),orders=ref<MatrixOrder[]>([]),total=ref(0),page=ref(1),summary=ref<Record<string,any>>({}),dataset=ref<Record<string,any>>({}),notice=ref('')
-const filter=reactive({search:String(route.query.search||''),accountId:undefined as number|undefined,orderStatus:'',deliveryStatus:String(route.query.deliveryStatus||''),refundStatus:'ALL',startDate:'',endDate:''})
+const routeAccountId=Number(route.query.accountId)
+const filter=reactive({search:String(route.query.search||''),accountId:Number.isSafeInteger(routeAccountId)&&routeAccountId>0?routeAccountId:undefined as number|undefined,orderStatus:'',deliveryStatus:String(route.query.deliveryStatus||''),refundStatus:'ALL',startDate:'',endDate:''})
 const selected=ref<Record<string,any>|null>(null),detailLoading=ref(false),activeTab=ref<'overview'|'refund'|'logistics'|'timeline'|'message'>('overview'),noteSaving=ref(false),noteForm=reactive({flag:'NONE',note:''})
 const returnDialog=ref(false),returnSaving=ref(false),returnPreview=ref<Record<string,any>|null>(null),returnRefund=ref<Record<string,any>|null>(null)
 const returnForm=reactive<ReturnShipmentCommand>({requestId:'',direction:'BUYER_TO_SELLER',logisticsCompanyCode:'',logisticsCompanyName:'',trackingNumber:'',shipmentStatus:'IN_TRANSIT',latestEvent:'',shippedTime:'',receivedTime:'',platformConfirmed:false,confirmationText:''})

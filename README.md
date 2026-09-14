@@ -18,7 +18,7 @@ XianYuSmart 是一个面向多租户场景的闲鱼虚拟商品运营系统。�
 
 它不只是在收到订单后发送一段文本，而是把 **订单发现、幂等入队、库存预占、双通道交付、失败重试和人工复核** 串成可恢复的完整链路。固定内容与卡密两种交付模式严格互斥，账号、商品、消息、订单、库存、任务和 AI 知识库按租户隔离。核心任务链路只依赖 MySQL，不强制引入 Redis 或消息队列，兼顾部署成本与后续扩展。
 
-当前版本：[2.4.1](https://github.com/jcwang12345/XianYuSmart/tree/v2.4.1) · [查看更新日志](CHANGELOG.md)
+当前版本：[2.6.0](https://github.com/jcwang12345/XianYuSmart/tree/v2.6.0) · [查看更新日志](CHANGELOG.md)
 
 [交流与支持](#交流与支持) · [商家能得到什么](#商家能得到什么) · [技术亮点](#技术亮点) · [解决的问题](#解决的问题) · [能力范围](#能力范围) · [功能入口与使用顺序](#功能入口与使用顺序) · [业务流程](#业务流程) · [技术基线](#技术基线) · [镜像部署](#镜像部署) · [快速启动](#快速启动) · [配置说明](#配置说明) · [开发构建](#开发构建) · [构建与验证](#构建与验证) · [目录与职责](#目录与职责) · [日常运维](#日常运维) · [使用边界](#使用边界) · [许可证与免责声明](#许可证与免责声明) · [Star History](#star-history)
 
@@ -328,6 +328,26 @@ docker compose --profile proxy up -d --build
 调大并发前应同步评估闲鱼接口频率、活跃租户数、MySQL 连接数和服务器内存。优先保持默认值，通过异常待办确认实际瓶颈后再调整。
 
 ## 开发构建
+
+### macOS 本地快速构建
+
+仓库可把 JDK 21、Node 22、Maven 依赖和 npm 缓存统一放在 Data 分区的 `.tools/`，不写入系统 Java/Node 路径。准备好 `.tools/jdk21` 与 `.tools/node22` 后执行：
+
+```bash
+scripts/local-toolchain.sh
+scripts/local-toolchain.sh npm --prefix vue-code ci
+scripts/local-verify.sh
+scripts/native-qa.sh deploy
+```
+
+单独运行后端或前端时，也通过同一包装脚本获得固定工具链：
+
+```bash
+scripts/local-toolchain.sh ./mvnw spring-boot:run
+scripts/local-toolchain.sh npm --prefix vue-code run dev
+```
+
+日常类型检查、编译、单元测试、打包和 3000 QA 应用均可直接在 macOS 执行；Docker 只运行隔离 MySQL 5.7，并复用原 QA 数据卷。启停、端口和安全边界见 [`NATIVE_QA_RUNBOOK.md`](NATIVE_QA_RUNBOOK.md)。
 
 ### Windows 本地开发
 

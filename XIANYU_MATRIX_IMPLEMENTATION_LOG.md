@@ -3,6 +3,22 @@
 基线：`XIANYU_MATRIX_PRODUCT_REQUIREMENTS.md` 1.0（2026-09-13）
 原则：以需求编号、优先级和验收标准为准；保留既有工作树；禁止以 `0` 代替未同步数据；禁止对生产店铺执行发布、退款、删除或申诉验证。
 
+## 批次 10：DASH-01～03 经营罗盘与异常下钻（v2.6.0）
+
+- 范围：单店、分组、1/7/30 天和自定义日期；查询继续经过租户与账号范围校验。
+- 指标：GMV、支付订单/买家、客单价、退款、曝光、访客、咨询、回复和动销商品均保留来源、覆盖度、样本量、同步时间与前周期对比。
+- 分析：趋势支持订单、GMV、咨询和曝光切换；漏斗显式表达未同步上游；店铺/商品排行支持 Top/Bottom 和多指标排序。
+- 异常：退款偏高、数据同步降级、高曝光低点击、高咨询低支付和低库存均返回证据、严重度、处理建议及安全站内路由；未同步点击或支付不能被当成 0 命中规则。
+- 安全：商品、账号关联增加 `tenant_id` JOIN 条件；商品和订单下钻读取账号/商品筛选，不丢上下文。
+- 权限：新增经营面板专属 `/api/business-analytics/scopes`，店铺和分组同时受租户与账号范围限制；只有面板权限的成员不再因账号管理接口返回 403。
+- 登录：账号和密码保持第一、第二输入项；两步验证码默认隐藏，只有服务端确认需要 TOTP/恢复码后才显示为第三项。
+- 主要文件：`BusinessAnalyticsService.java`、`BusinessAnalyticsController.java`、`BusinessAnalyticsServiceTest.java`、`AccessControlInterceptorTest.java`、`dashboard/index.vue`、`dashboard/useDashboard.ts`、`dashboard/dashboard.css`、`login/index.vue`、商品与订单页面。
+- 数据迁移：无；复用 `xianyu_shop_metric_daily` 与 `xianyu_goods_metric_daily`，不伪造平台经营数据。
+- 本机工具链：Data 分区启用 Temurin JDK 21.0.12.1、Node 22.23.2、npm 10.9.8，并将 Maven/npm 缓存保留在 `.tools/`；`scripts/local-toolchain.sh` 统一环境，`scripts/local-verify.sh` 执行完整原生回归。
+- 测试：macOS 原生 Maven 160 项通过；经营与权限专项 17 项通过；前端类型检查通过，Vite 338 模块生产构建通过。
+- 部署：3000 Java 应用由 macOS `launchd` 托管；MySQL 5.7 容器仅绑定 `127.0.0.1:13306` 并复用 `xianyusmart_matrix_handoff_mysql`，生产 2000 与生产数据卷不变。命令和边界见 `NATIVE_QA_RUNBOOK.md`。
+- 隔离 API：3000 端口版本 `2.6.0`；最小面板权限账号读取 3 个可见店铺、2 个完整授权分组；2026-09-08～14 全店单日动销峰值 1518，GMV 19620，7 个趋势日；越权账号与超 366 天范围分别返回业务码 404/400。
+
 ## 缺陷批次：XYM-PUB-001～008 / PUB-01～03（v2.5.1）
 
 - `XYM-PUB-001`：新增 `V40__repair_qa_channel_utf8.sql`，通过精确错误字节匹配只修复账号 102 的 `QA_LOCAL / MANUAL_IMPORT / QA_PARTIAL` 历史不可用原因；已有正确渠道名称、账号 103、真实平台渠道和生产商品均不修改。

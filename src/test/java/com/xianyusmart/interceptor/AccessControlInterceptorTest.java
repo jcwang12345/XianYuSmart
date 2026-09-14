@@ -37,6 +37,21 @@ class AccessControlInterceptorTest {
     }
 
     @Test
+    void dashboardScopeEndpointNeedsOnlyDashboardMenu() throws Exception {
+        SysUser user = user("OPERATOR");
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_DASHBOARD));
+
+        assertTrue(interceptor.preHandle(request("GET", "/api/business-analytics/scopes", user),
+                new MockHttpServletResponse(), new Object()));
+
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_ACCOUNTS));
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+        assertFalse(interceptor.preHandle(request("GET", "/api/business-analytics/scopes", user),
+                denied, new Object()));
+        assertEquals(403, denied.getStatus());
+    }
+
+    @Test
     void riskHandlingRequiresItsOwnPermission() throws Exception {
         SysUser user = user("OPERATOR");
         when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_ACCOUNTS));

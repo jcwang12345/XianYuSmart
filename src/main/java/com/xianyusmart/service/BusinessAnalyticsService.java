@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.sql.Date;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -31,18 +32,59 @@ public class BusinessAnalyticsService {
     private final NamedParameterJdbcTemplate namedJdbcTemplate;
     private final AccountAccessService accountAccessService;
     private final AccountGroupService accountGroupService;
+    private final AccountMatrixService accountMatrixService;
     private final OperationLogService operationLogService;
 
     public BusinessAnalyticsService(JdbcTemplate jdbcTemplate,
                                     NamedParameterJdbcTemplate namedJdbcTemplate,
                                     AccountAccessService accountAccessService,
                                     AccountGroupService accountGroupService,
+                                    AccountMatrixService accountMatrixService,
                                     OperationLogService operationLogService) {
         this.jdbcTemplate = jdbcTemplate;
         this.namedJdbcTemplate = namedJdbcTemplate;
         this.accountAccessService = accountAccessService;
         this.accountGroupService = accountGroupService;
+        this.accountMatrixService = accountMatrixService;
         this.operationLogService = operationLogService;
+    }
+
+    /**
+     * 经营罗盘自己的只读范围入口。仪表板用户不应为了选择店铺而被迫获得账号管理权限。
+     */
+    public Map<String, Object> scopeOptions() {
+        List<Long> accountIds = scopedAccounts(null, null);
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (accountIds.isEmpty()) {
+            result.put("accounts", List.of());
+            result.put("groups", List.of());
+        } else {
+            MapSqlParameterSource params = new MapSqlParameterSource()
+                    .addValue("tenant", tenant())
+                    .addValue("accounts", accountIds);
+            result.put("accounts", namedJdbcTemplate.queryForList("""
+                    SELECT id,account_note accountNote
+                      FROM xianyu_account
+                     WHERE tenant_id=:tenant AND id IN (:accounts)
+                     ORDER BY id
+                    """, params));
+            result.put("groups", namedJdbcTemplate.queryForList("""
+                    SELECT groups.id,MAX(groups.group_name) groupName,MAX(groups.color) color,
+                           MAX(groups.description) description,MAX(groups.sort_order) sortOrder,
+                           COUNT(DISTINCT member.id) accountCount
+                      FROM xianyu_account_group groups
+                      JOIN xianyu_account_group_member member
+                        ON member.tenant_id=groups.tenant_id AND member.group_id=groups.id
+                     WHERE groups.tenant_id=:tenant AND member.xianyu_account_id IN (:accounts)
+                     GROUP BY groups.id
+                    HAVING COUNT(DISTINCT member.id)=(
+                           SELECT COUNT(*) FROM xianyu_account_group_member all_member
+                            WHERE all_member.tenant_id=:tenant AND all_member.group_id=groups.id)
+                     ORDER BY MAX(groups.sort_order),groups.id
+                    """, params));
+        }
+        result.put("accountSummary", accountMatrixService.summary());
+        return result;
     }
 
     public Map<String, Object> overview(LocalDate start, LocalDate end, Long accountId, Long groupId) {
@@ -65,7 +107,7 @@ public class BusinessAnalyticsService {
                 "gmv", "本期已同步支付订单金额之和；退款回溯单独展示，不静默冲减",
                 "paidBuyerCount", "按店铺日去重的支付买家，跨店/跨日可能重复，当前口径会明确标为部分覆盖",
                 "exposureCount", "仅使用平台同步曝光，不由本地消息或订单反推",
-                "activeProductCount", "本期出现已同步支付订单的去重商品数",
+                "activeProductCount", "所选范围内，按自然日汇总各店动销商品后取单日峰值；不冒充跨日去重商品数",
                 "coverage", "FULL=所选店铺和日期均完整；PARTIAL=仅部分来源/店铺/日期；UNSYNCED=无可用样本"));
         if (accountId != null) {
             result.put("fanMetrics", Map.of("newFollowers", "UNSYNCED", "lostFollowers", "UNSYNCED",
@@ -176,7 +218,7 @@ public class BusinessAnalyticsService {
                        SUM(refund_amount) refundAmount,SUM(refund_order_count) refundOrderCount,
                        SUM(exposure_count) exposureCount,SUM(visitor_count) visitorCount,
                        SUM(inquiry_count) inquiryCount,SUM(replied_inquiry_count) repliedInquiryCount,
-                       MAX(active_product_count) activeProductCount,COUNT(*) sampleDays,
+                       COUNT(*) sampleDays,
                        COUNT(DISTINCT xianyu_account_id) coveredAccountCount,MAX(synced_at) syncedAt,
                        COUNT(DISTINCT source) sourceCount,MIN(source) singleSource,
                        SUM(sample_size) sampleSize,
@@ -189,9 +231,10 @@ public class BusinessAnalyticsService {
         long rows = number(row.get("sampleDays"));
         Map<String, Object> result = new LinkedHashMap<>();
         for (String metric : List.of("gmv","paidOrderCount","paidBuyerCount","refundAmount","refundOrderCount",
-                "exposureCount","visitorCount","inquiryCount","repliedInquiryCount","activeProductCount")) {
+                "exposureCount","visitorCount","inquiryCount","repliedInquiryCount")) {
             result.put(metric, rows == 0 ? null : row.get(metric));
         }
+        result.put("activeProductCount", rows == 0 ? null : activeProductPeak(start, end, accounts));
         result.put("source", rows == 0 ? "NONE" : number(row.get("sourceCount")) == 1 ? row.get("singleSource") : "MIXED");
         result.put("syncStatus", rows == 0 ? "UNSYNCED" : "SUCCEEDED");
         result.put("coverageStatus", rows == 0 ? "UNSYNCED" :
@@ -203,6 +246,20 @@ public class BusinessAnalyticsService {
         result.put("syncedAt", row.get("syncedAt"));
         addDerivedMetrics(result);
         return result;
+    }
+
+    private Long activeProductPeak(LocalDate start, LocalDate end, List<Long> accounts) {
+        Number value = namedJdbcTemplate.queryForObject("""
+                SELECT MAX(day_active) FROM (
+                    SELECT metric_date,SUM(active_product_count) day_active
+                      FROM xianyu_shop_metric_daily
+                     WHERE tenant_id=:tenant AND xianyu_account_id IN (:accounts)
+                       AND metric_date BETWEEN :start AND :end
+                       AND active_product_count IS NOT NULL
+                     GROUP BY metric_date
+                ) daily_active
+                """, params(start, end, accounts), Number.class);
+        return value == null ? null : value.longValue();
     }
 
     private List<Map<String, Object>> trend(LocalDate start, LocalDate end, List<Long> accounts) {
@@ -247,9 +304,22 @@ public class BusinessAnalyticsService {
         return namedJdbcTemplate.queryForList("""
                 SELECT metric.xianyu_account_id accountId,account.account_note accountNote,
                        SUM(metric.gmv) gmv,SUM(metric.paid_order_count) paidOrderCount,
-                       SUM(metric.inquiry_count) inquiryCount,COUNT(*) sampleDays,
-                       MAX(metric.synced_at) syncedAt,'PARTIAL' coverageStatus
-                  FROM xianyu_shop_metric_daily metric JOIN xianyu_account account ON account.id=metric.xianyu_account_id
+                       SUM(metric.paid_buyer_count) paidBuyerCount,
+                       SUM(metric.refund_amount) refundAmount,SUM(metric.refund_order_count) refundOrderCount,
+                       SUM(metric.exposure_count) exposureCount,SUM(metric.visitor_count) visitorCount,
+                       SUM(metric.inquiry_count) inquiryCount,SUM(metric.replied_inquiry_count) repliedInquiryCount,
+                       MAX(metric.active_product_count) activeProductCount,COUNT(*) sampleDays,
+                       CASE WHEN SUM(metric.paid_order_count)>0
+                            THEN SUM(metric.refund_order_count)/SUM(metric.paid_order_count) END refundRate,
+                       CASE WHEN SUM(metric.inquiry_count)>0
+                            THEN SUM(metric.replied_inquiry_count)/SUM(metric.inquiry_count) END replyRate,
+                       CASE WHEN COUNT(DISTINCT metric.source)=1 THEN MIN(metric.source) ELSE 'MIXED' END source,
+                       MAX(metric.synced_at) syncedAt,
+                       CASE WHEN MIN(metric.coverage_status)='FULL' AND MAX(metric.coverage_status)='FULL'
+                            THEN 'FULL' ELSE 'PARTIAL' END coverageStatus
+                  FROM xianyu_shop_metric_daily metric
+                  JOIN xianyu_account account ON account.id=metric.xianyu_account_id
+                       AND account.tenant_id=metric.tenant_id
                  WHERE metric.tenant_id=:tenant AND metric.xianyu_account_id IN (:accounts)
                    AND metric.metric_date BETWEEN :start AND :end
                  GROUP BY metric.xianyu_account_id,account.account_note
@@ -263,12 +333,22 @@ public class BusinessAnalyticsService {
                 SELECT metric.xianyu_account_id accountId,account.account_note accountNote,
                        metric.xy_goods_id goodsId,MAX(goods.title) title,MAX(goods.cover_pic) coverPic,
                        SUM(metric.exposure_count) exposureCount,SUM(metric.visitor_count) visitorCount,
+                       SUM(metric.click_count) clickCount,SUM(metric.favorite_count) favoriteCount,
                        SUM(metric.inquiry_count) inquiryCount,SUM(metric.paid_order_count) paidOrderCount,
-                       SUM(metric.paid_amount) paidAmount,MAX(metric.synced_at) syncedAt,
+                       SUM(metric.paid_amount) paidAmount,
+                       CASE WHEN SUM(metric.exposure_count)>0
+                            THEN SUM(metric.click_count)/SUM(metric.exposure_count) END clickRate,
+                       CASE WHEN SUM(metric.visitor_count)>0
+                            THEN SUM(metric.paid_order_count)/SUM(metric.visitor_count) END paymentRate,
+                       COUNT(DISTINCT metric.metric_date) sampleDays,
+                       CASE WHEN COUNT(DISTINCT metric.source)=1 THEN MIN(metric.source) ELSE 'MIXED' END source,
+                       MAX(metric.synced_at) syncedAt,
                        CASE WHEN MIN(metric.coverage_status)='FULL' AND MAX(metric.coverage_status)='FULL' THEN 'FULL' ELSE 'PARTIAL' END coverageStatus
                   FROM xianyu_goods_metric_daily metric
                   JOIN xianyu_account account ON account.id=metric.xianyu_account_id
-                  LEFT JOIN xianyu_goods goods ON goods.xianyu_account_id=metric.xianyu_account_id AND goods.xy_good_id=metric.xy_goods_id
+                       AND account.tenant_id=metric.tenant_id
+                  LEFT JOIN xianyu_goods goods ON goods.tenant_id=metric.tenant_id
+                       AND goods.xianyu_account_id=metric.xianyu_account_id AND goods.xy_good_id=metric.xy_goods_id
                  WHERE metric.tenant_id=:tenant AND metric.xianyu_account_id IN (:accounts)
                    AND metric.metric_date BETWEEN :start AND :end
                  GROUP BY metric.xianyu_account_id,account.account_note,metric.xy_goods_id
@@ -301,37 +381,79 @@ public class BusinessAnalyticsService {
 
     private List<Map<String, Object>> anomalies(LocalDate start, LocalDate end, List<Long> accounts) {
         if (accounts.isEmpty()) return List.of();
-        return namedJdbcTemplate.queryForList("""
+        List<Map<String, Object>> rows = namedJdbcTemplate.queryForList("""
                 SELECT xianyu_account_id accountId,metric_date metricDate,gmv,paid_order_count paidOrderCount,
                        inquiry_count inquiryCount,refund_order_count refundOrderCount,source,coverage_status coverageStatus,synced_at syncedAt
                   FROM xianyu_shop_metric_daily
                  WHERE tenant_id=:tenant AND xianyu_account_id IN (:accounts) AND metric_date BETWEEN :start AND :end
-                   AND ((refund_order_count IS NOT NULL AND paid_order_count IS NOT NULL AND refund_order_count>paid_order_count)
+                   AND ((refund_order_count IS NOT NULL AND paid_order_count IS NOT NULL AND paid_order_count>0
+                         AND refund_order_count/paid_order_count>=0.3)
                      OR sync_status IN ('FAILED','PARTIAL'))
                  ORDER BY metric_date DESC,xianyu_account_id LIMIT 100
                 """, params(start, end, accounts));
+        for (Map<String, Object> row : rows) {
+            long paid = number(row.get("paidOrderCount"));
+            long refunds = number(row.get("refundOrderCount"));
+            boolean refundRisk = paid > 0 && refunds * 10 >= paid * 3;
+            row.put("anomalyType", refundRisk ? "HIGH_REFUND_RATE" : "DATA_SYNC_DEGRADED");
+            row.put("severity", refundRisk ? "HIGH" : "WARNING");
+            row.put("title", refundRisk ? "退款订单比例偏高" : "经营数据同步不完整");
+            row.put("recommendation", refundRisk
+                    ? "进入该店订单，核对退款原因、商品与售后承诺"
+                    : "先检查同步来源与覆盖范围，缺失数据不参与经营判断");
+            row.put("targetRoute", refundRisk ? "/orders?accountId=" + row.get("accountId")
+                    : "/accounts?accountId=" + row.get("accountId"));
+        }
+        return rows;
     }
 
     private List<Map<String,Object>> productAnomalies(LocalDate start,LocalDate end,List<Long> accounts){
         if(accounts.isEmpty())return List.of();
-        return namedJdbcTemplate.queryForList("""
+        List<Map<String,Object>> rows = namedJdbcTemplate.queryForList("""
                 SELECT metric.xianyu_account_id accountId,metric.xy_goods_id goodsId,MAX(goods.title) title,
                        SUM(metric.exposure_count) exposureCount,SUM(metric.click_count) clickCount,
                        SUM(metric.inquiry_count) inquiryCount,SUM(metric.paid_order_count) paidOrderCount,
                        CASE
-                        WHEN SUM(metric.exposure_count)>=100 AND COALESCE(SUM(metric.click_count),0)/SUM(metric.exposure_count)<0.01 THEN 'HIGH_EXPOSURE_LOW_CLICK'
-                        WHEN SUM(metric.inquiry_count)>=5 AND COALESCE(SUM(metric.paid_order_count),0)=0 THEN 'HIGH_INQUIRY_LOW_PAYMENT'
+                        WHEN SUM(metric.exposure_count)>=100 AND SUM(metric.click_count) IS NOT NULL
+                             AND SUM(metric.click_count)/SUM(metric.exposure_count)<0.01 THEN 'HIGH_EXPOSURE_LOW_CLICK'
+                        WHEN SUM(metric.inquiry_count)>=5 AND SUM(metric.paid_order_count) IS NOT NULL
+                             AND SUM(metric.paid_order_count)=0 THEN 'HIGH_INQUIRY_LOW_PAYMENT'
                         WHEN MAX(goods.stock) IS NOT NULL AND MAX(goods.stock)<=2 THEN 'LOW_STOCK'
                        END anomalyType,
+                       CASE WHEN COUNT(DISTINCT metric.source)=1 THEN MIN(metric.source) ELSE 'MIXED' END source,
                        CASE WHEN MIN(metric.coverage_status)='FULL' AND MAX(metric.coverage_status)='FULL' THEN 'FULL' ELSE 'PARTIAL' END coverageStatus,
                        MAX(metric.synced_at) syncedAt
                   FROM xianyu_goods_metric_daily metric
-                  LEFT JOIN xianyu_goods goods ON goods.xianyu_account_id=metric.xianyu_account_id AND goods.xy_good_id=metric.xy_goods_id
+                  LEFT JOIN xianyu_goods goods ON goods.tenant_id=metric.tenant_id
+                       AND goods.xianyu_account_id=metric.xianyu_account_id AND goods.xy_good_id=metric.xy_goods_id
                  WHERE metric.tenant_id=:tenant AND metric.xianyu_account_id IN (:accounts)
                    AND metric.metric_date BETWEEN :start AND :end
                  GROUP BY metric.xianyu_account_id,metric.xy_goods_id
                 HAVING anomalyType IS NOT NULL ORDER BY exposureCount DESC,inquiryCount DESC LIMIT 100
                 """,params(start,end,accounts));
+        for (Map<String,Object> row : rows) {
+            String type = String.valueOf(row.get("anomalyType"));
+            switch (type) {
+                case "HIGH_EXPOSURE_LOW_CLICK" -> {
+                    row.put("severity", "HIGH");
+                    row.put("title", "高曝光、低点击");
+                    row.put("recommendation", "优先检查主图、标题和价格竞争力；不要直接降价，先对比同类商品");
+                }
+                case "HIGH_INQUIRY_LOW_PAYMENT" -> {
+                    row.put("severity", "HIGH");
+                    row.put("title", "高咨询、低支付");
+                    row.put("recommendation", "检查自动回复命中、售后承诺、交付说明与买家常见异议");
+                }
+                default -> {
+                    row.put("severity", "WARNING");
+                    row.put("title", "库存偏低");
+                    row.put("recommendation", "核对平台库存与本地可交付库存，补货前避免承诺即时交付");
+                }
+            }
+            row.put("targetRoute", "/goods?accountId=" + row.get("accountId") + "&search="
+                    + java.net.URLEncoder.encode(String.valueOf(row.get("goodsId")), StandardCharsets.UTF_8));
+        }
+        return rows;
     }
 
     private Map<String, Object> emptyAggregate() {
