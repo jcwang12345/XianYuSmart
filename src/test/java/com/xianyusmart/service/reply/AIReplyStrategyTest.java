@@ -8,6 +8,7 @@ import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.service.AIService;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.GoodsKnowledgeService;
 import com.xianyusmart.service.bo.RAGReplyResult;
 import com.xianyusmart.config.rag.DynamicAIChatClientManager;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +34,7 @@ class AIReplyStrategyTest {
     private XianyuGoodsInfoMapper goodsMapper;
     private AIReplyStrategy strategy;
     private DynamicAIChatClientManager chatClientManager;
+    private GoodsKnowledgeService goodsKnowledgeService;
 
     @BeforeEach
     void setUp() {
@@ -42,6 +44,7 @@ class AIReplyStrategyTest {
         XianyuChatMessageMapper messageMapper = mock(XianyuChatMessageMapper.class);
         AccountService accountService = mock(AccountService.class);
         chatClientManager = mock(DynamicAIChatClientManager.class);
+        goodsKnowledgeService = mock(GoodsKnowledgeService.class);
         DynamicAIChatClientManager.AIStatusInfo status = new DynamicAIChatClientManager.AIStatusInfo();
         status.setModel("qa-model");
         when(chatClientManager.getStatusInfo()).thenReturn(status);
@@ -55,6 +58,7 @@ class AIReplyStrategyTest {
                 new AIReplyPreparationService(messageMapper, accountService));
         ReflectionTestUtils.setField(strategy, "safetyGuard", new AIReplySafetyGuard());
         ReflectionTestUtils.setField(strategy, "chatClientManager", chatClientManager);
+        ReflectionTestUtils.setField(strategy, "goodsKnowledgeService", goodsKnowledgeService);
     }
 
     @Test
@@ -66,6 +70,8 @@ class AIReplyStrategyTest {
         goods.setSoldPrice("100");
         goods.setDetailInfo("测试商品");
         when(configMapper.selectByAccountAndGoodsId(1L, "g1")).thenReturn(config);
+        when(goodsKnowledgeService.effective(1L, "g1")).thenReturn(
+                new GoodsKnowledgeService.ActiveKnowledge(91L, 3, "最低价由卖家确认", null, null));
         when(goodsMapper.selectOne(any())).thenReturn(goods);
 
         RAGReplyResult aiResult = new RAGReplyResult();
@@ -78,6 +84,8 @@ class AIReplyStrategyTest {
         assertTrue(result.isSuccess());
         assertEquals("PRICE", result.getAiIntent());
         assertEquals(1, result.getBargainRound());
+        assertEquals(91L, result.getKnowledgeVersionId());
+        assertEquals(3, result.getKnowledgeVersionNo());
         assertEquals("目前按标价出售，您可以先说说期望价格。",
                 result.getItems().getFirst().getTextContent());
         verify(aiService).chatByRAGWithFixedMaterial(eq("最低多少钱"), eq("g1"), eq(""),

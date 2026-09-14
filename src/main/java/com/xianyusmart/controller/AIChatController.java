@@ -6,16 +6,17 @@ import com.xianyusmart.controller.dto.ChatWithAIReqDTO;
 import com.xianyusmart.controller.dto.DeleteRAGDataReqDTO;
 import com.xianyusmart.controller.dto.PutNewDataToRAGReqDTO;
 import com.xianyusmart.service.AIService;
+import com.xianyusmart.service.GoodsKnowledgeService;
 import com.xianyusmart.service.GoodsInfoService;
 import com.xianyusmart.service.bo.RAGDataRespBO;
-import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
-import com.xianyusmart.entity.XianyuGoodsConfig;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
 import java.util.List;
+import java.util.Map;
+import java.time.LocalDateTime;
 
 /**
  * AI对话控制器
@@ -36,7 +37,7 @@ public class AIChatController {
     private GoodsInfoService goodsInfoService;
     
     @Autowired
-    private XianyuGoodsConfigMapper goodsConfigMapper;
+    private GoodsKnowledgeService goodsKnowledgeService;
 
     /**
      * AI对话（流式返回）
@@ -57,10 +58,8 @@ public class AIChatController {
         String goodsDetail = null;
         
         if (req.getAccountId() != null && req.getGoodsId() != null) {
-            XianyuGoodsConfig config = goodsConfigMapper.selectByAccountAndGoodsId(req.getAccountId(), req.getGoodsId());
-            if (config != null) {
-                fixedMaterial = config.getFixedMaterial();
-            }
+            GoodsKnowledgeService.ActiveKnowledge knowledge = goodsKnowledgeService.effective(req.getAccountId(), req.getGoodsId());
+            fixedMaterial = knowledge == null ? null : knowledge.content();
             
             String detailInfo = goodsInfoService.getDetailInfoByGoodsId(req.getGoodsId());
             if (detailInfo != null && !detailInfo.isEmpty()) {
@@ -119,36 +118,47 @@ public class AIChatController {
     }
 
     @PostMapping("/saveFixedMaterial")
-    public ResultObject<?> saveFixedMaterial(@RequestBody FixedMaterialReqDTO req) {
-        goodsConfigMapper.updateFixedMaterial(req.getAccountId(), req.getGoodsId(), req.getFixedMaterial());
-        return ResultObject.success(null);
+    public ResultObject<Map<String, Object>> saveFixedMaterial(@RequestBody FixedMaterialReqDTO req) {
+        return ResultObject.success(goodsKnowledgeService.save(new GoodsKnowledgeService.SaveCommand(
+                req.getAccountId(), req.getGoodsId(), req.getFixedMaterial(), req.getEffectiveTime(),
+                req.getExpiresTime(), req.getActivate(), "MANUAL", req.getRequestId())));
     }
 
     @PostMapping("/getFixedMaterial")
-    public ResultObject<FixedMaterialRespDTO> getFixedMaterial(@RequestBody FixedMaterialReqDTO req) {
-        XianyuGoodsConfig config = goodsConfigMapper.selectByAccountAndGoodsId(req.getAccountId(), req.getGoodsId());
-        FixedMaterialRespDTO resp = new FixedMaterialRespDTO();
-        if (config != null) {
-            resp.setFixedMaterial(config.getFixedMaterial());
-        }
-        return ResultObject.success(resp);
+    public ResultObject<Map<String, Object>> getFixedMaterial(@RequestBody FixedMaterialReqDTO req) {
+        return ResultObject.success(goodsKnowledgeService.view(req.getAccountId(), req.getGoodsId()));
     }
 
     @PostMapping("/syncDetailToFixedMaterial")
     public ResultObject<?> syncDetailToFixedMaterial(@RequestBody FixedMaterialReqDTO req) {
         String detailInfo = goodsInfoService.getDetailInfoByGoodsId(req.getGoodsId());
         if (detailInfo != null && !detailInfo.isEmpty()) {
-            goodsConfigMapper.updateFixedMaterial(req.getAccountId(), req.getGoodsId(), detailInfo);
-            return ResultObject.success(null);
+            return ResultObject.success(goodsKnowledgeService.save(new GoodsKnowledgeService.SaveCommand(
+                    req.getAccountId(), req.getGoodsId(), detailInfo, LocalDateTime.now(), req.getExpiresTime(),
+                    true, "GOODS_DETAIL", req.getRequestId())));
         } else {
             return ResultObject.failed("商品详情为空，无法同步");
         }
+    }
+
+    @PostMapping("/activateFixedMaterialVersion")
+    public ResultObject<Map<String, Object>> activateFixedMaterialVersion(@RequestBody FixedMaterialVersionActionReqDTO req) {
+        return ResultObject.success(goodsKnowledgeService.activate(req.getVersionId(), req.getRequestId()));
+    }
+
+    @PostMapping("/expireFixedMaterialVersion")
+    public ResultObject<Map<String, Object>> expireFixedMaterialVersion(@RequestBody FixedMaterialVersionActionReqDTO req) {
+        return ResultObject.success(goodsKnowledgeService.expire(req.getVersionId(), req.getRequestId()));
     }
 
     public static class FixedMaterialReqDTO {
         private Long accountId;
         private String goodsId;
         private String fixedMaterial;
+        private LocalDateTime effectiveTime;
+        private LocalDateTime expiresTime;
+        private Boolean activate;
+        private String requestId;
 
         public Long getAccountId() { return accountId; }
         public void setAccountId(Long accountId) { this.accountId = accountId; }
@@ -156,13 +166,23 @@ public class AIChatController {
         public void setGoodsId(String goodsId) { this.goodsId = goodsId; }
         public String getFixedMaterial() { return fixedMaterial; }
         public void setFixedMaterial(String fixedMaterial) { this.fixedMaterial = fixedMaterial; }
+        public LocalDateTime getEffectiveTime() { return effectiveTime; }
+        public void setEffectiveTime(LocalDateTime effectiveTime) { this.effectiveTime = effectiveTime; }
+        public LocalDateTime getExpiresTime() { return expiresTime; }
+        public void setExpiresTime(LocalDateTime expiresTime) { this.expiresTime = expiresTime; }
+        public Boolean getActivate() { return activate; }
+        public void setActivate(Boolean activate) { this.activate = activate; }
+        public String getRequestId() { return requestId; }
+        public void setRequestId(String requestId) { this.requestId = requestId; }
     }
 
-    public static class FixedMaterialRespDTO {
-        private String fixedMaterial;
-
-        public String getFixedMaterial() { return fixedMaterial; }
-        public void setFixedMaterial(String fixedMaterial) { this.fixedMaterial = fixedMaterial; }
+    public static class FixedMaterialVersionActionReqDTO {
+        private Long versionId;
+        private String requestId;
+        public Long getVersionId() { return versionId; }
+        public void setVersionId(Long versionId) { this.versionId = versionId; }
+        public String getRequestId() { return requestId; }
+        public void setRequestId(String requestId) { this.requestId = requestId; }
     }
 
     public static class ChatTestReqDTO {

@@ -17,6 +17,7 @@ import com.xianyusmart.service.AIService;
 import com.xianyusmart.service.AutoReplyService;
 import com.xianyusmart.service.WebSocketService;
 import com.xianyusmart.service.AiHandoffService;
+import com.xianyusmart.service.GoodsKnowledgeService;
 import com.xianyusmart.service.bo.RAGReplyResult;
 import com.xianyusmart.service.reply.ReplyStrategy;
 import com.xianyusmart.service.reply.ReplyStrategyResolver;
@@ -74,6 +75,9 @@ public class AutoReplyServiceImpl implements AutoReplyService {
 
     @Autowired
     private AutoReplyEscalationPolicy escalationPolicy;
+
+    @Autowired
+    private GoodsKnowledgeService goodsKnowledgeService;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -233,11 +237,14 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             record.setReplyType(replyResult.getItems().get(0).getReplyType());
             autoReplyRecordMapper.updateDecisionEvidence(record.getId(), "AUTO_READY",
                     replyResult.getConfidenceScore(), replyResult.getModelName(),
-                    duration(replyResult, decisionStartedAt), null);
+                    duration(replyResult, decisionStartedAt), null,
+                    replyResult.getKnowledgeVersionId(), replyResult.getKnowledgeVersionNo());
 
             triggerContext.setAiIntent(replyResult.getAiIntent());
             triggerContext.setBargainRound(replyResult.getBargainRound());
             triggerContext.setContextMessages(replyResult.getContextMessages());
+            triggerContext.setKnowledgeVersionId(replyResult.getKnowledgeVersionId());
+            triggerContext.setKnowledgeVersionNo(replyResult.getKnowledgeVersionNo());
             if (replyResult.getRagHitDetails() != null) {
                 List<AutoReplyTriggerContext.RAGHitDetail> hitDetails = replyResult.getRagHitDetails().stream()
                         .map(hit -> {
@@ -257,9 +264,11 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             
             // 7. 保存触发上下文
             try {
-                XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
-                if (goodsConfig != null && goodsConfig.getFixedMaterial() != null && !goodsConfig.getFixedMaterial().isEmpty()) {
-                    triggerContext.setFixedMaterial(goodsConfig.getFixedMaterial());
+                if (replyResult.getKnowledgeVersionId() != null) {
+                    GoodsKnowledgeService.ActiveKnowledge knowledge = goodsKnowledgeService.effective(accountId, xyGoodsId);
+                    if (knowledge != null && knowledge.id().equals(replyResult.getKnowledgeVersionId())) {
+                        triggerContext.setFixedMaterial(knowledge.content());
+                    }
                 }
                 
                 XianyuGoodsInfo goodsInfoForContext = goodsInfoMapper.selectOne(
@@ -323,7 +332,8 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 updateReplyResult(record, 1, allReplyText);
                 autoReplyRecordMapper.updateDecisionEvidence(record.getId(), "AUTO_SENT",
                         replyResult.getConfidenceScore(), replyResult.getModelName(),
-                        duration(replyResult, decisionStartedAt), null);
+                        duration(replyResult, decisionStartedAt), null,
+                        replyResult.getKnowledgeVersionId(), replyResult.getKnowledgeVersionNo());
                 
                 if (allReplyText != null && !allReplyText.trim().isEmpty()) {
                     sentMessageSaveService.saveAiAssistantReply(accountId, cid, toId, allReplyText, xyGoodsId);
@@ -416,7 +426,9 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             String model = evidence == null ? configuredModel() : evidence.getModelName();
             Long processingMs = duration(evidence, decisionStartedAt);
             autoReplyRecordMapper.updateDecisionEvidence(resolvedRecordId, "HUMAN_REQUIRED", confidence,
-                    model, processingMs, reasonCode);
+                    model, processingMs, reasonCode,
+                    evidence == null ? null : evidence.getKnowledgeVersionId(),
+                    evidence == null ? null : evidence.getKnowledgeVersionNo());
             String messageIdentity = last.getPnmId() == null || last.getPnmId().isBlank()
                     ? String.valueOf(resolvedRecordId) : last.getPnmId();
             aiHandoffService.open(new AiHandoffService.OpenCommand(

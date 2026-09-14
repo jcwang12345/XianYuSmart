@@ -7,6 +7,7 @@ import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,6 +19,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /** IM-03/05 持久化 AI 转人工队列；任务去重、认领、解决与审计均在服务端完成。 */
 @Service
@@ -40,15 +43,27 @@ public class AiHandoffService {
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
     private final ObjectMapper objectMapper;
+    private final Supplier<String> openAttemptTokenSupplier;
 
+    @Autowired
     public AiHandoffService(JdbcTemplate jdbcTemplate,
                             AccountAccessService accountAccessService,
                             OperationLogService operationLogService,
                             ObjectMapper objectMapper) {
+        this(jdbcTemplate, accountAccessService, operationLogService, objectMapper,
+                () -> UUID.randomUUID().toString());
+    }
+
+    AiHandoffService(JdbcTemplate jdbcTemplate,
+                     AccountAccessService accountAccessService,
+                     OperationLogService operationLogService,
+                     ObjectMapper objectMapper,
+                     Supplier<String> openAttemptTokenSupplier) {
         this.jdbcTemplate = jdbcTemplate;
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
+        this.openAttemptTokenSupplier = openAttemptTokenSupplier;
     }
 
     @Transactional
@@ -61,15 +76,16 @@ public class AiHandoffService {
         String requestId = required(command.requestId(), "requestId", 80);
         String dedupeKey = required(command.dedupeKey(), "去重键", 191);
         BigDecimal confidence = confidence(command.confidenceScore());
-        int affected = jdbcTemplate.update("""
+        String openAttemptToken = required(openAttemptTokenSupplier.get(), "创建尝试标识", 64);
+        jdbcTemplate.update("""
                 INSERT INTO xianyu_ai_handoff_task
                 (tenant_id,xianyu_account_id,session_id,xy_goods_id,buyer_user_id,source_reply_record_id,
-                 reason_code,reason_detail,priority,status,confidence_score,model_name,dedupe_key,request_id)
-                VALUES (?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?)
-                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+                 reason_code,reason_detail,priority,status,confidence_score,model_name,dedupe_key,request_id,open_attempt_token)
+                VALUES (?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE id=id
                 """, tenant(), accountId, sessionId, trim(command.goodsId(), 100), trim(command.buyerUserId(), 100),
                 command.sourceReplyRecordId(), reasonCode, trim(command.reasonDetail(), 500),
-                priority(reasonCode), confidence, trim(command.modelName(), 100), dedupeKey, requestId);
+                priority(reasonCode), confidence, trim(command.modelName(), 100), dedupeKey, requestId, openAttemptToken);
         Map<String, Object> task = taskByDedupe(dedupeKey);
         Long taskId = number(task.get("id"));
         jdbcTemplate.update("""
@@ -97,7 +113,10 @@ public class AiHandoffService {
         }
         auditOnce("AI_HANDOFF_OPEN", taskId, accountId, sessionId, requestId,
                 Map.of("reasonCode", reasonCode, "dedupeKey", dedupeKey), "LOCAL_SUCCESS", null);
-        task.put("idempotentReplay", affected != 1);
+        // MySQL affected-row semantics vary with connector flags for ON DUPLICATE KEY UPDATE.
+        // Compare the persisted ownership token instead so first insert vs replay is deterministic,
+        // including concurrent opens using the same dedupe key.
+        task.put("idempotentReplay", !openAttemptToken.equals(task.remove("openAttemptToken")));
         task.put("reasonLabel", reasonLabel(reasonCode));
         return task;
     }
@@ -242,7 +261,8 @@ public class AiHandoffService {
     private Map<String, Object> taskByDedupe(String dedupeKey) {
         return new LinkedHashMap<>(jdbcTemplate.queryForMap("""
                 SELECT id,xianyu_account_id accountId,session_id sessionId,status,reason_code reasonCode,
-                       request_id requestId,created_time createdTime FROM xianyu_ai_handoff_task
+                       request_id requestId,open_attempt_token openAttemptToken,created_time createdTime
+                  FROM xianyu_ai_handoff_task
                  WHERE tenant_id=? AND dedupe_key=?
                 """, tenant(), dedupeKey));
     }

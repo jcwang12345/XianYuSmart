@@ -97,6 +97,10 @@ public class XianyuGoodsAutoReplyRecord {
 
     private String handoffReasonCode;
 
+    private Long knowledgeVersionId;
+
+    private Integer knowledgeVersionNo;
+
     private LocalDateTime scheduledTime;
 
     private Integer attemptCount;

@@ -9,6 +9,7 @@ import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.service.AIService;
 import com.xianyusmart.service.KeywordReplyService;
+import com.xianyusmart.service.GoodsKnowledgeService;
 import com.xianyusmart.service.bo.RAGReplyResult;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +46,9 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
 
     @Autowired
     private AIReplySafetyGuard safetyGuard;
+
+    @Autowired
+    private GoodsKnowledgeService goodsKnowledgeService;
 
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
@@ -130,7 +134,8 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
                                        List<ChatMessageData> messageList) {
         try {
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
-            String fixedMaterial = goodsConfig != null ? goodsConfig.getFixedMaterial() : null;
+            GoodsKnowledgeService.ActiveKnowledge knowledge = goodsKnowledgeService.effective(accountId, xyGoodsId);
+            String fixedMaterial = knowledge == null ? null : knowledge.content();
 
             XianyuGoodsInfo goodsInfo = goodsInfoMapper.selectOne(
                     new LambdaQueryWrapper<XianyuGoodsInfo>()
@@ -139,7 +144,12 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
             );
             String goodsDetail = goodsInfo != null ? goodsInfo.getDetailInfo() : null;
             AIReplyPreparationService.PreparedReply prepared = preparationService.prepare(messageList, goodsConfig, goodsInfo);
-            return executePreparedAIReply(prepared, xyGoodsId, fixedMaterial, goodsDetail);
+            ReplyResult result = executePreparedAIReply(prepared, xyGoodsId, fixedMaterial, goodsDetail);
+            if (knowledge != null) {
+                result.setKnowledgeVersionId(knowledge.id());
+                result.setKnowledgeVersionNo(knowledge.versionNo());
+            }
+            return result;
 
         } catch (Exception e) {
             log.error("【账号{}】AI回复失败: xyGoodsId={}", accountId, xyGoodsId, e);

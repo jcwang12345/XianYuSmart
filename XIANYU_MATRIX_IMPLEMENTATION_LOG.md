@@ -3,6 +3,12 @@
 基线：`XIANYU_MATRIX_PRODUCT_REQUIREMENTS.md` 1.0（2026-09-13）
 原则：以需求编号、优先级和验收标准为准；保留既有工作树；禁止以 `0` 代替未同步数据；禁止对生产店铺执行发布、退款、删除或申诉验证。
 
+## 缺陷批次：XYM-IM-001（v2.7.1）
+
+- 根因：MySQL Connector 在不同 affected-row 配置下，`ON DUPLICATE KEY UPDATE` 的无操作更新可能仍返回 1，不能据此区分首次创建与幂等重放。
+- 修复：V44 为接管任务增加内部创建尝试标识；服务端持久化后显式比较本次标识与记录标识，首次返回 `false`，重放/并发非赢家返回 `true`，且不向 API 暴露内部标识。
+- 回归：覆盖驱动即使对重复写返回 1 的单测；隔离 MySQL 5.7 复测同 requestId 首次/重放、任务唯一和审计唯一。
+
 ## 批次 11：IM-01～06 集成客服与 AI 待接管（v2.7.0）
 
 - 需求基线：新增 `IM_01_06_ACCEPTANCE.md`，覆盖双收件箱、可靠发送、AI 转人工、商品知识、回复可解释和响应式客服效率；长期计划以该文件作为 Wave 3 硬门禁。
@@ -502,3 +508,36 @@
 - Product Design 验证覆盖 1920×1080 与 390×844；窄屏截图发现趋势/漏斗 Grid 被图表固有宽度撑开，改为可收缩轨道后页面、列和卡片 `scrollWidth===clientWidth`。
 - 将既有 `designqa_admin` 收紧为仅 `menu:dashboard`、`SELECTED` 店铺 101；随机密码只保存在本机钥匙串服务 `xianyusmart-native-qa-designqa`。实际验证 scopes 只返回店铺 101 和完全包含的分组，查询店铺 102 返回 403。
 - 定向测试：`BusinessAnalyticsServiceTest` 7 项、`QaBusinessAnalyticsControllerTest` 2 项通过；完整后端回归 168 项通过、0 失败/错误/跳过；前端类型检查通过；最终 Vite 352 模块生产构建与裸机 3000 部署成功。
+
+## 批次 12：V4 需求重建、IM 幂等与商品知识版本（v2.7.1 候选）
+
+### 基线与当前范围
+
+- 逐页点击现有一级路由及关键二/三级界面，将实际界面证据、功能真实性、数据口径和安全降级记录到 `XIANYU_MATRIX_V4_FUNCTION_AUDIT_2026-09-15.md`。
+- 新增 `XIANYU_MATRIX_V4_PRODUCT_REQUIREMENTS.md` 与 `XIANYU_MATRIX_V4_LONG_TERM_EXECUTION_PLAN.md`；V4 为现行长期开发合同，原 PRD/PUB/ORD/IM 专项验收继续有效，不以新文档撤销历史缺陷。
+- 本次代码仅收口 `XYM-IM-001`、`IM-04`与 `BASE-06`；不宣称 V4 全部功能已完成。
+
+### 功能与数据迁移
+
+- `V44__ai_handoff_open_attempt_token.sql`：转人工任务增加打开尝试所有权标识，避免 MySQL affected-row 语义导致首次请求被误判为重放。
+- `V45__goods_knowledge_versions.sql`：增加商品知识版本、版本操作请求幂等表，并在自动回复记录中保存知识版本 ID/版本号。
+- `GoodsKnowledgeService`：支持草稿、启用、失效、生失效窗口、并发版本号、同请求精确重放与异载荷 409，写入商品事件和统一审计。
+- AI 与关键词润色策略改为只消费当前有效版本；过期/已停用内容不再从旧 `fixed_material` 泄漏进提示词。
+- 前端增加软件商品模板、草稿/立即启用、有效期、版本历史、启用/停用、持久错误与重试；扩展语义资料保持 AI/Embedding 未配置时的明确降级。
+- 共享布局对真实 `.app-main` 容器执行路由滚动复位，修复鼠标滚轮滑到下方后又回顶。
+
+### 验证结果
+
+- 完整后端回归：`scripts/local-toolchain.sh ./mvnw -Dmaven.repo.local=/Volumes/Data/codex/xianyu/.tools/m2 test`，182 项通过，0 失败、0 错误、0 跳过。
+- 前端：`npm run type-check` 通过；`npm run build-only` 通过，352 个模块；最终静态资源已从当前源码重新生成。
+- 打包：`./mvnw -DskipTests package` 成功；裸机 macOS 应用启动于 `127.0.0.1:3000`，Docker 仅运行 MySQL 5.7 `127.0.0.1:13306`。
+- 升级验证：MySQL 5.7 日志证明现有 schema 从 V43 成功应用 V44，再从 V44 应用 V45；最终验证 45 个迁移并处于 schema V45。
+- 隔离 API E2E：`qa-im-idem-v271-20260915` 首次任务 ID 12、`idempotentReplay=false`，重放同任务且为 `true`；响应明确 `platformNetworkCalls=false`、`aiNetworkCalls=false`。
+- 知识版本 E2E：草稿/启用/停用及各自重放通过；最终为 `NO_EFFECTIVE_VERSION`、保留 1 条 `EXPIRED` 历史。创建、启用、停用 requestId 的统一审计总数各为 1。
+- Product Design 开发侧 QA：实际页面验证商品选择、版本空态、已停用历史、有效期、保存策略、安全降级和 tab/tabpanel 语义；窄屏鼠标滚轮可停在页面底部，路由切换后新页面回到顶部。截图不替代键盘、对比度和读屏工具验证。
+
+### 残余降级和安全边界
+
+- 扩展语义检索需要配置 AI/Embedding；本地商品知识版本不依赖该服务。
+- 未调用真实 AI、闲鱼、企业微信或邮件；测试数据只在 Tenant-A 账号 101 与 `QA-` 商品/会话范围。
+- 本地内置浏览器当次无法产生真实 4K CSS 视口；4K 依赖此前证据与静态响应式检查，需独立测试再次实机验证。

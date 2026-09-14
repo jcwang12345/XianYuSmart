@@ -2,8 +2,8 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAccountList } from '@/api/account'
 import { getGoodsList, updateAutoReplyStatus, getAutoReplyConfig, updateAutoReplyConfig, getAutoReplyRecords } from '@/api/goods'
-import { chatWithAI, chatTestWithAI, putNewDataToRAG, queryRAGData, deleteRAGData, saveFixedMaterial, getFixedMaterial, syncDetailToFixedMaterial } from '@/api/ai'
-import type { RAGDataItem } from '@/api/ai'
+import { chatWithAI, chatTestWithAI, putNewDataToRAG, queryRAGData, deleteRAGData, saveFixedMaterial, getFixedMaterial, syncDetailToFixedMaterial, activateFixedMaterialVersion, expireFixedMaterialVersion } from '@/api/ai'
+import type { RAGDataItem, GoodsKnowledgeVersion, GoodsKnowledgeView } from '@/api/ai'
 import type { AutoReplyRecord } from '@/api/goods'
 import { getGoodsStatusClass, getGoodsStatusText, showSuccess, showError, showInfo } from '@/utils'
 import { toast } from '@/utils/toast'
@@ -59,11 +59,32 @@ export function useAutoReply() {
   const fixedMaterialSaving = ref(false)
   const fixedMaterialSyncing = ref(false)
   const fixedMaterialExpanded = ref(true)
+  const knowledgeVersions = ref<GoodsKnowledgeVersion[]>([])
+  const activeKnowledgeVersionNo = ref<number | null>(null)
+  const knowledgeStatus = ref<'EFFECTIVE' | 'NO_EFFECTIVE_VERSION'>('NO_EFFECTIVE_VERSION')
+  const knowledgeNotice = ref('')
+  const knowledgeError = ref('')
+  const knowledgeLastLoadedAt = ref('')
+  const knowledgeEffectiveTime = ref('')
+  const knowledgeExpiresTime = ref('')
+  const knowledgeActivateOnSave = ref(true)
+  const softwareKnowledgeTemplate = `【产品形态】本商品是一款基于 Microsoft Office 和 WPS 的软件插件。\n【有效期】每次购买的使用有效期为 7 天，从买家第一次激活成功时开始计算。\n【安装与使用】购买后请按交付内容进入安装教程，教程包含视频讲解、安装步骤和使用方法。\n【售后支持】如安装、激活或使用中遇到问题，请通过交付内容中的链接或二维码加入售后群，在群内反馈问题。\n【人工服务】售后群内有人工客服，可协助安装、激活和使用指导。\n【回复边界】不确定、退款争议、账号安全或知识未覆盖的问题请转人工，不要猜测。`
+
+  const requestId = (prefix: string) => typeof crypto.randomUUID === 'function'
+    ? `${prefix}-${crypto.randomUUID()}`
+    : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+  const toLocalDateTimeInput = (value?: string | null) => {
+    if (!value) return ''
+    return value.replace(' ', 'T').slice(0, 16)
+  }
 
   // Query existing knowledge data
   const dataList = ref<RAGDataItem[]>([])
   const dataLoading = ref(false)
   const dataVisible = ref(false)
+  const dataError = ref('')
+  const dataLastLoadedAt = ref('')
 
   // Chat
   const chatMessages = ref<ChatMessage[]>([])
@@ -268,18 +289,31 @@ export function useAutoReply() {
   const loadFixedMaterial = async () => {
     if (!selectedGoods.value || !selectedAccountId.value) return
 
+    knowledgeError.value = ''
     try {
       const response = await getFixedMaterial({
         accountId: selectedAccountId.value,
         goodsId: selectedGoods.value.item.xyGoodId
       })
+      if (!response.ok) throw new Error(`商品知识读取失败（HTTP ${response.status}）`)
       const data = await response.json()
       if (data.code === 0 || data.code === 200) {
-        fixedMaterial.value = data.data?.fixedMaterial || ''
+        const view = (data.data || {}) as GoodsKnowledgeView
+        fixedMaterial.value = view.fixedMaterial || ''
+        knowledgeVersions.value = view.versions || []
+        activeKnowledgeVersionNo.value = view.activeVersionNo || null
+        knowledgeStatus.value = view.status || 'NO_EFFECTIVE_VERSION'
+        knowledgeNotice.value = view.dataNotice || ''
+        knowledgeEffectiveTime.value = toLocalDateTimeInput(view.effectiveTime)
+        knowledgeExpiresTime.value = toLocalDateTimeInput(view.expiresTime)
+        knowledgeLastLoadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
         fixedMaterialExpanded.value = !fixedMaterial.value
+      } else {
+        throw new Error(data.msg || data.message || '商品知识读取失败')
       }
     } catch (error: any) {
       console.error('加载固定资料失败:', error)
+      knowledgeError.value = error.message || '商品知识读取失败，请重试'
     }
   }
 
@@ -292,11 +326,16 @@ export function useAutoReply() {
       const response = await saveFixedMaterial({
         accountId: selectedAccountId.value,
         goodsId: selectedGoods.value.item.xyGoodId,
-        fixedMaterial: fixedMaterial.value
+        fixedMaterial: fixedMaterial.value,
+        effectiveTime: knowledgeEffectiveTime.value || null,
+        expiresTime: knowledgeExpiresTime.value || null,
+        activate: knowledgeActivateOnSave.value,
+        requestId: requestId('knowledge-save')
       })
       const data = await response.json()
       if (data.code === 0 || data.code === 200) {
-        showSuccess('固定资料保存成功')
+        showSuccess(knowledgeActivateOnSave.value ? '新知识版本已生效' : '知识草稿已保存')
+        await loadFixedMaterial()
       } else {
         showError(data.msg || '保存失败')
       }
@@ -318,7 +357,9 @@ export function useAutoReply() {
     try {
       const response = await syncDetailToFixedMaterial({
         accountId: selectedAccountId.value,
-        goodsId: selectedGoods.value.item.xyGoodId
+        goodsId: selectedGoods.value.item.xyGoodId,
+        expiresTime: knowledgeExpiresTime.value || null,
+        requestId: requestId('knowledge-sync')
       })
       const data = await response.json()
       if (data.code === 0 || data.code === 200) {
@@ -340,6 +381,70 @@ export function useAutoReply() {
   // Toggle fixed material expanded
   const toggleFixedMaterialExpanded = () => {
     fixedMaterialExpanded.value = !fixedMaterialExpanded.value
+  }
+
+  const applySoftwareKnowledgeTemplate = () => {
+    const apply = () => {
+      fixedMaterial.value = softwareKnowledgeTemplate
+      fixedMaterialExpanded.value = true
+      confirmDialog.value.visible = false
+    }
+    if (!fixedMaterial.value.trim()) {
+      apply()
+      return
+    }
+    confirmDialog.value = {
+      visible: true,
+      title: '套用软件商品知识模板',
+      message: '当前编辑区已有内容。继续会替换尚未保存的编辑内容，历史知识版本不会被删除。',
+      type: 'primary',
+      onConfirm: apply
+    }
+  }
+
+  const handleActivateKnowledgeVersion = async (version: GoodsKnowledgeVersion) => {
+    fixedMaterialSaving.value = true
+    try {
+      const response = await activateFixedMaterialVersion({ versionId: version.id, requestId: requestId('knowledge-activate') })
+      const data = await response.json()
+      if (!response.ok || (data.code !== 0 && data.code !== 200)) throw new Error(data.msg || data.message || '启用失败')
+      showSuccess(`知识版本 V${version.versionNo} 已生效`)
+      await loadFixedMaterial()
+    } catch (error: any) {
+      showError(error.message || '知识版本启用失败')
+    } finally {
+      fixedMaterialSaving.value = false
+    }
+  }
+
+  const handleExpireKnowledgeVersion = (version: GoodsKnowledgeVersion) => {
+    confirmDialog.value = {
+      visible: true,
+      title: `停用知识版本 V${version.versionNo}`,
+      message: '停用后 AI 不会再使用该版本。历史回复仍保留版本证据，操作可在审计中追溯。',
+      type: 'danger',
+      onConfirm: async () => {
+        confirmDialog.value.visible = false
+        fixedMaterialSaving.value = true
+        try {
+          const response = await expireFixedMaterialVersion({ versionId: version.id, requestId: requestId('knowledge-expire') })
+          const data = await response.json()
+          if (!response.ok || (data.code !== 0 && data.code !== 200)) throw new Error(data.msg || data.message || '停用失败')
+          showSuccess(`知识版本 V${version.versionNo} 已停用`)
+          await loadFixedMaterial()
+        } catch (error: any) {
+          showError(error.message || '知识版本停用失败')
+        } finally {
+          fixedMaterialSaving.value = false
+        }
+      }
+    }
+  }
+
+  const knowledgeStatusText = (version: GoodsKnowledgeVersion) => {
+    if (version.effectiveStatus === 'EFFECTIVE') return '生效中'
+    if (version.effectiveStatus === 'NOT_YET_EFFECTIVE') return '待生效'
+    return ({ DRAFT: '草稿', ACTIVE: '已启用', SUPERSEDED: '已替代', EXPIRED: '已停用' } as Record<string, string>)[version.status] || version.status
   }
 
   // ===== Keyword Reply =====
@@ -939,6 +1044,7 @@ export function useAutoReply() {
     }
 
     dataLoading.value = true
+    dataError.value = ''
     try {
       const response = await queryRAGData({
         goodsId: selectedGoods.value.item.xyGoodId
@@ -952,6 +1058,7 @@ export function useAutoReply() {
       const result = await response.json()
       if (result.code === 0 || result.code === 200) {
         dataList.value = result.data || []
+        dataLastLoadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
       } else {
         // 检查是否是AI未配置的错误
         const errorMsg = result.msg || '查询资料失败'
@@ -964,6 +1071,9 @@ export function useAutoReply() {
       console.error('查询资料失败:', error)
       // 如果错误消息包含配置相关提示，使用友好提示
       const errorMsg = error.message || '查询资料失败'
+      dataError.value = errorMsg.includes('配置') || errorMsg.includes('AI') || errorMsg.includes('API')
+        ? '语义知识库尚未就绪，请先在系统设置中完成 AI 与 Embedding 配置。商品知识版本不受影响。'
+        : errorMsg
       if (errorMsg.includes('配置') || errorMsg.includes('AI') || errorMsg.includes('API')) {
         showError('请前往系统设置->AI服务配置中完成配置')
       } else {
@@ -1289,9 +1399,20 @@ export function useAutoReply() {
     fixedMaterialSaving,
     fixedMaterialSyncing,
     fixedMaterialExpanded,
+    knowledgeVersions,
+    activeKnowledgeVersionNo,
+    knowledgeStatus,
+    knowledgeNotice,
+    knowledgeError,
+    knowledgeLastLoadedAt,
+    knowledgeEffectiveTime,
+    knowledgeExpiresTime,
+    knowledgeActivateOnSave,
     dataList,
     dataLoading,
     dataVisible,
+    dataError,
+    dataLastLoadedAt,
     chatMessages,
     chatInput,
     chatSending,
@@ -1345,6 +1466,11 @@ export function useAutoReply() {
     handleSaveFixedMaterial,
     handleSyncDetailToFixedMaterial,
     toggleFixedMaterialExpanded,
+    loadFixedMaterial,
+    handleActivateKnowledgeVersion,
+    handleExpireKnowledgeVersion,
+    knowledgeStatusText,
+    applySoftwareKnowledgeTemplate,
 
     keywordRules,
     newKeyword,

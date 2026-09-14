@@ -1,5 +1,7 @@
 # XianYuSmart V3 长期实施目标与批次计划
 
+> 历史计划说明（2026-09-15）：本文件保留用于追溯 V3 决策，不再作为新增开发的执行入口。当前长期目标、实施波次和完成定义已升级到 `XIANYU_MATRIX_V4_LONG_TERM_EXECUTION_PLAN.md`，需求以 `XIANYU_MATRIX_V4_PRODUCT_REQUIREMENTS.md` 为准；既有专项验收和已通过证据继续继承。
+
 版本：1.0
 日期：2026-09-14
 控制基线：`XIANYU_MATRIX_V3_PRODUCT_REQUIREMENTS.md`

@@ -132,8 +132,47 @@ export function testAIConnection(data: AIConnectionTestRequest): Promise<Respons
   })
 }
 
-// 保存固定资料
-export function saveFixedMaterial(data: { accountId: number; goodsId: string; fixedMaterial: string }): Promise<Response> {
+export type KnowledgeVersionStatus = 'DRAFT' | 'ACTIVE' | 'SUPERSEDED' | 'EXPIRED'
+
+export interface GoodsKnowledgeVersion {
+  id: number
+  accountId: number
+  goodsId: string
+  versionNo: number
+  content?: string
+  status: KnowledgeVersionStatus
+  effectiveStatus?: 'EFFECTIVE' | 'NOT_YET_EFFECTIVE' | KnowledgeVersionStatus
+  sourceType: 'MANUAL' | 'GOODS_DETAIL' | 'LEGACY_IMPORT'
+  effectiveTime: string
+  expiresTime?: string | null
+  activatedTime?: string | null
+  invalidatedTime?: string | null
+  createdUsername?: string | null
+  createdTime: string
+  idempotentReplay?: boolean
+}
+
+export interface GoodsKnowledgeView {
+  fixedMaterial?: string | null
+  activeVersionId?: number | null
+  activeVersionNo?: number | null
+  effectiveTime?: string | null
+  expiresTime?: string | null
+  status: 'EFFECTIVE' | 'NO_EFFECTIVE_VERSION'
+  versions: GoodsKnowledgeVersion[]
+  dataNotice: string
+}
+
+// 保存不可变商品知识版本；activate=false 时只保存草稿。
+export function saveFixedMaterial(data: {
+  accountId: number
+  goodsId: string
+  fixedMaterial: string
+  effectiveTime?: string | null
+  expiresTime?: string | null
+  activate: boolean
+  requestId: string
+}): Promise<Response> {
   return fetch('/ai/saveFixedMaterial', {
     method: 'POST',
     headers: authHeaders(),
@@ -150,8 +189,29 @@ export function getFixedMaterial(data: { accountId: number; goodsId: string }): 
   })
 }
 
-// 同步商品详情到固定资料
-export function syncDetailToFixedMaterial(data: { accountId: number; goodsId: string }): Promise<Response> {
+export function activateFixedMaterialVersion(data: { versionId: number; requestId: string }): Promise<Response> {
+  return fetch('/ai/activateFixedMaterialVersion', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data)
+  })
+}
+
+export function expireFixedMaterialVersion(data: { versionId: number; requestId: string }): Promise<Response> {
+  return fetch('/ai/expireFixedMaterialVersion', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(data)
+  })
+}
+
+// 同步商品详情并生成一个新的有效知识版本。
+export function syncDetailToFixedMaterial(data: {
+  accountId: number
+  goodsId: string
+  expiresTime?: string | null
+  requestId: string
+}): Promise<Response> {
   return fetch('/ai/syncDetailToFixedMaterial', {
     method: 'POST',
     headers: authHeaders(),

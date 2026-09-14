@@ -3282,3 +3282,194 @@
 .ar__reply-mode-dot--on {
   background: #30D158;
 }
+
+/* IM-04 商品知识版本：信息密度优先，状态与动作在桌面和手机都保持可读。 */
+.ar__config-section-badge--muted {
+  color: var(--d-text-secondary);
+  background: rgba(120, 120, 128, .1);
+}
+
+.ar__knowledge-loaded {
+  color: var(--d-text-tertiary);
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.ar__knowledge-error,
+.ar__knowledge-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ar__knowledge-error {
+  color: #b42318;
+  background: #fff1f0;
+  border: 1px solid #ffd5d2;
+}
+
+.ar__knowledge-error > div {
+  display: grid;
+  gap: 2px;
+}
+
+.ar__knowledge-notice {
+  color: #6d5700;
+  background: #fff9df;
+  border: 1px solid #f5dfa0;
+}
+
+.ar__knowledge-toolbar,
+.ar__knowledge-version-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ar__knowledge-toolbar {
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.ar__knowledge-schedule {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.ar__knowledge-schedule label {
+  display: grid;
+  gap: 6px;
+  color: var(--d-text-secondary);
+  font-size: 12px;
+}
+
+.ar__knowledge-schedule .ar__input,
+.ar__knowledge-schedule .ar__select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--d-border-strong);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .72);
+  color: var(--d-text-primary);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.ar__knowledge-history {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--d-border);
+}
+
+.ar__knowledge-history-title {
+  color: var(--d-text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.ar__knowledge-history-title span {
+  margin-left: 4px;
+  color: var(--d-text-tertiary);
+  font-weight: 500;
+}
+
+.ar__knowledge-empty {
+  padding: 16px;
+  border: 1px dashed var(--d-border-strong);
+  border-radius: 10px;
+  color: var(--d-text-secondary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.ar__knowledge-version {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--d-border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .54);
+}
+
+.ar__knowledge-version-main {
+  min-width: 0;
+}
+
+.ar__knowledge-version-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--d-text-secondary);
+  font-size: 12px;
+}
+
+.ar__knowledge-version-head strong {
+  color: var(--d-text-primary);
+  font-size: 14px;
+}
+
+.ar__knowledge-status {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #475467;
+  background: #f2f4f7;
+}
+
+.ar__knowledge-status[data-status="EFFECTIVE"] {
+  color: #067647;
+  background: #ecfdf3;
+}
+
+.ar__knowledge-status[data-status="EXPIRED"] {
+  color: #b42318;
+  background: #fef3f2;
+}
+
+.ar__knowledge-version p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 8px 0 5px;
+  color: var(--d-text-primary);
+  font-size: 13px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ar__knowledge-version small {
+  color: var(--d-text-tertiary);
+}
+
+@media screen and (max-width: 768px) {
+  .ar__knowledge-loaded {
+    display: none;
+  }
+
+  .ar__knowledge-schedule {
+    grid-template-columns: 1fr;
+  }
+
+  .ar__knowledge-error,
+  .ar__knowledge-version {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .ar__knowledge-version-actions .btn {
+    flex: 1;
+  }
+}

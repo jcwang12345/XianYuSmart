@@ -39,7 +39,8 @@ class AiHandoffServiceTest {
         jdbcTemplate = mock(JdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
-        service = new AiHandoffService(jdbcTemplate, accountAccessService, operationLogService, new ObjectMapper());
+        service = new AiHandoffService(jdbcTemplate, accountAccessService, operationLogService,
+                new ObjectMapper(), () -> "attempt-token");
         TenantContext.set(6L);
         UserContext.set(4L, "handoff-tester", 6L);
         when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(0L);
@@ -58,13 +59,15 @@ class AiHandoffServiceTest {
         when(jdbcTemplate.queryForMap(contains("FROM xianyu_ai_handoff_task"), any(Object[].class)))
                 .thenReturn(new LinkedHashMap<>(Map.of(
                         "id", 31L, "accountId", 9L, "sessionId", "session-1", "status", "OPEN",
-                        "reasonCode", "AI_NO_SAFE_ANSWER", "requestId", "handoff-request")));
+                        "reasonCode", "AI_NO_SAFE_ANSWER", "requestId", "handoff-request",
+                        "openAttemptToken", "attempt-token")));
 
         Map<String, Object> result = service.open(command("AI_NO_SAFE_ANSWER", 0.41));
 
         assertEquals(31L, result.get("id"));
         assertEquals("AI 未生成可安全发送的内容", result.get("reasonLabel"));
         assertEquals(false, result.get("idempotentReplay"));
+        assertEquals(false, result.containsKey("openAttemptToken"));
         verify(accountAccessService).requireAccess(9L);
         verify(jdbcTemplate).update(contains("auto_reply_state='HUMAN_REQUIRED'"), any(Object[].class));
         verify(operationLogService).log(any(XianyuOperationLog.class));
@@ -72,15 +75,19 @@ class AiHandoffServiceTest {
 
     @Test
     void duplicateOpenIsReportedAsIdempotentReplay() {
-        when(jdbcTemplate.update(contains("INSERT INTO xianyu_ai_handoff_task"), any(Object[].class))).thenReturn(0);
+        // Connector/J may report 1 for the duplicate no-op depending on affected-row settings.
+        // The persisted ownership token, not the driver row count, decides replay status.
+        when(jdbcTemplate.update(contains("INSERT INTO xianyu_ai_handoff_task"), any(Object[].class))).thenReturn(1);
         when(jdbcTemplate.queryForMap(contains("FROM xianyu_ai_handoff_task"), any(Object[].class)))
                 .thenReturn(new LinkedHashMap<>(Map.of(
                         "id", 31L, "accountId", 9L, "sessionId", "session-1", "status", "OPEN",
-                        "reasonCode", "AI_NO_SAFE_ANSWER", "requestId", "handoff-request")));
+                        "reasonCode", "AI_NO_SAFE_ANSWER", "requestId", "handoff-request",
+                        "openAttemptToken", "original-attempt-token")));
 
         Map<String, Object> result = service.open(command("AI_NO_SAFE_ANSWER", null));
 
         assertEquals(true, result.get("idempotentReplay"));
+        assertEquals(false, result.containsKey("openAttemptToken"));
     }
 
     @Test

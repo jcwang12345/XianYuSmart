@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, onMounted, onUnmounted, computed, provide, markRaw, watch } from 'vue'
+import { ref, shallowRef, onMounted, onUnmounted, computed, provide, markRaw, watch, nextTick } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import NavMenu from './NavMenu.vue'
 import UpdateDialog from './UpdateDialog.vue'
@@ -22,6 +22,7 @@ import IconShield from '@/components/icons/IconShield.vue'
 const route = useRoute()
 const router = useRouter()
 const routeLoading = ref(false)
+const mainScroll = ref<HTMLElement | null>(null)
 
 // Lazy route chunks can take noticeably longer on mobile or a cold cache. Keep a
 // visible, non-numeric loading state in the shared shell so the page never looks
@@ -139,6 +140,7 @@ const pageReadOnly = computed(() =>
 // 路由切换时清理旧页面注入的工具栏，防止短暂显示上一页操作。
 watch(() => route.path, () => {
   headerContent.value = null
+  nextTick(() => mainScroll.value?.scrollTo({ top: 0, left: 0 }))
 })
 
 // 检测屏幕尺寸并自动设置设备类型
@@ -271,7 +273,7 @@ onUnmounted(() => {
       </aside>
 
       <div class="el-container">
-        <div class="app-main" role="main">
+        <div ref="mainScroll" class="app-main" role="main">
           <div v-if="pageReadOnly" class="readonly-notice">当前账号在此页面为只读权限，修改、发送和执行操作已停用。</div>
           <RouterView />
         </div>
@@ -280,7 +282,7 @@ onUnmounted(() => {
 
     <!-- 平板端: 主内容区 -->
     <div v-if="isTablet" class="el-container">
-      <div class="app-main" role="main">
+      <div ref="mainScroll" class="app-main" role="main">
         <div v-if="pageReadOnly" class="readonly-notice">当前账号在此页面为只读权限，修改、发送和执行操作已停用。</div>
         <RouterView />
       </div>
@@ -288,7 +290,7 @@ onUnmounted(() => {
 
     <!-- 手机端: 主内容区 -->
     <div v-if="isMobile" class="el-container">
-      <div class="app-main" role="main">
+      <div ref="mainScroll" class="app-main" role="main">
         <div v-if="pageReadOnly" class="readonly-notice">当前账号在此页面为只读权限，修改、发送和执行操作已停用。</div>
         <RouterView />
       </div>

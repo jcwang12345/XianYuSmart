@@ -27,6 +27,9 @@ public interface ReplyStrategy {
         private Long processingDurationMs;
         private String handoffReasonCode;
         private String handoffReasonDetail;
+        /** 实际进入本次 AI 上下文的商品知识版本；为空表示没有有效版本。 */
+        private Long knowledgeVersionId;
+        private Integer knowledgeVersionNo;
 
         @lombok.Data
         public static class ReplyItem {

@@ -44,9 +44,20 @@ const {
   fixedMaterialSaving,
   fixedMaterialSyncing,
   fixedMaterialExpanded,
+  knowledgeVersions,
+  activeKnowledgeVersionNo,
+  knowledgeStatus,
+  knowledgeNotice,
+  knowledgeError,
+  knowledgeLastLoadedAt,
+  knowledgeEffectiveTime,
+  knowledgeExpiresTime,
+  knowledgeActivateOnSave,
   dataList,
   dataLoading,
   dataVisible,
+  dataError,
+  dataLastLoadedAt,
   chatMessages,
   chatInput,
   chatSending,
@@ -98,6 +109,11 @@ const {
   handleSaveFixedMaterial,
   handleSyncDetailToFixedMaterial,
   toggleFixedMaterialExpanded,
+  loadFixedMaterial,
+  handleActivateKnowledgeVersion,
+  handleExpireKnowledgeVersion,
+  knowledgeStatusText,
+  applySoftwareKnowledgeTemplate,
   keywordRules, newKeyword, newContentText, newContentImage,
   toggleKeywordReply, toggleHumanIntervention, updateHumanInterventionMinutes, handleAddKeyword, handleDeleteRule, handleUpdateKeyword, handleAddContent, handleDeleteContent,
   replyModeTab, selectedKeywordRuleId, selectedKeywordRule,
@@ -347,10 +363,13 @@ onMounted(() => {
           <ReplyEnhancements v-if="selectedAccountId" :account-id="selectedAccountId" :goods-id="selectedGoods.item.xyGoodId" />
           <!-- Reply Mode Tabs -->
           <div class="ar__config-section">
-            <div class="ar__reply-mode-tabs">
+            <div class="ar__reply-mode-tabs" role="tablist" aria-label="自动回复模式">
               <button
                 class="ar__reply-mode-tab"
                 :class="{ 'ar__reply-mode-tab--active': replyModeTab === 'ai' }"
+                role="tab"
+                :aria-selected="replyModeTab === 'ai'"
+                aria-controls="ai-reply-panel"
                 @click="replyModeTab = 'ai'"
               >
                 <IconSparkle />
@@ -360,6 +379,9 @@ onMounted(() => {
               <button
                 class="ar__reply-mode-tab"
                 :class="{ 'ar__reply-mode-tab--active': replyModeTab === 'keyword' }"
+                role="tab"
+                :aria-selected="replyModeTab === 'keyword'"
+                aria-controls="keyword-reply-panel"
                 @click="replyModeTab = 'keyword'"
               >
                 <IconChat />
@@ -429,7 +451,7 @@ onMounted(() => {
           </div>
 
           <!-- AI Reply Config -->
-          <div v-if="replyModeTab === 'ai'" class="ar__config-section">
+          <div v-if="replyModeTab === 'ai'" id="ai-reply-panel" class="ar__config-section" role="tabpanel">
             <div class="ar__toggle-row">
               <div class="ar__toggle-info">
                 <div class="ar__toggle-label">AI回复</div>
@@ -464,7 +486,7 @@ onMounted(() => {
           </div>
 
           <!-- Keyword Reply Config -->
-          <div v-if="replyModeTab === 'keyword'" class="ar__config-section">
+          <div v-if="replyModeTab === 'keyword'" id="keyword-reply-panel" class="ar__config-section" role="tabpanel">
             <div class="ar__toggle-row">
               <div class="ar__toggle-info">
                 <div class="ar__toggle-label">关键词回复</div>
@@ -680,10 +702,13 @@ onMounted(() => {
           </Teleport>
 
           <!-- Tab Switch: Data / Chat (only in AI reply mode) -->
-          <div v-if="replyModeTab === 'ai'" class="ar__tab-group">
+          <div v-if="replyModeTab === 'ai'" class="ar__tab-group" role="tablist" aria-label="AI知识与测试">
             <button
               class="ar__tab-btn"
               :class="{ 'ar__tab-btn--active': rightTab === 'data' }"
+              role="tab"
+              :aria-selected="rightTab === 'data'"
+              aria-controls="knowledge-data-panel"
               @click="rightTab = 'data'"
             >
               <IconClipboard />
@@ -692,6 +717,9 @@ onMounted(() => {
             <button
               class="ar__tab-btn"
               :class="{ 'ar__tab-btn--active': rightTab === 'chat' }"
+              role="tab"
+              :aria-selected="rightTab === 'chat'"
+              aria-controls="knowledge-chat-panel"
               @click="rightTab = 'chat'"
             >
               <IconRobot />
@@ -700,62 +728,110 @@ onMounted(() => {
           </div>
 
           <!-- ====== 知识资料视图 ====== -->
-          <template v-if="replyModeTab === 'ai' && rightTab === 'data'">
+          <section v-if="replyModeTab === 'ai' && rightTab === 'data'" id="knowledge-data-panel" role="tabpanel">
             <!-- Fixed material section -->
             <div class="ar__config-section">
               <div class="ar__config-section-header" @click="toggleFixedMaterialExpanded">
                 <div class="ar__config-section-title-row">
                   <IconChevronDown class="ar__config-section-chevron" :class="{ 'ar__config-section-chevron--collapsed': !fixedMaterialExpanded }" />
-                  <div class="ar__config-section-title">固定资料</div>
-                  <span v-if="fixedMaterial" class="ar__config-section-badge">已配置</span>
+                  <div class="ar__config-section-title">商品知识版本</div>
+                  <span v-if="knowledgeStatus === 'EFFECTIVE'" class="ar__config-section-badge">V{{ activeKnowledgeVersionNo }} 生效中</span>
+                  <span v-else class="ar__config-section-badge ar__config-section-badge--muted">当前无有效版本</span>
                 </div>
-                <button
-                  v-if="fixedMaterialExpanded"
-                  class="btn btn--ghost btn--sm"
-                  :class="{ 'btn--loading': fixedMaterialSyncing }"
-                  :disabled="fixedMaterialSyncing"
-                  @click.stop="handleSyncDetailToFixedMaterial"
-                >
-                  <IconSparkle />
-                  同步商品详情
-                </button>
+                <span v-if="knowledgeLastLoadedAt" class="ar__knowledge-loaded">更新于 {{ knowledgeLastLoadedAt }}</span>
               </div>
               
               <div v-show="fixedMaterialExpanded" class="ar__config-section-body">
-                <div class="ar__toggle-hint" style="margin-bottom: 8px;">
-                  固定资料会每次AI回复时都带上，保存在本地数据库
+                <div v-if="knowledgeError" class="ar__knowledge-error" role="alert">
+                  <div><strong>商品知识读取失败</strong><span>{{ knowledgeError }}</span></div>
+                  <button class="btn btn--secondary btn--sm" @click="loadFixedMaterial">重新读取</button>
+                </div>
+
+                <div v-else class="ar__knowledge-notice">
+                  {{ knowledgeNotice || 'AI 只会使用已启用且处于有效期内的版本，历史回复保留版本证据。' }}
+                </div>
+
+                <div class="ar__knowledge-toolbar">
+                  <button class="btn btn--secondary btn--sm" @click="applySoftwareKnowledgeTemplate">套用软件商品模板</button>
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    :class="{ 'btn--loading': fixedMaterialSyncing }"
+                    :disabled="fixedMaterialSyncing"
+                    @click="handleSyncDetailToFixedMaterial"
+                  >
+                    <IconSparkle />
+                    同步商品详情为新版本
+                  </button>
                 </div>
 
                 <textarea
                   v-model="fixedMaterial"
                   class="ar__textarea"
-                  placeholder="请输入固定资料内容，如商品规格、注意事项等"
+                  placeholder="填写商品规格、有效期、安装教程、售后群、人工客服和不能自动回答的边界"
                   maxlength="5000"
                 ></textarea>
                 <div class="ar__textarea-footer">
-                  <span class="ar__textarea-hint">固定资料随商品保存</span>
+                  <span class="ar__textarea-hint">保存会创建不可变新版本，不覆盖历史回复证据</span>
                   <span class="ar__textarea-count">{{ fixedMaterial.length }} / 5000</span>
                 </div>
 
-                <div class="ar__save-row" style="margin-bottom: 16px;">
+                <div class="ar__knowledge-schedule">
+                  <label>
+                    <span>生效时间</span>
+                    <input v-model="knowledgeEffectiveTime" class="ar__input" type="datetime-local" />
+                  </label>
+                  <label>
+                    <span>失效时间（可选）</span>
+                    <input v-model="knowledgeExpiresTime" class="ar__input" type="datetime-local" />
+                  </label>
+                  <label>
+                    <span>保存方式</span>
+                    <select v-model="knowledgeActivateOnSave" class="ar__select">
+                      <option :value="true">保存并立即启用</option>
+                      <option :value="false">仅保存草稿</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div class="ar__save-row">
                   <button
                     class="btn btn--primary"
                     :class="{ 'btn--loading': fixedMaterialSaving }"
-                    :disabled="fixedMaterialSaving"
+                    :disabled="fixedMaterialSaving || !fixedMaterial.trim()"
                     @click="handleSaveFixedMaterial"
                   >
                     <IconCheck />
-                    保存固定资料
+                    {{ knowledgeActivateOnSave ? '保存并启用新版本' : '保存为草稿' }}
                   </button>
+                </div>
+
+                <div class="ar__knowledge-history">
+                  <div class="ar__knowledge-history-title">版本记录 <span>{{ knowledgeVersions.length }}</span></div>
+                  <div v-if="knowledgeVersions.length === 0" class="ar__knowledge-empty">还没有知识版本。可先套用模板，再保存为草稿或直接启用。</div>
+                  <article v-for="version in knowledgeVersions" :key="version.id" class="ar__knowledge-version">
+                    <div class="ar__knowledge-version-main">
+                      <div class="ar__knowledge-version-head">
+                        <strong>V{{ version.versionNo }}</strong>
+                        <span class="ar__knowledge-status" :data-status="version.effectiveStatus || version.status">{{ knowledgeStatusText(version) }}</span>
+                        <span>{{ version.sourceType === 'GOODS_DETAIL' ? '商品详情同步' : version.sourceType === 'LEGACY_IMPORT' ? '旧资料迁移' : '人工编辑' }}</span>
+                      </div>
+                      <p>{{ version.content || '内容仅在有权限时显示' }}</p>
+                      <small>生效 {{ formatTime(version.effectiveTime) }} · 失效 {{ version.expiresTime ? formatTime(version.expiresTime) : '长期有效' }} · {{ version.createdUsername || '系统' }}</small>
+                    </div>
+                    <div class="ar__knowledge-version-actions">
+                      <button v-if="version.effectiveStatus !== 'EFFECTIVE' && version.status !== 'EXPIRED'" class="btn btn--secondary btn--sm" @click="handleActivateKnowledgeVersion(version)">启用</button>
+                      <button v-if="version.effectiveStatus === 'EFFECTIVE'" class="btn btn--ghost btn--sm" @click="handleExpireKnowledgeVersion(version)">停用</button>
+                    </div>
+                  </article>
                 </div>
               </div>
             </div>
 
             <!-- Upload view -->
             <div v-if="!dataVisible" class="ar__config-section">
-              <div class="ar__config-section-title">添加资料</div>
+              <div class="ar__config-section-title">扩展语义资料</div>
               <div class="ar__toggle-hint" style="margin-bottom: 8px;">
-                上传商品相关资料到AI知识库，AI将基于这些资料自动回复买家咨询
+                需要先配置 AI 与 Embedding。这里适合补充长教程和问答；上方商品知识版本即使未配置向量服务也可使用。
               </div>
 
               <textarea
@@ -803,6 +879,7 @@ onMounted(() => {
               <div class="ar__data-section-header">
                 <span class="ar__data-section-title">现有资料</span>
                 <span v-if="!dataLoading && dataList.length > 0" class="ar__data-section-count">共 {{ dataList.length }} 条</span>
+                <span v-if="dataLastLoadedAt" class="ar__knowledge-loaded">更新于 {{ dataLastLoadedAt }}</span>
                 <button class="btn btn--ghost btn--sm" style="margin-left: auto;" @click="dataVisible = false">
                   返回上传
                 </button>
@@ -812,6 +889,11 @@ onMounted(() => {
                 <div v-if="dataLoading" class="ar__loading">
                   <div class="ar__spinner"></div>
                   <span>加载中...</span>
+                </div>
+
+                <div v-else-if="dataError" class="ar__knowledge-error" role="alert">
+                  <div><strong>扩展语义资料暂不可用</strong><span>{{ dataError }}</span></div>
+                  <button class="btn btn--secondary btn--sm" @click="handleQueryData">重试</button>
                 </div>
 
                 <div v-else-if="dataList.length === 0" class="ar__data-empty">
@@ -857,10 +939,10 @@ onMounted(() => {
                 </div>
               </div>
             </div>
-          </template>
+          </section>
 
           <!-- ====== AI 对话视图 ====== -->
-          <template v-if="replyModeTab === 'ai' && rightTab === 'chat'">
+          <section v-if="replyModeTab === 'ai' && rightTab === 'chat'" id="knowledge-chat-panel" role="tabpanel">
             <div class="ar__chat-container">
               <!-- Chat messages -->
               <div
@@ -915,7 +997,7 @@ onMounted(() => {
                 </button>
               </div>
             </div>
-          </template>
+          </section>
         </div>
       </div>
     </div>

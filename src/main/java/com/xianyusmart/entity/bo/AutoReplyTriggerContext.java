@@ -35,6 +35,10 @@ public class AutoReplyTriggerContext {
      * AI回复时携带的固定资料
      */
     private String fixedMaterial;
+
+    /** 固定资料的不可变版本证据，保证历史回复可追溯。 */
+    private Long knowledgeVersionId;
+    private Integer knowledgeVersionNo;
     
     /**
      * 商品详情

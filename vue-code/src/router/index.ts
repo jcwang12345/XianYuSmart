@@ -4,6 +4,13 @@ import { firstAccessiblePath, hasPermission, isPlatformAdmin, isTenantManager, l
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
+  // BASE-06：进入新业务页从顶部开始；浏览器前进/后退才恢复历史位置。
+  // 详情弹窗自己的列表上下文由对应页面保存，不能让异步刷新反复改写 window 滚动。
+  scrollBehavior(to, _from, savedPosition) {
+    if (savedPosition) return savedPosition
+    if (to.hash) return { el: to.hash, top: 12, behavior: 'smooth' }
+    return { left: 0, top: 0 }
+  },
   routes: [
     {
       path: '/data-panel',

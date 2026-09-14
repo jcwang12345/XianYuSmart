@@ -7,6 +7,7 @@ import com.xianyusmart.event.chatMessageEvent.ChatMessageData;
 import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.service.AIService;
+import com.xianyusmart.service.GoodsKnowledgeService;
 import com.xianyusmart.service.bo.RAGReplyResult;
 import com.xianyusmart.config.rag.DynamicAIChatClientManager;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -41,6 +42,9 @@ public class AIReplyStrategy implements ReplyStrategy {
     @Autowired
     private DynamicAIChatClientManager chatClientManager;
 
+    @Autowired
+    private GoodsKnowledgeService goodsKnowledgeService;
+
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
         long startedAt = System.nanoTime();
@@ -50,7 +54,8 @@ public class AIReplyStrategy implements ReplyStrategy {
 
         try {
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
-            String fixedMaterial = goodsConfig != null ? goodsConfig.getFixedMaterial() : null;
+            GoodsKnowledgeService.ActiveKnowledge knowledge = goodsKnowledgeService.effective(accountId, xyGoodsId);
+            String fixedMaterial = knowledge == null ? null : knowledge.content();
 
             XianyuGoodsInfo goodsInfo = goodsInfoMapper.selectOne(
                     new LambdaQueryWrapper<XianyuGoodsInfo>()
@@ -81,6 +86,10 @@ public class AIReplyStrategy implements ReplyStrategy {
                 replyResult.setConfidenceScore(confidence);
                 replyResult.setModelName(model);
                 replyResult.setProcessingDurationMs((System.nanoTime() - startedAt) / 1_000_000L);
+                if (knowledge != null) {
+                    replyResult.setKnowledgeVersionId(knowledge.id());
+                    replyResult.setKnowledgeVersionNo(knowledge.versionNo());
+                }
                 return replyResult;
             }
             ReplyResult handoff = ReplyResult.handoff(

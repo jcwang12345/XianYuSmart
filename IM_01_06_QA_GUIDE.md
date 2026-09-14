@@ -1,6 +1,6 @@
 # IM-01～06 集成客服独立验收指南
 
-目标版本：`v2.7.0`
+目标版本：`v2.7.1`
 运行环境：macOS 裸机 Java/Vue `http://127.0.0.1:3000`，Docker 仅运行隔离 MySQL 5.7 `127.0.0.1:13306`
 硬验收基线：`IM_01_06_ACCEPTANCE.md`
 
@@ -87,7 +87,16 @@ Content-Type: application/json
 - 覆盖空、加载、接口失败、部分通知源失败、无权限、100 会话、500 条长会话、XSS 文本转义和键盘焦点。
 - 截图不能证明完整无障碍；仍需键盘、焦点、语义和对比度工具检查。
 
-## 7. 开发门禁命令
+## 7. 商品知识版本（IM-04）
+
+- `POST /ai/saveFixedMaterial`：创建不可变的草稿或立即启用版本，必须携带 `qa-` requestId。
+- `POST /ai/getFixedMaterial`：返回当前有效版本、有效时间和版本历史；无有效版本显示 `NO_EFFECTIVE_VERSION`，不把旧的 `fixed_material` 当成当前知识。
+- `POST /ai/fixedMaterial/activate`、`POST /ai/fixedMaterial/expire`：启用与停用必须幂等，精确重放只写一条事件和审计，异载荷复用 requestId 返回 409。
+- 自动回复运行时只读取 `ACTIVE` 且命中生效/失效时间窗口的版本；回复记录保存 `knowledgeVersionId/knowledgeVersionNo`，便于事后还原。
+- 扩展语义资料仍需 AI/Embedding；未配置时必须显示可执行的配置原因，不影响上方本地知识版本。
+- 隔离 E2E 只使用账号 `101` 与 `QA-GOODS-0999`；创建草稿、重放、启用、重放、停用后，最终必须回到“当前无有效版本”，不得触发真实 AI 或平台网络请求。
+
+## 8. 开发门禁命令
 
 ```bash
 scripts/local-toolchain.sh ./mvnw test
@@ -97,9 +106,9 @@ cd vue-code && ../scripts/local-toolchain.sh npm run build-only
 scripts/native-qa.sh logs 240
 ```
 
-MySQL 5.7 升级日志必须显示：验证 43 个迁移、从 V42 应用 V43、schema 到 V43。最终静态资源必须由本提交的 `vue-code` 源码重新生成。
+MySQL 5.7 升级日志必须显示：验证 45 个迁移、已有 v2.7.0 环境从 V43 顺序应用 V44/V45、schema 到 V45。最终静态资源必须由本提交的 `vue-code` 源码重新生成。
 
-## 8. 已知安全降级
+## 9. 已知安全降级
 
 - 商品卡消息没有可靠平台适配，界面不提供假发送入口。
 - 平台历史与买家头像依赖账号 Cookie；Cookie 不可用时保留本地消息并明确同步失败，不把本地 14 条解释为完整平台历史。
