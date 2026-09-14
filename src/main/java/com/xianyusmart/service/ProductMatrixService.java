@@ -208,9 +208,16 @@ public class ProductMatrixService {
         Map<String, Object> response = new LinkedHashMap<>();
         Map<String, Object> basic = products.getFirst();
         enrichWarehouseEvidence(basic);
+        List<Map<String, Object>> skuRows = skus(accountId, goodsId);
+        Map<String, Object> skuEvidence = skuEvidence(basic, skuRows);
+        basic.put("declaredSkuCount", skuEvidence.get("declaredCount"));
+        basic.put("verifiedSkuCount", skuEvidence.get("verifiedCount"));
+        basic.put("skuCoverageStatus", skuEvidence.get("coverageStatus"));
+        basic.put("skuCoverageMessage", skuEvidence.get("message"));
         response.put("basic", basic);
         response.put("orderSummary", orderSummary(accountId, goodsId));
-        response.put("skus", skus(accountId, goodsId));
+        response.put("skus", skuRows);
+        response.put("skuEvidence", skuEvidence);
         response.put("marketing", marketing(accountId, goodsId));
         response.put("metrics", Map.of(
                 "day1", metricWindow(accountId, goodsId, 1),
@@ -755,14 +762,19 @@ public class ProductMatrixService {
             Map<String, Object> sku = new LinkedHashMap<>();
             sku.put("skuKey", rs.getString("sku_key"));
             sku.put("skuText", rs.getString("property_text"));
-            sku.put("price", rs.getBigDecimal("price"));
+            Integer priceInCents = nullableInteger(rs, "price");
+            sku.put("price", priceInCents == null ? null : BigDecimal.valueOf(priceInCents, 2));
             sku.put("stock", nullableInteger(rs, "quantity"));
-            sku.put("platformStatus", null);
-            sku.put("originalPrice", null);
-            sku.put("image", null);
-            sku.put("syncDifference", "平台 SKU 状态和划线价尚未同步");
             sku.put("skuId", rs.getString("sku_id"));
-            sku.put("features", readJson(rs.getString("features")));
+            Object features = readJson(rs.getString("features"));
+            sku.put("features", features);
+            Map<?, ?> featureMap = features instanceof Map<?, ?> map ? map : Map.of();
+            sku.put("platformStatus", featureMap.get("platformStatus"));
+            sku.put("originalPrice", decimal(featureMap.get("originalPrice")));
+            sku.put("image", featureMap.get("image"));
+            sku.put("syncDifference", featureMap.containsKey("platformStatus")
+                    ? "SKU 规格、价格、库存与平台状态已有同步证据"
+                    : "平台 SKU 状态和划线价尚未同步");
             List<Map<String, Object>> fulfillment = jdbcTemplate.queryForList("""
                     SELECT delivery_mode deliveryMode, sku_name skuName, kami_config_ids cardPoolIds,
                            kami_delivery_template deliveryTemplate, update_time updatedTime
@@ -772,6 +784,35 @@ public class ProductMatrixService {
             sku.put("fulfillment", fulfillment.isEmpty() ? null : fulfillment.getFirst());
             return sku;
         }, requireTenant(), accountId, goodsId);
+    }
+
+    static Map<String, Object> skuEvidence(Map<String, Object> basic, List<Map<String, Object>> skuRows) {
+        Integer declaredValue = integer(basic.get("skuCount"));
+        int declared = declaredValue == null ? 0 : Math.max(0, declaredValue);
+        int verified = skuRows == null ? 0 : skuRows.size();
+        String productCoverage = string(basic.get("coverageStatus"));
+        String status;
+        String message;
+        if (declared == verified && declared > 0) {
+            status = "FULL";
+            message = "主档声明数量与已同步 SKU 子项一致";
+        } else if (declared == 0 && verified == 0 && "FULL".equals(productCoverage)) {
+            status = "EMPTY_VERIFIED";
+            message = "平台完整快照确认当前商品没有可拆分 SKU";
+        } else if (declared > 0 && verified == 0) {
+            status = "UNSYNCED";
+            message = "主档声明 " + declared + " 个 SKU，但子项尚未同步；不能视为无 SKU";
+        } else {
+            status = "PARTIAL";
+            message = "主档声明 " + declared + " 个 SKU，已验证 " + verified + " 个；请重新同步商品详情";
+        }
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("declaredCount", declaredValue);
+        evidence.put("verifiedCount", verified);
+        evidence.put("coverageStatus", status);
+        evidence.put("consistent", declaredValue != null && declared == verified);
+        evidence.put("message", message);
+        return evidence;
     }
 
     private Map<String, Object> marketing(Long accountId, String goodsId) {

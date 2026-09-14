@@ -3,6 +3,17 @@
 基线：`XIANYU_MATRIX_PRODUCT_REQUIREMENTS.md` 1.0（2026-09-13）
 原则：以需求编号、优先级和验收标准为准；保留既有工作树；禁止以 `0` 代替未同步数据；禁止对生产店铺执行发布、退款、删除或申诉验证。
 
+## 缺陷批次：XYM-PRD-001 / PRD-02 P02-02、P02-11（2026-09-14）
+
+- 修复 SKU 主档数量与子项明细不一致：API 输出声明数、已验证数、覆盖状态及可执行提示；前端区分真实无规格和未同步子项。
+- SKU 分价转换为元，并读取平台状态、划线价、图片特征及逐 SKU 履约映射。
+- 新增隔离 QA 4 SKU、50 SKU、无 SKU 对照夹具；生产迁移为“无”。
+- 变更文件：`ProductMatrixService.java`、`ProductMatrixServiceTest.java`、`goods/index.vue`、`qa/fixtures/XYM-PRD-001-multi-sku.sql` 及版本/交付文档。
+- 开发测试：定向后端 7 项通过；全量 117 项通过；前端类型检查与 337 模块生产构建通过。
+- 隔离验证：MySQL 5.7 Flyway 35/35；`QA-GOODS-0864` 4/4、`QA-GOODS-0960` 50/50、`QA-GOODS-0000` 0/0 且为 `EMPTY_VERIFIED`；Tenant-B 泄漏记录 0。
+- Product Design QA：Chrome 桌面和 390×844 检查 4/50 SKU 抽屉；一致性提示、单列重排、独立滚动及固定动作区可见，无核心字段裁切。
+- 部署：隔离 QA `http://127.0.0.1:12401` 使用 `xianyusmart:2.3.1`，镜像摘要 `sha256:7aa1ee4b2228563577d0f47b6085889b790423fa14fc3ebd021a21d4fa138dfa`；生产 2000 未改动。
+
 ## 批次 0：现状盘点与基线（2026-09-13）
 
 ### 需求范围

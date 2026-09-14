@@ -67,6 +67,42 @@ class ProductMatrixServiceTest {
     }
 
     @Test
+    void skuEvidenceRejectsDeclaredCountWithoutSyncedChildren() {
+        Map<String, Object> evidence = ProductMatrixService.skuEvidence(
+                Map.of("skuCount", 4, "coverageStatus", "FULL"), List.of());
+
+        assertEquals(4, evidence.get("declaredCount"));
+        assertEquals(0, evidence.get("verifiedCount"));
+        assertEquals("UNSYNCED", evidence.get("coverageStatus"));
+        assertEquals(false, evidence.get("consistent"));
+        assertTrue(String.valueOf(evidence.get("message")).contains("不能视为无 SKU"));
+    }
+
+    @Test
+    void skuEvidenceAcceptsMatchingMultiSkuRows() {
+        List<Map<String, Object>> rows = List.of(Map.of("skuId", "1"), Map.of("skuId", "2"),
+                Map.of("skuId", "3"), Map.of("skuId", "4"));
+
+        Map<String, Object> evidence = ProductMatrixService.skuEvidence(
+                Map.of("skuCount", 4, "coverageStatus", "FULL"), rows);
+
+        assertEquals(4, evidence.get("verifiedCount"));
+        assertEquals("FULL", evidence.get("coverageStatus"));
+        assertEquals(true, evidence.get("consistent"));
+    }
+
+    @Test
+    void skuEvidenceOnlyCallsZeroVerifiedForFullProductCoverage() {
+        Map<String, Object> verifiedEmpty = ProductMatrixService.skuEvidence(
+                Map.of("skuCount", 0, "coverageStatus", "FULL"), List.of());
+        Map<String, Object> unknownEmpty = ProductMatrixService.skuEvidence(
+                Map.of("skuCount", 0, "coverageStatus", "PARTIAL"), List.of());
+
+        assertEquals("EMPTY_VERIFIED", verifiedEmpty.get("coverageStatus"));
+        assertEquals("PARTIAL", unknownEmpty.get("coverageStatus"));
+    }
+
+    @Test
     void batchPreviewShowsExactAccountProductAndConflictScope() {
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(product(0, "PLATFORM_LIST_SYNC")));
         ProductMatrixService.BatchRequest request = request("CHANGE_PRICE", Map.of("price", "19.90"), null);
