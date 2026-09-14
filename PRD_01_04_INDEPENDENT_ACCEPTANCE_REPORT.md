@@ -2,10 +2,10 @@
 
 ## 1. 结论
 
-- 验收基线：`v2.3.0` / `24bd766ab7b6c3048b5e876cb2a4054b0fb08265`
+- 初始验收基线：`v2.3.0` / `24bd766ab7b6c3048b5e876cb2a4054b0fb08265`；最新增量回归：`v2.3.1` / `515950fe7d9eecb435bf678bbf15519056402c3b`
 - 隔离环境：`http://127.0.0.1:12401`，MySQL 5.7.18；健康接口 `UP`，版本接口 `2.3.0`
 - 总体结论：**不通过，禁止出具最终回归完成声明**。
-- 未决问题：`XYM-PRD-001`～`005`，均按 P1 回传开发任务。其中 001～004 为功能/数据缺陷，005 为 PRD-04 安全端到端可验性阻塞。
+- 缺陷状态：`XYM-PRD-001` 已在 v2.3.1 关闭；`XYM-PRD-002～006` 仍未关闭，其中 002～004、006 为功能缺陷，005 为 PRD-04 安全端到端可验性阻塞。
 - 安全边界：未访问生产端口执行写操作；未执行发布、上/下架、改价、改库存、删除、退款、发货、申诉或外部通知。
 - 状态定义：`PASS`=已取得运行证据；`PARTIAL`=仅部分链路或只读证据；`SAFE-DEGRADED`=明确不可用且没有伪成功；`FAIL`=确认缺陷；`BLOCKED`=缺少安全测试路径或浏览器能力。
 
@@ -27,7 +27,7 @@
 | 用例 | 结果 | 证据/说明 |
 |---|---|---|
 | P01-01 状态分栏 | PASS | ALL=1000；ON_SALE/SOLD/OFF_SHELF/OTHER 各 250；DRAFT=0，计数与列表一致 |
-| P01-02 搜索 | PASS | 商品 ID、标题大小写、首尾空格、无结果均符合预期 |
+| P01-02 搜索 | FAIL | goodsId、标题、首尾空格和无结果正常；完整 outerId `QA-OUTER-1` 返回 111 条且目标不在首屏，见 `XYM-PRD-006` |
 | P01-03 组合筛选 | PASS | account=101 + OTHER + MANUAL_IMPORT + QA_MOCK 返回 84 且逐条一致；group=101 返回 334 且仅账号 101 |
 | P01-04 店铺权限 | PASS | operator 对 101=200、102=403；Tenant-B 猜测 Tenant-A 商品=404；support=403；匿名=401 |
 | P01-05 1000 商品 | PARTIAL | API 首屏约 0.06s、总数与分页正确；浏览器滚动与交互性能未实测 |
@@ -46,7 +46,7 @@
 | 用例 | 结果 | 证据/说明 |
 |---|---|---|
 | P02-01 基本信息 | PASS | QA-GOODS-0999 返回商品、店铺、来源、通道、覆盖度及空值语义 |
-| P02-02 多 SKU | FAIL | `XYM-PRD-001`：QA-GOODS-0864 声明 4 SKU，但 API `skus=[]`，租户 1 SKU 表为 0 条 |
+| P02-02 多 SKU | PASS | v2.3.1 回归：QA-GOODS-0864 为 4/4 FULL，价格、库存、平台状态及 4 条履约映射完整；`XYM-PRD-001` 已关闭 |
 | P02-03 无 SKU | PARTIAL | 页面文案不会把缺少子项说成平台 0 SKU；基线缺少“完整快照确认无 SKU”的独立证据 |
 | P02-04 自动发货映射 | SAFE-DEGRADED | 没有真实 SKU/履约夹具，未伪造已配置状态 |
 | P02-05 粉丝价 | SAFE-DEGRADED | 平台营销字段 null/UNSYNCED，界面明确不提供假配置入口 |
@@ -55,7 +55,7 @@
 | P02-08 时间线 diff | FAIL | `XYM-PRD-002`：本地编辑事件仅有 `{mode:LOCAL_ONLY}`，缺字段旧值/新值 |
 | P02-09 Webhook 去重 | BLOCKED | 未提供安全可重放 Webhook 夹具，不能仅凭静态唯一键判定通过 |
 | P02-10 原始快照 | PARTIAL | admin 可读 HASH_ONLY/redacted 元数据；operator=403；隔离数据没有真实脱敏快照内容可核对 |
-| P02-11 长文本/50 SKU | FAIL | 50 SKU 夹具缺失，受 `XYM-PRD-001` 阻塞；长文本浏览器布局亦未实测 |
+| P02-11 长文本/50 SKU | PARTIAL | v2.3.1 的 QA-GOODS-0960 为 50/50 FULL 且 50 条履约映射完整，生产构建通过；独立浏览器滚动/布局仍未实测 |
 | P02-12 状态矩阵 | PARTIAL | API 已覆盖成功、空、部分、未同步、无权限；页面加载/失败视觉状态阻塞 |
 | P02-13 响应式详情 | BLOCKED | 无当前浏览器截图与键盘实测能力 |
 | P02-14 相邻回归 | PARTIAL | 本地编辑后列表 rowVersion/syncStatus 和详情时间线更新；通知链路未验证 |
@@ -116,6 +116,7 @@
 - 实际：`skuCount=4`、`skus=[]`，租户 1 SKU 表总数为 0。
 - 影响：P02-02、P02-11 阻塞。
 - 回传消息：`01a09e74-e2d4-7060-a785-ef0eaa79c97f`；请求 ID：N/A（GET）。
+- 状态：**v2.3.1 回归通过，关闭**。4/4 FULL、50/50 FULL、0/0 EMPTY_VERIFIED、4/0 UNSYNCED 均与数据库一致；双向跨租户详情均 404。
 
 ### XYM-PRD-002（P1）编辑时间线和审计缺旧值/新值
 
@@ -148,6 +149,27 @@
 - 实际：所有 QA 商品 `executableCount=0`；预置任务仅 3 个直接终态，且无商品事件/创建审计；只能得到 Mock 单测证据。
 - 请求 ID：`qa-preview-SYNC-na`、`qa-filter-preview-20260914`；任务 `PB-QA-UI-STATES`。
 - 回传消息：`01a09e82-7b5a-7a10-8edd-162bdd82b12d`。
+
+### XYM-PRD-006（P1）完整 outerId 搜索不能精确定位商品
+
+- 环境：12401 当前候选版接口返回 2.3.1；仓库正式基线仍为 v2.3.0/24bd766。
+- 步骤：先确认 QA-GOODS-0001 的 outerId 为 `QA-OUTER-1`，再以该完整 outerId 查询商品矩阵。
+- 预期：完整唯一 outerId 精确命中或至少将目标置于首位。
+- 实际：total=111，首屏均为其他商品，QA-GOODS-0001 不在首屏。
+- 请求 ID：N/A（只读查询）。
+- 回归建议：goodsId/outerId 完整值优先精确匹配，标题维持模糊；覆盖相似前缀、大小写、空格及分页。
+- 回传方式：应用内任务消息已发送开发任务。
+
+## 7.1 v2.3.1 正式增量回归
+
+- 固定版本：commit/tag 均为 `515950fe7d9eecb435bf678bbf15519056402c3b` / `v2.3.1`；运行镜像 `sha256:7aa1ee4b2228563577d0f47b6085889b790423fa14fc3ebd021a21d4fa138dfa`，healthy，版本接口 2.3.1。
+- `XYM-PRD-001`：正式回归通过并关闭。QA-GOODS-0864=4/4 FULL、QA-GOODS-0960=50/50 FULL、QA-GOODS-0000=0/0 EMPTY_VERIFIED、QA-GOODS-0999=4/0 UNSYNCED；API 与数据库行数、库存及履约映射一致。
+- 跨租户：Tenant-A 猜测账号 201、Tenant-B 猜测账号 101 均返回 404；Tenant-B SKU 表无夹具泄漏。
+- 干净标签快照：ProductMatrixServiceTest 7/7；vue-tsc 与 Vite 337 modules 生产构建通过。
+- `XYM-PRD-002`：请求 `qa-reg-002-edit-20260914` 仍只有 `{mode:LOCAL_ONLY}`，失败；测试商品已用 `qa-reg-002-restore-20260914` 恢复。
+- `XYM-PRD-003`：请求 `qa-reg-003-20260914` 仍返回 500，失败。
+- `XYM-PRD-004`：请求 `qa-reg-004-1.234` 仍返回 200 和 previewToken，失败。
+- P02-11 的 50 SKU 数据量和生产编译已通过；由于当前独立测试会话没有浏览器自动化/截图能力，桌面与 390×844 内部滚动仍保持 BLOCKED，不以静态 CSS 代替视觉证据。
 
 ## 8. 已知限制与后续回归范围
 
