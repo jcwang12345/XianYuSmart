@@ -92,6 +92,8 @@ Content-Type: application/json
 - `POST /ai/saveFixedMaterial`：创建不可变的草稿或立即启用版本，必须携带 `qa-` requestId。
 - `POST /ai/getFixedMaterial`：返回当前有效版本、有效时间和版本历史；无有效版本显示 `NO_EFFECTIVE_VERSION`，不把旧的 `fixed_material` 当成当前知识。
 - `POST /ai/fixedMaterial/activate`、`POST /ai/fixedMaterial/expire`：启用与停用必须幂等，精确重放只写一条事件和审计，异载荷复用 requestId 返回 409。
+- 保存请求指纹覆盖内容、原始生效时间、失效时间、启用方式和来源；五路并发精确重放必须只产生一个版本和一条审计，且只有一个响应为 `idempotentReplay=false`。
+- 时间字段接受浏览器 `datetime-local` 的分钟、秒和毫秒 ISO 形式；格式错误或生失效区间非法必须返回 400，不得落成通用 500。
 - 自动回复运行时只读取 `ACTIVE` 且命中生效/失效时间窗口的版本；回复记录保存 `knowledgeVersionId/knowledgeVersionNo`，便于事后还原。
 - 扩展语义资料仍需 AI/Embedding；未配置时必须显示可执行的配置原因，不影响上方本地知识版本。
 - 隔离 E2E 只使用账号 `101` 与 `QA-GOODS-0999`；创建草稿、重放、启用、重放、停用后，最终必须回到“当前无有效版本”，不得触发真实 AI 或平台网络请求。
@@ -106,7 +108,7 @@ cd vue-code && ../scripts/local-toolchain.sh npm run build-only
 scripts/native-qa.sh logs 240
 ```
 
-MySQL 5.7 升级日志必须显示：验证 45 个迁移、已有 v2.7.0 环境从 V43 顺序应用 V44/V45、schema 到 V45。最终静态资源必须由本提交的 `vue-code` 源码重新生成。
+MySQL 5.7 升级日志必须显示：验证 46 个迁移、已有 v2.7.0 环境从 V43 顺序应用 V44/V45/V46、schema 到 V46。最终静态资源必须由本提交的 `vue-code` 源码重新生成。
 
 ## 9. 已知安全降级
 

@@ -40,7 +40,8 @@ class GoodsKnowledgeServiceTest {
         jdbcTemplate = mock(JdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
-        service = new GoodsKnowledgeService(jdbcTemplate, accountAccessService, operationLogService, new ObjectMapper());
+        service = new GoodsKnowledgeService(jdbcTemplate, accountAccessService, operationLogService,
+                new ObjectMapper(), () -> "test-attempt-token");
         TenantContext.set(8L);
         UserContext.set(12L, "knowledge-tester", 8L);
         when(jdbcTemplate.queryForObject(contains("SELECT COUNT(*) FROM xianyu_goods"), eq(Long.class), any(Object[].class)))
@@ -56,18 +57,22 @@ class GoodsKnowledgeServiceTest {
 
     @Test
     void createsActiveVersionWithoutRequiringAutomationConfig() {
+        LocalDateTime expires = LocalDateTime.now().plusDays(30);
         when(jdbcTemplate.queryForList(contains("WHERE tenant_id=? AND request_id=?"), any(Object[].class)))
                 .thenReturn(List.of());
         when(jdbcTemplate.queryForList(contains("FROM xianyu_goods\n"), any(Object[].class)))
                 .thenReturn(List.of(Map.of("id", 77L)));
         when(jdbcTemplate.queryForObject(contains("COALESCE(MAX(version_no)"), eq(Integer.class), any(Object[].class)))
                 .thenReturn(1);
-        when(jdbcTemplate.queryForMap(contains("version_no=?"), any(Object[].class)))
+        when(jdbcTemplate.queryForMap(contains("WHERE tenant_id=? AND request_id=?"), any(Object[].class)))
+                .thenReturn(requestRow(41L, "七天有效，首次激活起算", expires, true,
+                        "test-attempt-token", "LEGACY"));
+        when(jdbcTemplate.queryForMap(contains("WHERE tenant_id=? AND id=?"), any(Object[].class)))
                 .thenReturn(version(41L, 1, "ACTIVE", "七天有效，首次激活起算"));
 
         Map<String, Object> result = service.save(new GoodsKnowledgeService.SaveCommand(
                 101L, "QA-GOODS-1", "七天有效，首次激活起算", null,
-                LocalDateTime.now().plusDays(30), true, "MANUAL", "qa-knowledge-save-1"));
+                expires, true, "MANUAL", "qa-knowledge-save-1"));
 
         assertEquals(false, result.get("idempotentReplay"));
         verify(accountAccessService).requireAccess(101L);
@@ -76,18 +81,61 @@ class GoodsKnowledgeServiceTest {
     }
 
     @Test
-    void sameRequestReturnsOriginalVersionWithoutSecondInsert() {
+    void sameExactRequestReturnsOriginalVersionWithoutSecondInsert() {
+        LocalDateTime expires = LocalDateTime.now().plusDays(1);
+        String payloadHash = service.payloadHash(101L, "QA-GOODS-1", "原版本", null,
+                expires, true, "MANUAL");
         when(jdbcTemplate.queryForList(contains("WHERE tenant_id=? AND request_id=?"), any(Object[].class)))
-                .thenReturn(List.of(Map.of("id", 41L, "accountId", 101L, "goodsId", "QA-GOODS-1")));
+                .thenReturn(List.of(requestRow(41L, "原版本", expires, true, "first-token", payloadHash)));
         when(jdbcTemplate.queryForMap(contains("WHERE tenant_id=? AND id=?"), any(Object[].class)))
                 .thenReturn(version(41L, 1, "ACTIVE", "原版本"));
 
         Map<String, Object> result = service.save(new GoodsKnowledgeService.SaveCommand(
-                101L, "QA-GOODS-1", "重放内容", null, null, true, "MANUAL", "qa-knowledge-save-1"));
+                101L, "QA-GOODS-1", "原版本", null, expires, true, "MANUAL", "qa-knowledge-save-1"));
 
         assertEquals(true, result.get("idempotentReplay"));
         assertEquals("原版本", result.get("content"));
         verify(jdbcTemplate, never()).update(contains("INSERT INTO xianyu_goods_knowledge_version"), any(Object[].class));
+    }
+
+    @Test
+    void sameRequestWithDifferentContentReturnsConflict() {
+        LocalDateTime expires = LocalDateTime.now().plusDays(1);
+        when(jdbcTemplate.queryForList(contains("WHERE tenant_id=? AND request_id=?"), any(Object[].class)))
+                .thenReturn(List.of(requestRow(41L, "原版本", expires, true, "first-token", "LEGACY")));
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.save(
+                new GoodsKnowledgeService.SaveCommand(101L, "QA-GOODS-1", "不同内容", null,
+                        expires, true, "MANUAL", "qa-knowledge-save-1")));
+
+        assertEquals(409, error.getCode());
+        verify(jdbcTemplate, never()).update(contains("INSERT INTO xianyu_goods_knowledge_version"), any(Object[].class));
+    }
+
+    @Test
+    void sameRequestWithDifferentExpiryReturnsConflict() {
+        LocalDateTime expires = LocalDateTime.now().plusDays(1);
+        when(jdbcTemplate.queryForList(contains("WHERE tenant_id=? AND request_id=?"), any(Object[].class)))
+                .thenReturn(List.of(requestRow(41L, "原版本", expires, false, "first-token", "LEGACY")));
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.save(
+                new GoodsKnowledgeService.SaveCommand(101L, "QA-GOODS-1", "原版本", null,
+                        expires.plusHours(1), false, "MANUAL", "qa-knowledge-save-1")));
+
+        assertEquals(409, error.getCode());
+    }
+
+    @Test
+    void sameRequestWithDifferentActivationModeReturnsConflict() {
+        LocalDateTime expires = LocalDateTime.now().plusDays(1);
+        when(jdbcTemplate.queryForList(contains("WHERE tenant_id=? AND request_id=?"), any(Object[].class)))
+                .thenReturn(List.of(requestRow(41L, "原版本", expires, false, "first-token", "LEGACY")));
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.save(
+                new GoodsKnowledgeService.SaveCommand(101L, "QA-GOODS-1", "原版本", null,
+                        expires, true, "MANUAL", "qa-knowledge-save-1")));
+
+        assertEquals(409, error.getCode());
     }
 
     @Test
@@ -130,6 +178,22 @@ class GoodsKnowledgeServiceTest {
         row.put("requestId", "qa-knowledge-save-1");
         row.put("createdUsername", "knowledge-tester");
         row.put("createdTime", LocalDateTime.now());
+        return row;
+    }
+
+    private Map<String, Object> requestRow(Long id, String content, LocalDateTime expires,
+                                           boolean activated, String attemptToken, String payloadHash) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", id);
+        row.put("accountId", 101L);
+        row.put("goodsId", "QA-GOODS-1");
+        row.put("content", content);
+        row.put("sourceType", "MANUAL");
+        row.put("effectiveTime", LocalDateTime.now().minusMinutes(1));
+        row.put("expiresTime", expires);
+        row.put("activatedTime", activated ? LocalDateTime.now() : null);
+        row.put("requestPayloadHash", payloadHash);
+        row.put("requestAttemptToken", attemptToken);
         return row;
     }
 }

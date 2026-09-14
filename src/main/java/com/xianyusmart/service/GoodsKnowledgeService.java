@@ -5,14 +5,22 @@ import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
+import java.util.function.Supplier;
 
 /** IM-04 商品级版本化知识；AI 只能读取当前处于有效区间的 ACTIVE 版本。 */
 @Service
@@ -22,15 +30,27 @@ public class GoodsKnowledgeService {
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
     private final ObjectMapper objectMapper;
+    private final Supplier<String> requestAttemptTokenSupplier;
 
+    @Autowired
     public GoodsKnowledgeService(JdbcTemplate jdbcTemplate,
                                  AccountAccessService accountAccessService,
                                  OperationLogService operationLogService,
                                  ObjectMapper objectMapper) {
+        this(jdbcTemplate, accountAccessService, operationLogService, objectMapper,
+                () -> UUID.randomUUID().toString());
+    }
+
+    GoodsKnowledgeService(JdbcTemplate jdbcTemplate,
+                          AccountAccessService accountAccessService,
+                          OperationLogService operationLogService,
+                          ObjectMapper objectMapper,
+                          Supplier<String> requestAttemptTokenSupplier) {
         this.jdbcTemplate = jdbcTemplate;
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
+        this.requestAttemptTokenSupplier = requestAttemptTokenSupplier;
     }
 
     @Transactional
@@ -46,43 +66,60 @@ public class GoodsKnowledgeService {
             throw new BusinessException(400, "失效时间必须晚于生效时间");
         }
         boolean activate = command.activate() == null || command.activate();
+        String sourceType = source(command.sourceType());
+        String payloadHash = payloadHash(accountId, goodsId, content, command.effectiveTime(),
+                expiresTime, activate, sourceType);
         if (activate && effectiveTime.isAfter(LocalDateTime.now().plusSeconds(5))) {
             throw new BusinessException(400, "立即启用的版本不能设置为未来生效；请先保存草稿后再启用");
         }
-        List<Map<String, Object>> replay = jdbcTemplate.queryForList("""
-                SELECT id,xianyu_account_id accountId,xy_goods_id goodsId
-                  FROM xianyu_goods_knowledge_version WHERE tenant_id=? AND request_id=?
-                """, tenant(), requestId);
-        if (!replay.isEmpty()) {
-            Map<String, Object> prior = replay.getFirst();
-            if (!accountId.equals(number(prior.get("accountId"))) || !goodsId.equals(String.valueOf(prior.get("goodsId")))) {
-                throw new BusinessException(409, "requestId 已用于其他商品知识版本");
-            }
-            Map<String, Object> result = version(number(prior.get("id")));
-            result.put("idempotentReplay", true);
-            return result;
-        }
+        Map<String, Object> replay = saveReplay(accountId, goodsId, content, command.effectiveTime(),
+                expiresTime, activate, sourceType, payloadHash, requestId, false);
+        if (replay != null) return replay;
         // Lock the product rather than the optional automation config. Knowledge can be prepared
         // before auto-reply is enabled, and the lock serializes version_no allocation per product.
         jdbcTemplate.queryForList("""
                 SELECT id FROM xianyu_goods
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=? FOR UPDATE
                 """, tenant(), accountId, goodsId);
+        // A concurrent exact replay for the same product waits on the product lock. Re-check after
+        // acquiring it so only the winning request allocates a version or supersedes active data.
+        replay = saveReplay(accountId, goodsId, content, command.effectiveTime(), expiresTime,
+                activate, sourceType, payloadHash, requestId, true);
+        if (replay != null) return replay;
         Integer versionNo = jdbcTemplate.queryForObject("""
                 SELECT COALESCE(MAX(version_no),0)+1 FROM xianyu_goods_knowledge_version
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
                 """, Integer.class, tenant(), accountId, goodsId);
-        if (activate) supersedeActive(accountId, goodsId, null);
+        String attemptToken = required(requestAttemptTokenSupplier.get(), "请求尝试标识", 64);
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_knowledge_version
                     (tenant_id,xianyu_account_id,xy_goods_id,version_no,content,source_type,status,
-                     effective_time,expires_time,activated_time,created_by,created_username,request_id)
-                VALUES (?,?,?,?,?,?,?,?,?,IF(?='ACTIVE',NOW(3),NULL),?,?,?)
-                """, tenant(), accountId, goodsId, versionNo, content, source(command.sourceType()),
-                activate ? "ACTIVE" : "DRAFT", effectiveTime, expiresTime, activate ? "ACTIVE" : "DRAFT",
-                UserContext.getUserId(), UserContext.getUsername(), requestId);
-        Map<String, Object> created = versionByNumber(accountId, goodsId, versionNo);
-        if (activate) updateActiveConfig(accountId, goodsId, number(created.get("id")), content);
+                     effective_time,expires_time,activated_time,created_by,created_username,request_id,
+                     request_payload_hash,request_attempt_token)
+                VALUES (?,?,?,?,?,?,'DRAFT',?,?,NULL,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+                """, tenant(), accountId, goodsId, versionNo, content, sourceType,
+                effectiveTime, expiresTime, UserContext.getUserId(), UserContext.getUsername(), requestId,
+                payloadHash, attemptToken);
+        Map<String, Object> persisted = requestRow(requestId, true);
+        validateReplayPayload(persisted, accountId, goodsId, content, command.effectiveTime(), expiresTime,
+                activate, sourceType, payloadHash);
+        if (!attemptToken.equals(String.valueOf(persisted.get("requestAttemptToken")))) {
+            Map<String, Object> result = version(number(persisted.get("id")));
+            result.put("idempotentReplay", true);
+            return result;
+        }
+        Long versionId = number(persisted.get("id"));
+        if (activate) {
+            supersedeActive(accountId, goodsId, versionId);
+            jdbcTemplate.update("""
+                    UPDATE xianyu_goods_knowledge_version
+                       SET status='ACTIVE',activated_time=NOW(3),invalidated_time=NULL
+                     WHERE tenant_id=? AND id=?
+                    """, tenant(), versionId);
+            updateActiveConfig(accountId, goodsId, versionId, content);
+        }
+        Map<String, Object> created = version(versionId);
         audit("GOODS_KNOWLEDGE_VERSION_CREATE", created, requestId,
                 Map.of("versionNo", versionNo, "activate", activate), "LOCAL_SUCCESS");
         created.put("idempotentReplay", false);
@@ -237,18 +274,82 @@ public class GoodsKnowledgeService {
                        activated_time activatedTime,invalidated_time invalidatedTime,request_id requestId,
                        created_username createdUsername,created_time createdTime
                   FROM xianyu_goods_knowledge_version WHERE tenant_id=? AND id=?
+                 FOR UPDATE
                 """, tenant(), id));
     }
 
-    private Map<String, Object> versionByNumber(Long accountId, String goodsId, Integer versionNo) {
+    private Map<String, Object> saveReplay(Long accountId, String goodsId, String content,
+                                           LocalDateTime requestedEffectiveTime, LocalDateTime expiresTime,
+                                           boolean activate, String sourceType, String payloadHash,
+                                           String requestId, boolean forUpdate) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id,xianyu_account_id accountId,xy_goods_id goodsId,content,source_type sourceType,
+                       effective_time effectiveTime,expires_time expiresTime,activated_time activatedTime,
+                       request_payload_hash requestPayloadHash,request_attempt_token requestAttemptToken
+                  FROM xianyu_goods_knowledge_version WHERE tenant_id=? AND request_id=?
+                """ + (forUpdate ? " FOR UPDATE" : ""), tenant(), requestId);
+        if (rows.isEmpty()) return null;
+        Map<String, Object> prior = new LinkedHashMap<>(rows.getFirst());
+        validateReplayPayload(prior, accountId, goodsId, content, requestedEffectiveTime, expiresTime,
+                activate, sourceType, payloadHash);
+        Map<String, Object> result = version(number(prior.get("id")));
+        result.put("idempotentReplay", true);
+        return result;
+    }
+
+    private Map<String, Object> requestRow(String requestId, boolean forUpdate) {
         return new LinkedHashMap<>(jdbcTemplate.queryForMap("""
-                SELECT id,xianyu_account_id accountId,xy_goods_id goodsId,version_no versionNo,content,status,
-                       source_type sourceType,effective_time effectiveTime,expires_time expiresTime,
-                       activated_time activatedTime,invalidated_time invalidatedTime,request_id requestId,
-                       created_username createdUsername,created_time createdTime
-                  FROM xianyu_goods_knowledge_version
-                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=? AND version_no=?
-                """, tenant(), accountId, goodsId, versionNo));
+                SELECT id,xianyu_account_id accountId,xy_goods_id goodsId,content,source_type sourceType,
+                       effective_time effectiveTime,expires_time expiresTime,activated_time activatedTime,
+                       request_payload_hash requestPayloadHash,request_attempt_token requestAttemptToken
+                  FROM xianyu_goods_knowledge_version WHERE tenant_id=? AND request_id=?
+                """ + (forUpdate ? " FOR UPDATE" : ""), tenant(), requestId));
+    }
+
+    private void validateReplayPayload(Map<String, Object> prior, Long accountId, String goodsId,
+                                       String content, LocalDateTime requestedEffectiveTime,
+                                       LocalDateTime expiresTime, boolean activate, String sourceType,
+                                       String payloadHash) {
+        if (!accountId.equals(number(prior.get("accountId")))
+                || !goodsId.equals(String.valueOf(prior.get("goodsId")))) {
+            throw new BusinessException(409, "requestId 已用于其他商品知识版本");
+        }
+        String persistedHash = prior.get("requestPayloadHash") == null
+                ? "" : String.valueOf(prior.get("requestPayloadHash"));
+        if (!persistedHash.isBlank() && !"LEGACY".equals(persistedHash)) {
+            if (!payloadHash.equals(persistedHash)) {
+                throw new BusinessException(409, "requestId 已用于不同的商品知识内容或有效期");
+            }
+            return;
+        }
+        boolean legacyActivate = prior.get("activatedTime") != null;
+        boolean legacyMatch = content.equals(String.valueOf(prior.get("content")))
+                && sourceType.equals(String.valueOf(prior.get("sourceType")))
+                && Objects.equals(expiresTime, localTime(prior.get("expiresTime")))
+                && (requestedEffectiveTime == null
+                    || Objects.equals(requestedEffectiveTime, localTime(prior.get("effectiveTime"))))
+                && activate == legacyActivate;
+        if (!legacyMatch) {
+            throw new BusinessException(409, "requestId 已用于不同的商品知识请求");
+        }
+    }
+
+    String payloadHash(Long accountId, String goodsId, String content,
+                       LocalDateTime requestedEffectiveTime, LocalDateTime expiresTime,
+                       boolean activate, String sourceType) {
+        String canonical = field(accountId) + field(goodsId) + field(content) +
+                field(requestedEffectiveTime) + field(expiresTime) + field(activate) + field(sourceType);
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 不可用", e);
+        }
+    }
+
+    private String field(Object value) {
+        String text = value == null ? "<null>" : String.valueOf(value);
+        return text.length() + ":" + text + "|";
     }
 
     private Map<String, Object> actionReplay(Long versionId, String actionType, String requestId) {

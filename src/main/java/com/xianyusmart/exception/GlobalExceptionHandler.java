@@ -3,6 +3,7 @@ package com.xianyusmart.exception;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.HashMap;
@@ -33,6 +34,15 @@ public class GlobalExceptionHandler {
         Map<String, Object> result = new HashMap<>();
         result.put("code", 400);
         result.put("message", e.getMessage());
+        return result;
+    }
+
+    /** JSON 结构或日期格式不合法属于用户输入错误，不应伪装成 500。 */
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public Map<String, Object> handleHttpMessageNotReadableException(HttpMessageNotReadableException e) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 400);
+        result.put("message", "请求参数格式错误，请检查日期时间和字段类型");
         return result;
     }
     

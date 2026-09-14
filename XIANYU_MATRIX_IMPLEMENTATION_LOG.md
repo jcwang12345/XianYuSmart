@@ -521,6 +521,7 @@
 
 - `V44__ai_handoff_open_attempt_token.sql`：转人工任务增加打开尝试所有权标识，避免 MySQL affected-row 语义导致首次请求被误判为重放。
 - `V45__goods_knowledge_versions.sql`：增加商品知识版本、版本操作请求幂等表，并在自动回复记录中保存知识版本 ID/版本号。
+- `V46__goods_knowledge_request_fingerprint.sql`：为保存请求增加 SHA-256 载荷指纹和内部尝试所有权标识，修复 `XYM-IM-004` 异载荷重放与并发单赢家语义。
 - `GoodsKnowledgeService`：支持草稿、启用、失效、生失效窗口、并发版本号、同请求精确重放与异载荷 409，写入商品事件和统一审计。
 - AI 与关键词润色策略改为只消费当前有效版本；过期/已停用内容不再从旧 `fixed_material` 泄漏进提示词。
 - 前端增加软件商品模板、草稿/立即启用、有效期、版本历史、启用/停用、持久错误与重试；扩展语义资料保持 AI/Embedding 未配置时的明确降级。
@@ -528,10 +529,10 @@
 
 ### 验证结果
 
-- 完整后端回归：`scripts/local-toolchain.sh ./mvnw -Dmaven.repo.local=/Volumes/Data/codex/xianyu/.tools/m2 test`，182 项通过，0 失败、0 错误、0 跳过。
+- 完整后端回归：`scripts/local-toolchain.sh ./mvnw -Dmaven.repo.local=/Volumes/Data/codex/xianyu/.tools/m2 test`，最终 187 项通过，0 失败、0 错误、0 跳过。
 - 前端：`npm run type-check` 通过；`npm run build-only` 通过，352 个模块；最终静态资源已从当前源码重新生成。
 - 打包：`./mvnw -DskipTests package` 成功；裸机 macOS 应用启动于 `127.0.0.1:3000`，Docker 仅运行 MySQL 5.7 `127.0.0.1:13306`。
-- 升级验证：MySQL 5.7 日志证明现有 schema 从 V43 成功应用 V44，再从 V44 应用 V45；最终验证 45 个迁移并处于 schema V45。
+- 升级验证：MySQL 5.7 日志证明现有 schema 从 V43 成功应用 V44，再从 V44 应用 V45/V46；最终验证 46 个迁移并处于 schema V46。
 - 隔离 API E2E：`qa-im-idem-v271-20260915` 首次任务 ID 12、`idempotentReplay=false`，重放同任务且为 `true`；响应明确 `platformNetworkCalls=false`、`aiNetworkCalls=false`。
 - 知识版本 E2E：草稿/启用/停用及各自重放通过；最终为 `NO_EFFECTIVE_VERSION`、保留 1 条 `EXPIRED` 历史。创建、启用、停用 requestId 的统一审计总数各为 1。
 - Product Design 开发侧 QA：实际页面验证商品选择、版本空态、已停用历史、有效期、保存策略、安全降级和 tab/tabpanel 语义；窄屏鼠标滚轮可停在页面底部，路由切换后新页面回到顶部。截图不替代键盘、对比度和读屏工具验证。
@@ -541,3 +542,9 @@
 - 扩展语义检索需要配置 AI/Embedding；本地商品知识版本不依赖该服务。
 - 未调用真实 AI、闲鱼、企业微信或邮件；测试数据只在 Tenant-A 账号 101 与 `QA-` 商品/会话范围。
 - 本地内置浏览器当次无法产生真实 4K CSS 视口；4K 依赖此前证据与静态响应式检查，需独立测试再次实机验证。
+
+### 独立测试缺陷回归（XYM-IM-004/005）
+
+- `XYM-IM-004`：根因为旧重放分支只比较账号和商品。现以长度编码后的账号、商品、内容、原始生效时间、失效时间、启用方式和来源生成 SHA-256；异载荷返回 409。五路并发 E2E 全部 code 200，版本 ID 唯一、首次 1/重放 4，统一审计 total=1。
+- 并发回归曾发现 MySQL `REPEATABLE READ` 下锁定读取到赢家后，普通快照查询仍看不到新行。版本回读改为当前锁定读，消除并发中的两个 500；不用重试掩盖该竞态。
+- `XYM-IM-005`：DTO 局部接受 `yyyy-MM-dd'T'HH:mm[:ss][.SSS]`；新增用例覆盖分钟/秒/毫秒和非法格式，全局 `HttpMessageNotReadableException` 映射为可读 400。API E2E 证明 ISO 毫秒可保存，非法生失效区间返回 400，坏格式也返回 400。

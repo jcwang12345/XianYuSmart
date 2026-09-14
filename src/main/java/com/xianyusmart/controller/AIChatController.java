@@ -9,6 +9,7 @@ import com.xianyusmart.service.AIService;
 import com.xianyusmart.service.GoodsKnowledgeService;
 import com.xianyusmart.service.GoodsInfoService;
 import com.xianyusmart.service.bo.RAGDataRespBO;
+import com.fasterxml.jackson.annotation.JsonFormat;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -155,7 +156,9 @@ public class AIChatController {
         private Long accountId;
         private String goodsId;
         private String fixedMaterial;
+        @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm[:ss][.SSS]")
         private LocalDateTime effectiveTime;
+        @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm[:ss][.SSS]")
         private LocalDateTime expiresTime;
         private Boolean activate;
         private String requestId;
