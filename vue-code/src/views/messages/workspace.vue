@@ -474,10 +474,10 @@ const loadHandoffs = async (silent = false) => {
   }
 }
 
-const switchInbox = async (mode: 'conversations' | 'notifications' | 'handoffs') => {
+const switchInbox = (mode: 'conversations' | 'notifications' | 'handoffs') => {
   inboxMode.value = mode
-  if (mode === 'notifications') await loadSupportNotifications()
-  if (mode === 'handoffs') await loadHandoffs()
+  if (mode === 'notifications') void loadSupportNotifications()
+  if (mode === 'handoffs') void loadHandoffs()
 }
 
 const inboxTabs: Array<'conversations' | 'notifications' | 'handoffs'> = ['conversations', 'notifications', 'handoffs']
@@ -490,7 +490,7 @@ const moveInboxFocus = async (event: KeyboardEvent, current: 'conversations' | '
     ? edgeIndex
     : (inboxTabs.indexOf(current) + direction + inboxTabs.length) % inboxTabs.length
   const nextMode = inboxTabs[nextIndex]!
-  await switchInbox(nextMode)
+  switchInbox(nextMode)
   await nextTick()
   document.getElementById(`support-tab-${nextMode}`)?.focus()
 }
