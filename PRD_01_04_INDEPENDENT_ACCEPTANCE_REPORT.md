@@ -2,10 +2,10 @@
 
 ## 1. 结论
 
-- 初始验收基线：`v2.3.0` / `24bd766ab7b6c3048b5e876cb2a4054b0fb08265`；最新增量回归：`v2.3.1` / `515950fe7d9eecb435bf678bbf15519056402c3b`
-- 隔离环境：`http://127.0.0.1:12401`，MySQL 5.7.18；健康接口 `UP`，版本接口 `2.3.0`
+- 初始验收基线：`v2.3.0` / `24bd766ab7b6c3048b5e876cb2a4054b0fb08265`；最新增量回归：`v2.3.2` / `bec214b119113d1185a3bfe95800e17d5c28ac92`
+- 隔离环境：`http://127.0.0.1:12401`，MySQL 5.7.18；健康接口 `UP`，版本接口 `2.3.2`
 - 总体结论：**不通过，禁止出具最终回归完成声明**。
-- 缺陷状态：`XYM-PRD-001` 已在 v2.3.1 关闭；`XYM-PRD-002～006` 仍未关闭，其中 002～004、006 为功能缺陷，005 为 PRD-04 安全端到端可验性阻塞。
+- 缺陷状态：`XYM-PRD-001`、`XYM-PRD-002` 已分别在 v2.3.1、v2.3.2 关闭；`XYM-PRD-003～006` 仍未关闭，其中 003、004、006 为功能缺陷，005 为 PRD-04 安全端到端可验性阻塞。
 - 安全边界：未访问生产端口执行写操作；未执行发布、上/下架、改价、改库存、删除、退款、发货、申诉或外部通知。
 - 状态定义：`PASS`=已取得运行证据；`PARTIAL`=仅部分链路或只读证据；`SAFE-DEGRADED`=明确不可用且没有伪成功；`FAIL`=确认缺陷；`BLOCKED`=缺少安全测试路径或浏览器能力。
 
@@ -52,7 +52,7 @@
 | P02-05 粉丝价 | SAFE-DEGRADED | 平台营销字段 null/UNSYNCED，界面明确不提供假配置入口 |
 | P02-06 小刀/闲鱼币 | SAFE-DEGRADED | 同上，明确平台适配器未接入 |
 | P02-07 1/7/30 天 | PASS | 三窗口返回独立 windowDays；未同步指标均为 null、coverageStatus=UNSYNCED |
-| P02-08 时间线 diff | FAIL | `XYM-PRD-002`：本地编辑事件仅有 `{mode:LOCAL_ONLY}`，缺字段旧值/新值 |
+| P02-08 时间线 diff | PASS | v2.3.2 回归：本地资料及自动化事件均只列出实际变化字段，before/after/fieldDiff、请求 ID、操作者和结果层完整；`XYM-PRD-002` 已关闭 |
 | P02-09 Webhook 去重 | BLOCKED | 未提供安全可重放 Webhook 夹具，不能仅凭静态唯一键判定通过 |
 | P02-10 原始快照 | PARTIAL | admin 可读 HASH_ONLY/redacted 元数据；operator=403；隔离数据没有真实脱敏快照内容可核对 |
 | P02-11 长文本/50 SKU | PARTIAL | v2.3.1 的 QA-GOODS-0960 为 50/50 FULL 且 50 条履约映射完整，生产构建通过；独立浏览器滚动/布局仍未实测 |
@@ -72,9 +72,9 @@
 | P03-06 删除 | PARTIAL | 预检含精确店铺/商品与“删除不可恢复”，权限层有独立 DELETE 权限；未执行删除 |
 | P03-07 超时未知 | PASS | 精确基线单测确认平台超时持久化 UNKNOWN、无自动重试；预置任务含 UNKNOWN/platformRequestId |
 | P03-08 本地待修复 | PASS | 精确基线单测确认平台成功、本地更新失败为 `PLATFORM_CONFIRMED_LOCAL_PENDING` |
-| P03-09 自动化配置 | FAIL | `XYM-PRD-003`：保存返回 500，日志为 `xianyu_auto_rate_content` 无默认值 |
+| P03-09 自动化配置 | PARTIAL | v2.3.2 本轮保存与恢复已成功，不再返回 500；但 `XYM-PRD-003` 的重复请求幂等与优先级专项尚未正式回归关闭 |
 | P03-10 细粒度权限 | PASS | admin/operator/support/Tenant-B/匿名 API 与店铺范围符合预期；高危权限后端独立拦截 |
-| P03-11 审计 | FAIL | `XYM-PRD-002`：操作审计有操作者、账号、请求 ID、结果层，但缺编辑旧值 |
+| P03-11 审计 | PASS | v2.3.2 回归：target、账号、操作者、请求 ID、LOCAL 结果、before/requestedChanges/after/fieldDiff 均完整 |
 | P03-12 双击/并发 | PARTIAL | 两次使用旧 rowVersion 第二次=409；平台幂等写入因安全边界未执行 |
 | P03-13 错误恢复 | BLOCKED | 表单保留与安全重试提示需浏览器故障注入实测 |
 | P03-14 相邻回归 | PARTIAL | 本地编辑后 PRD-01/02 数据一致；站内通知未验证 |
@@ -125,6 +125,7 @@
 - 预期：逐字段旧值、新值、操作者、账号、请求 ID、本地/平台结果齐全。
 - 实际：事件 `fieldDiff` 仅 `{mode:LOCAL_ONLY}`；审计请求/响应只有新值，没有旧值。
 - 回传消息：`01a09e75-bea6-7381-aa31-47c8331b33be`。
+- 状态：**v2.3.2 回归通过，关闭**。本地资料与自动化配置各改变 3 个字段，事件和审计均返回精确 before/after/fieldDiff；恢复事件也完整，最终商品与配置已恢复原值。
 
 ### XYM-PRD-003（P1）自动化配置保存 500
 
@@ -170,6 +171,17 @@
 - `XYM-PRD-003`：请求 `qa-reg-003-20260914` 仍返回 500，失败。
 - `XYM-PRD-004`：请求 `qa-reg-004-1.234` 仍返回 200 和 previewToken，失败。
 - P02-11 的 50 SKU 数据量和生产编译已通过；由于当前独立测试会话没有浏览器自动化/截图能力，桌面与 390×844 内部滚动仍保持 BLOCKED，不以静态 CSS 代替视觉证据。
+
+## 7.2 v2.3.2 正式增量回归
+
+- 固定版本：commit/tag 为 `bec214b119113d1185a3bfe95800e17d5c28ac92` / `v2.3.2`；运行镜像 `sha256:016c17797b9650e177f2b5c0c6db0606d11938028e3ab11aa876ba575804b7c3`，healthy，版本接口 2.3.2。
+- 本地资料请求 `qa-reg-002-independent-local-v232`：title、supportPolicy、location 三个实际变化字段均有 before/after，changedFieldCount=3；事件含操作者、请求 ID、LOCAL_SUCCESS/LOCAL。使用 `qa-reg-002-independent-local-restore-v232` 成功恢复，恢复事件 diff 方向正确。
+- 自动化请求 `qa-reg-002-independent-automation-v232`：自动发货、自动回复、自动擦亮三个实际变化字段均有 before/after，changedFieldCount=3；未变化的自动评价、人工接管没有误列入 diff。使用 `qa-reg-002-independent-automation-restore-v232` 成功恢复。
+- 两条统一审计均命中且包含 operationType/module、PRODUCT target、account=101、operator、requestId、outcomeState=LOCAL_SUCCESS、dataSource=LOCAL，以及 before/requestedChanges/after/fieldDiff。
+- 最终只读确认：标题恢复为 QA Product 0999，支持政策和所在地为空，五个自动化开关均为 false。
+- 干净标签快照：ProductMatrixServiceTest 10/10；vue-tsc 与 Vite 337 modules 生产构建通过。
+- `XYM-PRD-002`：P02-08/P03-11 接口、事件和审计回归通过，状态关闭。前端已连接字段级数据且生产编译通过；当前测试会话仍无法独立补充桌面/390px 截图，因此视觉证据沿用开发设计 QA，不作为本次功能缺陷关闭的替代依据。
+- 自动化保存 500 在本轮未再出现，但 `XYM-PRD-003` 还包含重复请求幂等和优先级验证，保持独立待回归状态。
 
 ## 8. 已知限制与后续回归范围
 
