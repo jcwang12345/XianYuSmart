@@ -26,6 +26,15 @@ public class GlobalExceptionHandler {
         result.put("message", e.getMessage());
         return result;
     }
+
+    /** 用户提交的枚举、边界和格式错误统一按 400 返回，不能伪装成系统故障。 */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public Map<String, Object> handleIllegalArgumentException(IllegalArgumentException e) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 400);
+        result.put("message", e.getMessage());
+        return result;
+    }
     
     /**
      * 处理验证码异常

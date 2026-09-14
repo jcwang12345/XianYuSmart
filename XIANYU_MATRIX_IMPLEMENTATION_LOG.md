@@ -364,3 +364,34 @@
 
 - 不调用闲鱼退款、退货、换货、补发平台写接口；所有保存响应明确 `platformWrite=NOT_PERFORMED`。
 - 不使用生产店铺做破坏性验证；开发与独立测试仅使用 Tenant-A 的 QA 白名单订单。
+
+## 批次 9：PUB-01～03 发布真实性与隔离验收通道（v2.5.0）
+
+### 本批基线
+
+- 新增 `PUB_01_03_ACCEPTANCE.md`，细化多通道、发布表单/预检、发布结果/补偿的 30 项硬验收。
+- 明确叶子类目、原价、成色、outerId、完整类目属性、视频与多 SKU 的现存平台适配缺口；无证据能力继续安全降级。
+
+### 已完成的后端收口
+
+- 发布通道能力改为读取 `capabilities_json` 证据；没有 SKU 探测证据时返回 `NOT_VERIFIED`，不再默认 READY。
+- 前后端发布接口权限统一到商品菜单和商品写权限。
+- 发布请求新增业务载荷 SHA-256 指纹；同请求同载荷复用任务，不同载荷返回 409，并处理数据库唯一键并发赢家。
+- 新增仅限 QA profile、显式开关、Tenant-A、账号 101/102/103、`QA_LOCAL` 和 `QA-PUBLISH-` 标题前缀的隔离发布适配器。
+- QA SUCCESS/LOCAL_PENDING/UNKNOWN 均明确 `QA_FIXTURE/QA_MOCK`，平台网络与平台写调用为 0；UNKNOWN 最大尝试次数为 1。
+- 发布任务的统一审计开始写入请求 ID、幂等键、结果层和数据来源；商品事件区分真实平台与 QA 夹具。
+
+### 验证结果
+
+- 最终 Docker 构建：前端类型检查和生产构建通过，338 个模块；Maven 153 项测试通过，0 失败、0 错误、0 跳过。
+- 镜像：`xianyusmart:2.5.0`，manifest `sha256:77b846c397a5383c322a9f8a61f78262177132495ecf2a581021e87e3562a1ca`。
+- 3000 QA 健康状态 `UP`，版本接口返回 `2.5.0`；生产端口 2000 未变更。
+- 价格 `1.234` 返回 400；QA SUCCESS 返回 `QA_CONFIRMED/QA_FIXTURE`，同载荷重放复用任务，不同载荷同 requestId 返回 409。
+- QA UNKNOWN 落为 status=4、verification=UNKNOWN、data_source=QA_FIXTURE、attempt=1/max=1，并可按 requestId 查询。
+- 操作审计记录 requestId、idempotencyKey、`LOCAL_SUCCESS/UNKNOWN` 与 `QA_FIXTURE`；商品事件记录 `PUBLISH/QA_CONFIRMED/QA_FIXTURE`。
+- Product Design QA 覆盖桌面四步流、390×844 窄屏、预检证据、二次确认、无可用通道空/错态和浏览器错误日志；修复时间本地化、授权状态文案及无通道仍可继续的问题。
+
+### 迁移与降级
+
+- 本批无数据库结构迁移；最新迁移仍为 `V39`，QA MySQL 5.7.18 继续复用既有 schema。
+- 叶子类目/行业、原价、成色、outerId、完整类目属性、视频与多 SKU 仍为显式安全降级，不宣称已具备真实平台写能力。

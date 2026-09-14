@@ -104,7 +104,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
         if (uri.startsWith("/api/qa/order-after-sales")) return PermissionCatalog.MENU_ORDERS;
         if (uri.startsWith("/api/order-matrix")) return PermissionCatalog.MENU_ORDERS;
-        if (uri.startsWith("/api/publishing")) return PermissionCatalog.MENU_OPERATIONS;
+        if (uri.startsWith("/api/publishing")) return PermissionCatalog.MENU_GOODS;
         if (uri.startsWith("/api/product-matrix")) return PermissionCatalog.MENU_GOODS;
         if (uri.startsWith("/api/account-matrix")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/automation-assist/reply-preference")) return PermissionCatalog.MENU_AUTO_REPLY;
@@ -197,7 +197,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
                 && !uri.endsWith("/query") && !uri.endsWith("/preview")) {
             return PermissionCatalog.ACTION_ORDER_WRITE;
         }
-        if (uri.equals("/api/publishing/execute")) return PermissionCatalog.ACTION_OPERATIONS_WRITE;
+        if (uri.equals("/api/publishing/execute")) return PermissionCatalog.ACTION_GOODS_WRITE;
         if (uri.startsWith("/api/product-matrix/batches/delete/")) {
             return PermissionCatalog.ACTION_GOODS_DELETE;
         }

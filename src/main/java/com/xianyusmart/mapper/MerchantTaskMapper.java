@@ -50,10 +50,18 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "WHEN JSON_VALID(#{resultJson}) AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.itemId')), '') IS NOT NULL " +
             "THEN 'VERIFIED' ELSE 'PENDING' END, " +
             "outcome_state = CASE WHEN task_type <> 'PUBLISH' THEN 'LOCAL_SUCCESS' " +
+            "WHEN JSON_VALID(#{resultJson}) AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' " +
+            "THEN COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.outcomeState')), ''), 'QA_CONFIRMED') " +
             "WHEN JSON_VALID(#{resultJson}) AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
             "THEN 'PLATFORM_CONFIRMED_LOCAL_PENDING' ELSE 'PLATFORM_CONFIRMED' END, " +
-            "data_source = CASE WHEN task_type='PUBLISH' THEN 'PLATFORM_WEB' ELSE 'LOCAL' END, " +
+            "data_source = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
+            "AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' THEN 'QA_FIXTURE' " +
+            "WHEN task_type='PUBLISH' THEN 'PLATFORM_WEB' ELSE 'LOCAL' END, " +
             "recovery_hint = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
+            "AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' " +
+            "AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
+            "THEN '隔离 QA 已确认执行但本地商品未落库；未调用闲鱼平台，可按任务结果修复夹具' " +
+            "WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
             "AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
             "THEN '平台已发布成功，请按商品ID修复本地缓存；不要重复发布' ELSE NULL END WHERE id = #{id}")
     int complete(@Param("id") Long id, @Param("resultJson") String resultJson);
@@ -67,6 +75,11 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "data_source='PLATFORM_WEB', error_message=#{errorMessage}, next_retry_time=NULL, " +
             "recovery_hint='请按请求ID查询平台商品结果，确认前禁止重复发布' WHERE id=#{id}")
     int markOutcomeUnknown(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+
+    @Update("UPDATE merchant_task SET status = 4, verification_status='UNKNOWN', outcome_state='UNKNOWN', " +
+            "data_source='QA_FIXTURE', error_message=#{errorMessage}, next_retry_time=NULL, " +
+            "recovery_hint='隔离 QA 结果未知；未调用闲鱼平台，可按请求ID检查状态' WHERE id=#{id}")
+    int markQaOutcomeUnknown(@Param("id") Long id, @Param("errorMessage") String errorMessage);
 
     @Update("UPDATE merchant_task SET status = 0, attempt_count = 0, scheduled_time = NOW(3), next_retry_time = NULL, error_message = NULL WHERE id = #{id}")
     int requeue(@Param("id") Long id);

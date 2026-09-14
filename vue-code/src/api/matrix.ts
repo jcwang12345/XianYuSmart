@@ -349,6 +349,10 @@ export function executePublish(data: Record<string, unknown>) {
   return request<Record<string, any>>({ url: '/publishing/execute', method: 'POST', data })
 }
 
+export function getPublishingRequestStatus(requestId: string) {
+  return request<Record<string, any>>({ url: `/publishing/requests/${encodeURIComponent(requestId)}`, method: 'GET' })
+}
+
 export function newRequestId(prefix = 'web') {
   return typeof crypto.randomUUID === 'function'
     ? `${prefix}-${crypto.randomUUID()}`

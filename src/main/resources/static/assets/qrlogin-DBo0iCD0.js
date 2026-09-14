@@ -1,0 +1,1 @@
+import{r}from"./index-C1MZ2Quh.js";function o(e){return r({url:"/qrlogin/generate",method:"POST",data:e?{targetAccountId:e}:{}})}function a(e){return r({url:`/qrlogin/status/${e}`,method:"POST"})}export{a,o as g};

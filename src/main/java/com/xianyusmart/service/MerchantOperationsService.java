@@ -21,6 +21,7 @@ import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.entity.XianyuGoodsInfo;
 import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 import com.xianyusmart.entity.XianyuKamiConfig;
+import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.RiskGuardBlockedException;
 import com.xianyusmart.exception.PlatformOutcomeUnknownException;
 import com.xianyusmart.exception.BusinessException;
@@ -34,10 +35,13 @@ import com.xianyusmart.mapper.XianyuKamiConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -47,6 +51,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
@@ -85,6 +90,7 @@ public class MerchantOperationsService {
     private final OpportunityImageService opportunityImageService;
     private final ProductContentPolicyService productContentPolicyService;
     private final PublishCapabilityService publishCapabilityService;
+    private final PublishQaMockService publishQaMockService;
     private final ProductEventService productEventService;
     private final ObjectMapper objectMapper;
 
@@ -108,6 +114,7 @@ public class MerchantOperationsService {
                                      OpportunityImageService opportunityImageService,
                                      ProductContentPolicyService productContentPolicyService,
                                      PublishCapabilityService publishCapabilityService,
+                                     PublishQaMockService publishQaMockService,
                                      ProductEventService productEventService,
                                      ObjectMapper objectMapper) {
         this.resourceMapper = resourceMapper;
@@ -130,6 +137,7 @@ public class MerchantOperationsService {
         this.opportunityImageService = opportunityImageService;
         this.productContentPolicyService = productContentPolicyService;
         this.publishCapabilityService = publishCapabilityService;
+        this.publishQaMockService = publishQaMockService;
         this.productEventService = productEventService;
         this.objectMapper = objectMapper;
     }
@@ -372,6 +380,9 @@ public class MerchantOperationsService {
         if (!(request.get("images") instanceof List<?> images) || images.isEmpty()) {
             throw new IllegalArgumentException("至少需要一张商品图片");
         }
+        if (images.size() > 9) {
+            throw new IllegalArgumentException("商品图片数量必须为1至9张");
+        }
         for (Object image : images) {
             if (!(image instanceof String imageUrl)
                     || !(imageUrl.startsWith("https://") || imageUrl.startsWith("/media/"))) {
@@ -379,9 +390,10 @@ public class MerchantOperationsService {
             }
         }
         BigDecimal amount = decimalValue(request.get("amount"), BigDecimal.ZERO);
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("商品价格必须大于 0");
+        if (name.length() > 120 || description.length() > 3000) {
+            throw new IllegalArgumentException("商品标题或详情超过平台长度限制");
         }
+        validatePublishAmountAndStock(amount, request.get("stock"));
         String requestKey = text(request.get("requestId")).trim();
         if (requestKey.isBlank() || requestKey.length() > 64) {
             throw new BusinessException(400, "发布请求必须提供不超过64个字符的requestId");
@@ -389,18 +401,25 @@ public class MerchantOperationsService {
         String publishChannel = publishCapabilityService.requireAvailableChannel(
                 accountId, text(request.get("publishChannel")));
         boolean dryRun = Boolean.TRUE.equals(request.get("dryRun"));
+        Map<String, Object> data = new HashMap<>(request);
+        data.remove("dryRun");
+        data.put("publishChannel", publishChannel);
+        String payloadFingerprint = publishPayloadFingerprint(objectMapper, data);
+        data.put("payloadFingerprint", payloadFingerprint);
         if (!dryRun) {
             MerchantTask existingTask = taskMapper.selectByRequestKey(requireTenantId(), "PUBLISH", requestKey);
             if (existingTask != null) {
+                assertPublishReplayMatches(existingTask, payloadFingerprint);
                 return existingPublishResult(existingTask);
             }
         }
 
-        Map<String, Object> data = new HashMap<>(request);
-        data.remove("dryRun");
-        data.put("publishChannel", publishChannel);
         Map<String, Object> contentPreflight = productContentPolicyService.validate(request);
-        Map<String, Object> platformPreflight = platformPublishService.preflight(request, accountId);
+        Map<String, Object> preflightRequest = new LinkedHashMap<>(request);
+        preflightRequest.put("publishChannel", publishChannel);
+        Map<String, Object> platformPreflight = "QA_LOCAL".equals(publishChannel)
+                ? publishQaMockService.preflight(preflightRequest, requireTenantId(), accountId)
+                : platformPublishService.preflight(preflightRequest, accountId);
         Map<String, Object> preflight = new LinkedHashMap<>(platformPreflight);
         preflight.put("contentPolicy", contentPreflight);
         preflight.put("publishChannel", publishChannel);
@@ -411,6 +430,7 @@ public class MerchantOperationsService {
             result.put("valid", true);
             result.put("dryRun", true);
             result.put("requestId", requestKey);
+            result.put("payloadFingerprint", payloadFingerprint);
             result.put("preview", platformPreflight.get("finalRequest"));
             result.put("platform", preflight);
             result.put("outcomeState", "PREFLIGHT_PASSED");
@@ -432,7 +452,17 @@ public class MerchantOperationsService {
         taskRequest.setResourceId(material.getId());
         taskRequest.setXianyuAccountId(accountId);
         taskRequest.setRequest(data);
-        MerchantTask task = createTask(taskRequest);
+        MerchantTask task;
+        try {
+            task = createTask(taskRequest);
+        } catch (DuplicateKeyException duplicate) {
+            // 并发相同 requestId 只能有一个赢家；清理本次尚未被任务引用的素材并返回赢家状态。
+            resourceMapper.deleteById(material.getId());
+            MerchantTask winner = taskMapper.selectByRequestKey(requireTenantId(), "PUBLISH", requestKey);
+            if (winner == null) throw duplicate;
+            assertPublishReplayMatches(winner, payloadFingerprint);
+            return existingPublishResult(winner);
+        }
         claimAndExecute(task);
         MerchantTask completedTask = taskMapper.selectById(task.getId());
         if (completedTask == null || completedTask.getStatus() != 2) {
@@ -442,6 +472,7 @@ public class MerchantOperationsService {
             result.put("valid", false);
             result.put("dryRun", false);
             result.put("requestId", requestKey);
+            result.put("payloadFingerprint", payloadFingerprint);
             result.put("material", material);
             result.put("task", current);
             result.put("outcomeState", current.getOutcomeState() == null ? "FAILED" : current.getOutcomeState());
@@ -453,12 +484,78 @@ public class MerchantOperationsService {
         result.put("valid", true);
         result.put("dryRun", false);
         result.put("requestId", requestKey);
+        result.put("payloadFingerprint", payloadFingerprint);
         result.put("material", material);
         result.put("task", completedTask);
         result.put("platform", readJson(completedTask.getResultJson()));
         result.put("outcomeState", completedTask.getOutcomeState());
         result.put("recoveryHint", completedTask.getRecoveryHint());
         return result;
+    }
+
+    private void assertPublishReplayMatches(MerchantTask existingTask, String incomingFingerprint) {
+        Map<String, Object> stored = readJson(existingTask.getRequestJson());
+        String storedFingerprint = text(stored.get("payloadFingerprint"));
+        if (storedFingerprint.isBlank()) {
+            storedFingerprint = publishPayloadFingerprint(objectMapper, stored);
+        }
+        if (!storedFingerprint.equals(incomingFingerprint)) {
+            throw new BusinessException(409,
+                    "requestId 已用于不同的发布内容，请更换 requestId 或恢复首次发布载荷");
+        }
+    }
+
+    static String publishPayloadFingerprint(ObjectMapper mapper, Map<String, Object> request) {
+        try {
+            Object normalized = normalizePublishValue(request);
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(mapper.writeValueAsString(normalized).getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("发布载荷无法生成幂等指纹", e);
+        }
+    }
+
+    static void validatePublishAmountAndStock(BigDecimal amount, Object stock) {
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("商品价格必须大于 0");
+        }
+        if (amount.stripTrailingZeros().scale() > 2) {
+            throw new IllegalArgumentException("商品价格最多保留两位小数");
+        }
+        if (amount.compareTo(new BigDecimal("99999999.99")) > 0) {
+            throw new IllegalArgumentException("商品价格超过系统支持上限");
+        }
+        BigDecimal stockValue;
+        try {
+            stockValue = stock == null ? BigDecimal.ONE : new BigDecimal(String.valueOf(stock).trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("商品库存必须为正整数");
+        }
+        if (stockValue.stripTrailingZeros().scale() > 0 || stockValue.compareTo(BigDecimal.ONE) < 0
+                || stockValue.compareTo(new BigDecimal("999999999")) > 0) {
+            throw new IllegalArgumentException("商品库存必须为正整数且不能超过999999999");
+        }
+    }
+
+    private static Object normalizePublishValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> sorted = new TreeMap<>();
+            map.forEach((key, item) -> {
+                String name = String.valueOf(key);
+                if (!Set.of("dryRun", "payloadFingerprint", "requestId").contains(name)) {
+                    sorted.put(name, normalizePublishValue(item));
+                }
+            });
+            return sorted;
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().map(MerchantOperationsService::normalizePublishValue).toList();
+        }
+        if (value instanceof Number number) {
+            return new BigDecimal(number.toString()).stripTrailingZeros().toPlainString();
+        }
+        return value;
     }
 
     public void deleteResource(Long id) {
@@ -548,12 +645,14 @@ public class MerchantOperationsService {
     }
 
     private Map<String, Object> existingPublishResult(MerchantTask task) {
+        String payloadFingerprint = text(readJson(task.getRequestJson()).get("payloadFingerprint"));
         if (task.getStatus() != null && task.getStatus() == 2) {
             MerchantResource material = requireResource(task.getResourceId());
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("valid", true);
             result.put("dryRun", false);
             result.put("requestId", task.getRequestKey());
+            result.put("payloadFingerprint", payloadFingerprint);
             result.put("material", toResponse(material));
             result.put("task", task);
             result.put("platform", readJson(task.getResultJson()));
@@ -566,6 +665,7 @@ public class MerchantOperationsService {
         result.put("valid", false);
         result.put("dryRun", false);
         result.put("requestId", task.getRequestKey());
+        result.put("payloadFingerprint", payloadFingerprint);
         result.put("task", task);
         result.put("outcomeState", task.getOutcomeState());
         result.put("recoveryHint", task.getRecoveryHint());
@@ -777,38 +877,74 @@ public class MerchantOperationsService {
                 default -> throw new IllegalArgumentException("不支持的任务类型");
             };
             taskMapper.complete(task.getId(), writeJson(result));
-            operationLogService.log(task.getXianyuAccountId(), OperationConstants.Type.UPDATE,
-                    OperationConstants.Module.MERCHANT_OPERATIONS, task.getTaskType() + "任务执行成功",
-                    OperationConstants.Status.SUCCESS, OperationConstants.TargetType.TASK,
-                    String.valueOf(task.getId()), task.getRequestJson(), writeJson(result), null, null);
+            logTaskExecution(task, OperationConstants.Module.MERCHANT_OPERATIONS,
+                    task.getTaskType() + "任务执行成功", OperationConstants.Status.SUCCESS,
+                    auditSuccessOutcome(task, result), taskDataSource(task, result), writeJson(result), null);
         } catch (RiskGuardBlockedException e) {
             LocalDateTime retryAt = Instant.ofEpochMilli(e.getRetryAt())
                     .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime();
             taskMapper.defer(task.getId(), retryAt, trimError(e.getMessage()));
-            operationLogService.log(task.getXianyuAccountId(), OperationConstants.Type.UPDATE,
-                    OperationConstants.Module.RISK_CONTROL, task.getTaskType() + "任务等待平台恢复",
-                    OperationConstants.Status.PARTIAL, OperationConstants.TargetType.TASK,
-                    String.valueOf(task.getId()), null, null, trimError(e.getMessage()), null);
+            logTaskExecution(task, OperationConstants.Module.RISK_CONTROL,
+                    task.getTaskType() + "任务等待平台恢复", OperationConstants.Status.PARTIAL,
+                    "PARTIAL", "PLATFORM_WEB", null, trimError(e.getMessage()));
         } catch (PlatformOutcomeUnknownException e) {
             taskMapper.markOutcomeUnknown(task.getId(), trimError(e.getMessage()));
-            operationLogService.log(task.getXianyuAccountId(), OperationConstants.Type.UPDATE,
-                    OperationConstants.Module.MERCHANT_OPERATIONS, task.getTaskType() + "平台结果未知",
-                    OperationConstants.Status.PARTIAL, OperationConstants.TargetType.TASK,
-                    String.valueOf(task.getId()), task.getRequestJson(), null, trimError(e.getMessage()), null);
+            logTaskExecution(task, OperationConstants.Module.MERCHANT_OPERATIONS,
+                    task.getTaskType() + "平台结果未知", OperationConstants.Status.PARTIAL,
+                    "UNKNOWN", "PLATFORM_WEB", null, trimError(e.getMessage()));
             log.warn("运营任务平台结果未知，停止自动重试: taskId={}, type={}, error={}",
                     task.getId(), task.getTaskType(), e.getMessage());
+        } catch (PublishQaMockService.QaPublishOutcomeUnknownException e) {
+            taskMapper.markQaOutcomeUnknown(task.getId(), trimError(e.getMessage()));
+            logTaskExecution(task, OperationConstants.Module.MERCHANT_OPERATIONS,
+                    task.getTaskType() + "隔离测试结果未知", OperationConstants.Status.PARTIAL,
+                    "UNKNOWN", "QA_FIXTURE", null, trimError(e.getMessage()));
         } catch (Exception e) {
             int attempt = task.getAttemptCount() == null ? 1 : task.getAttemptCount() + 1;
             taskMapper.fail(task.getId(), trimError(e.getMessage()), LocalDateTime.now().plusMinutes(Math.min(60, attempt * 5L)));
-            operationLogService.log(task.getXianyuAccountId(), OperationConstants.Type.UPDATE,
-                    OperationConstants.Module.MERCHANT_OPERATIONS, task.getTaskType() + "任务执行失败",
-                    OperationConstants.Status.FAIL, OperationConstants.TargetType.TASK,
-                    String.valueOf(task.getId()), task.getRequestJson(), null, trimError(e.getMessage()), null);
+            logTaskExecution(task, OperationConstants.Module.MERCHANT_OPERATIONS,
+                    task.getTaskType() + "任务执行失败", OperationConstants.Status.FAIL,
+                    "FAILED", taskDataSource(task, Map.of()), null, trimError(e.getMessage()));
             log.warn("运营任务执行失败: taskId={}, type={}, error={}", task.getId(), task.getTaskType(), e.getMessage());
             recordRiskEvent(task, e.getMessage());
         } finally {
             TenantContext.clear();
         }
+    }
+
+    private void logTaskExecution(MerchantTask task, String module, String description, int status,
+                                  String outcomeState, String dataSource,
+                                  String responseResult, String errorMessage) {
+        XianyuOperationLog audit = new XianyuOperationLog();
+        audit.setXianyuAccountId(task.getXianyuAccountId());
+        audit.setOperationType(OperationConstants.Type.UPDATE);
+        audit.setOperationModule(module);
+        audit.setOperationDesc(description);
+        audit.setOperationStatus(status);
+        audit.setOutcomeState(outcomeState);
+        audit.setDataSource(dataSource);
+        audit.setRequestId(task.getRequestKey());
+        audit.setIdempotencyKey(task.getRequestKey());
+        audit.setTargetType(OperationConstants.TargetType.TASK);
+        audit.setTargetId(String.valueOf(task.getId()));
+        audit.setRequestParams(task.getRequestJson());
+        audit.setResponseResult(responseResult);
+        audit.setErrorMessage(errorMessage);
+        operationLogService.log(audit);
+    }
+
+    private String auditSuccessOutcome(MerchantTask task, Map<String, Object> result) {
+        if ("QA_MOCK".equals(text(result.get("executionChannel")))) return "LOCAL_SUCCESS";
+        if (!"PUBLISH".equals(task.getTaskType())) return "LOCAL_SUCCESS";
+        return Boolean.FALSE.equals(result.get("localSynced")) ? "PARTIAL" : "PLATFORM_CONFIRMED";
+    }
+
+    private String taskDataSource(MerchantTask task, Map<String, Object> result) {
+        if ("QA_MOCK".equals(text(result.get("executionChannel")))
+                || "QA_LOCAL".equals(text(readJson(task.getRequestJson()).get("publishChannel")))) {
+            return "QA_FIXTURE";
+        }
+        return "PUBLISH".equals(task.getTaskType()) ? "PLATFORM_WEB" : "LOCAL";
     }
 
     private Map<String, Object> executeSelection(MerchantTask task) {
@@ -1011,15 +1147,18 @@ public class MerchantOperationsService {
             }
             address = readJson(addressResource.getDataJson());
         }
-        Map<String, Object> result = platformPublishService.publish(material, accountId, address);
+        String publishChannel = text(materialData.get("publishChannel"));
+        Map<String, Object> result = "QA_LOCAL".equals(publishChannel)
+                ? publishQaMockService.execute(task, material, task.getTenantId(), accountId)
+                : platformPublishService.publish(material, accountId, address);
         String itemId = text(result.get("itemId"));
         if (!itemId.isBlank()) {
             // 素材是可复用的共享定义；每个账号的发布结果保存在独立任务中，不能覆盖素材主记录。
             updateDistributionPublished(material.getId(), accountId, itemId);
-            String publishChannel = text(materialData.get("publishChannel"));
             productEventService.publishCompleted(accountId, itemId, task.getRequestKey(),
                     publishChannel.isBlank() ? "QR_COOKIE" : publishChannel,
-                    text(result.get("outcomeState")), result);
+                    text(result.get("outcomeState")), result,
+                    "QA_LOCAL".equals(publishChannel) ? "QA_FIXTURE" : "PLATFORM_WEB");
         }
         return result;
     }

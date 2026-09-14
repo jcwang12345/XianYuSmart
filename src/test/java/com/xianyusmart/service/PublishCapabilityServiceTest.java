@@ -1,5 +1,6 @@
 package com.xianyusmart.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.exception.BusinessException;
 import org.junit.jupiter.api.AfterEach;
@@ -26,13 +27,15 @@ class PublishCapabilityServiceTest {
 
     private JdbcTemplate jdbcTemplate;
     private AccountAccessService accountAccessService;
+    private PublishQaMockService publishQaMockService;
     private PublishCapabilityService service;
 
     @BeforeEach
     void setUp() {
         jdbcTemplate = mock(JdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
-        service = new PublishCapabilityService(jdbcTemplate, accountAccessService);
+        publishQaMockService = mock(PublishQaMockService.class);
+        service = new PublishCapabilityService(jdbcTemplate, accountAccessService, new ObjectMapper(), publishQaMockService);
         TenantContext.set(7L);
         when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(1);
     }
@@ -70,6 +73,24 @@ class PublishCapabilityServiceTest {
                 .thenReturn(List.of(connectedQrChannel()));
 
         assertEquals("QR_COOKIE", service.requireAvailableChannel(9L, ""));
+    }
+
+    @Test
+    void skuIsNotAdvertisedAsReadyWithoutProbeEvidence() {
+        Map<String, Object> features = service.featureMatrix("QR_COOKIE", true, Map.of());
+
+        assertEquals("READY", features.get("publishing"));
+        assertEquals("NOT_VERIFIED", features.get("sku"));
+    }
+
+    @Test
+    void explicitCapabilityEvidenceIsPreserved() {
+        Map<String, Object> features = service.featureMatrix("OFFICIAL_OAUTH", true,
+                Map.of("publishing", "SUPPORTED", "products", "FULL", "sku", "SUPPORTED"));
+
+        assertEquals("SUPPORTED", features.get("publishing"));
+        assertEquals("FULL", features.get("sync"));
+        assertEquals("SUPPORTED", features.get("sku"));
     }
 
     private Map<String, Object> connectedQrChannel() {

@@ -104,9 +104,9 @@ class AccessControlInterceptorTest {
     }
 
     @Test
-    void publishingPreflightIsReadableButExecutionNeedsOperationsWrite() throws Exception {
+    void publishingPreflightUsesGoodsMenuAndExecutionNeedsGoodsWrite() throws Exception {
         SysUser user = user("OPERATOR");
-        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_OPERATIONS));
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_GOODS));
 
         assertTrue(interceptor.preHandle(request("POST", "/api/publishing/preflight", user),
                 new MockHttpServletResponse(), new Object()));
@@ -118,7 +118,7 @@ class AccessControlInterceptorTest {
         assertEquals(403, denied.getStatus());
 
         when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
-                PermissionCatalog.MENU_OPERATIONS, PermissionCatalog.ACTION_OPERATIONS_WRITE));
+                PermissionCatalog.MENU_GOODS, PermissionCatalog.ACTION_GOODS_WRITE));
         assertTrue(interceptor.preHandle(request("POST", "/api/publishing/execute", user),
                 new MockHttpServletResponse(), new Object()));
     }

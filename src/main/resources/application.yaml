@@ -2,7 +2,7 @@ server:
   port: 12400
 
 app:
-  version: 2.4.1
+  version: 2.5.0
   update:
     release-api: ${UPDATE_RELEASE_API:https://api.github.com/repos/Evvvvvvvan/XianYuSmart/releases/latest}
     request-dir: ${UPDATE_REQUEST_DIR:/app/update}
@@ -30,6 +30,12 @@ app:
       tenant-id: ${PRODUCT_BATCH_QA_MOCK_TENANT_ID:-1}
       account-ids: ${PRODUCT_BATCH_QA_MOCK_ACCOUNT_IDS:}
       goods-prefix: ${PRODUCT_BATCH_QA_MOCK_GOODS_PREFIX:QA-}
+  publishing:
+    qa-mock:
+      enabled: ${PUBLISH_QA_MOCK_ENABLED:false}
+      tenant-id: ${PUBLISH_QA_MOCK_TENANT_ID:-1}
+      account-ids: ${PUBLISH_QA_MOCK_ACCOUNT_IDS:}
+      title-prefix: ${PUBLISH_QA_MOCK_TITLE_PREFIX:QA-PUBLISH-}
   risk-guard:
     state-file: ${RISK_GUARD_STATE_FILE:data/platform-risk-guard.json}
   media:

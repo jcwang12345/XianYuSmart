@@ -21,14 +21,20 @@ public class ProductEventService {
 
     public void publishCompleted(Long accountId, String goodsId, String requestId,
                                  String publishChannel, String outcomeState, Object result) {
+        publishCompleted(accountId, goodsId, requestId, publishChannel, outcomeState, result, "PLATFORM_WEB");
+    }
+
+    public void publishCompleted(Long accountId, String goodsId, String requestId,
+                                 String publishChannel, String outcomeState, Object result, String dataSource) {
         Long tenantId = tenant();
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_event
                 (tenant_id, xianyu_account_id, xy_goods_id, event_type, event_origin, outcome_state,
                  data_source, operator_user_id, operator_username, request_id, idempotency_key, after_json)
-                VALUES (?,?,?,'PUBLISH','USER',?,'PLATFORM_WEB',?,?,?,?,?)
+                VALUES (?,?,?,'PUBLISH','USER',?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state), after_json=VALUES(after_json)
-                """, tenantId, accountId, goodsId, outcomeState, UserContext.getUserId(), UserContext.getUsername(),
+                """, tenantId, accountId, goodsId, outcomeState, dataSource,
+                UserContext.getUserId(), UserContext.getUsername(),
                 requestId, requestId, json(result));
         jdbcTemplate.update("""
                 UPDATE xianyu_goods

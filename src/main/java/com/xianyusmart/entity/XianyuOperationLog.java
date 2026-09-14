@@ -94,7 +94,7 @@ public class XianyuOperationLog {
     /** LOCAL_SUCCESS / PLATFORM_CONFIRMED / PARTIAL / FAILED / UNKNOWN。 */
     private String outcomeState;
 
-    /** LOCAL / PLATFORM_API / PLATFORM_WEB / MANUAL_IMPORT / SYSTEM_DERIVED。 */
+    /** LOCAL / PLATFORM_API / PLATFORM_WEB / MANUAL_IMPORT / SYSTEM_DERIVED / QA_FIXTURE。 */
     private String dataSource;
 
     private String platformResponseCode;

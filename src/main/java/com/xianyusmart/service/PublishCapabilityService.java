@@ -1,5 +1,7 @@
 package com.xianyusmart.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,10 +22,15 @@ public class PublishCapabilityService {
 
     private final JdbcTemplate jdbcTemplate;
     private final AccountAccessService accountAccessService;
+    private final ObjectMapper objectMapper;
+    private final PublishQaMockService publishQaMockService;
 
-    public PublishCapabilityService(JdbcTemplate jdbcTemplate, AccountAccessService accountAccessService) {
+    public PublishCapabilityService(JdbcTemplate jdbcTemplate, AccountAccessService accountAccessService,
+                                    ObjectMapper objectMapper, PublishQaMockService publishQaMockService) {
         this.jdbcTemplate = jdbcTemplate;
         this.accountAccessService = accountAccessService;
+        this.objectMapper = objectMapper;
+        this.publishQaMockService = publishQaMockService;
     }
 
     public Map<String, Object> capabilities(Long accountId) {
@@ -46,7 +53,7 @@ public class PublishCapabilityService {
             reserved.put("authorizationStatus", "NOT_CONNECTED");
             reserved.put("coverageStatus", "UNSYNCED");
             reserved.put("reason", "当前账号尚未接入官方授权，不可选择");
-            reserved.put("features", featureMatrix(false, false));
+            reserved.put("features", featureMatrix("OFFICIAL_OAUTH", false, Map.of()));
             channels = new java.util.ArrayList<>(channels);
             channels.add(reserved);
         }
@@ -79,7 +86,14 @@ public class PublishCapabilityService {
         String connection = rs.getString("connection_status");
         String authorization = rs.getString("authorization_status");
         boolean authOkay = "NOT_APPLICABLE".equals(authorization) || "AUTHORIZED".equals(authorization);
-        boolean available = "CONNECTED".equals(connection) && authOkay;
+        Map<String, Object> discovered = readCapabilities(rs.getString("capabilities_json"));
+        boolean adapterAvailable = switch (code) {
+            case "QR_COOKIE" -> true;
+            case "QA_LOCAL" -> publishQaMockService.enabled()
+                    && "MOCK_ONLY".equals(discovered.get("publishing"));
+            default -> "SUPPORTED".equals(discovered.get("publishing"));
+        };
+        boolean available = "CONNECTED".equals(connection) && authOkay && adapterAvailable;
         Map<String, Object> channel = new LinkedHashMap<>();
         channel.put("channelCode", code);
         channel.put("channelName", rs.getString("channel_name"));
@@ -92,19 +106,41 @@ public class PublishCapabilityService {
         channel.put("coverageStatus", rs.getString("coverage_status"));
         channel.put("lastCheckedTime", instant(rs, "last_checked_time"));
         channel.put("reason", available ? null : reason(connection, authorization, rs.getString("last_error_message")));
-        channel.put("features", featureMatrix("OFFICIAL_OAUTH".equals(code), available));
+        channel.put("features", featureMatrix(code, available, discovered));
         return channel;
     }
 
-    private Map<String, Object> featureMatrix(boolean official, boolean available) {
+    Map<String, Object> featureMatrix(String channelCode, boolean available,
+                                      Map<String, Object> discovered) {
+        boolean official = "OFFICIAL_OAUTH".equals(channelCode);
+        boolean qrCookie = "QR_COOKIE".equals(channelCode);
+        String publishing = capability(discovered, "publishing", available ? "READY" : "UNAVAILABLE");
+        String products = capability(discovered, "products", available ? "PARTIAL" : "UNAVAILABLE");
         Map<String, Object> features = new LinkedHashMap<>();
+        features.put("publishing", publishing);
         features.put("category", available ? "READY" : "UNAVAILABLE");
-        features.put("edit", official && available ? "UNKNOWN" : "NOT_VERIFIED");
-        features.put("sku", available ? "READY" : "UNAVAILABLE");
-        features.put("bargain", official && available ? "UNKNOWN" : "REQUIRES_PLATFORM_PERMISSION");
-        features.put("sync", available ? "PARTIAL" : "UNAVAILABLE");
+        features.put("edit", official ? products : available ? "PARTIAL" : "UNAVAILABLE");
+        // 当前 PC 发布适配器只构造单 SKU。没有探测证据时必须阻止多规格，不能显示 READY。
+        features.put("sku", capability(discovered, "sku", available ? "NOT_VERIFIED" : "UNAVAILABLE"));
+        features.put("bargain", capability(discovered, "marketing",
+                official && available ? "UNKNOWN" : qrCookie ? "REQUIRES_PLATFORM_PERMISSION" : "NOT_VERIFIED"));
+        features.put("sync", products);
         features.put("authorization", official ? (available ? "AUTHORIZED" : "NOT_CONNECTED") : "NOT_APPLICABLE");
         return features;
+    }
+
+    private Map<String, Object> readCapabilities(String json) {
+        if (json == null || json.isBlank()) return Map.of();
+        try {
+            return objectMapper.readValue(json, new TypeReference<>() { });
+        } catch (Exception ignored) {
+            return Map.of();
+        }
+    }
+
+    private String capability(Map<String, Object> values, String key, String fallback) {
+        Object value = values.get(key);
+        return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value);
     }
 
     private String reason(String connection, String authorization, String error) {
