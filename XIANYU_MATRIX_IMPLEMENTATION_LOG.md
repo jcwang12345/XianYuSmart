@@ -3,6 +3,17 @@
 基线：`XIANYU_MATRIX_PRODUCT_REQUIREMENTS.md` 1.0（2026-09-13）
 原则：以需求编号、优先级和验收标准为准；保留既有工作树；禁止以 `0` 代替未同步数据；禁止对生产店铺执行发布、退款、删除或申诉验证。
 
+## 缺陷批次：XYM-PUB-001～008 / PUB-01～03（v2.5.1）
+
+- `XYM-PUB-001`：新增 `V40__repair_qa_channel_utf8.sql`，通过精确错误字节匹配只修复账号 102 的 `QA_LOCAL / MANUAL_IMPORT / QA_PARTIAL` 历史不可用原因；已有正确渠道名称、账号 103、真实平台渠道和生产商品均不修改。
+- `XYM-PUB-002～003`：发布能力区补齐账号上下文、加载、错误重试和空状态；媒体上传改为逐项结果，失败文件保留并可重试/移除，跨步骤仍保存失败队列。
+- `XYM-PUB-004`：商家任务增加任务 ID、请求 ID、账号精确筛选，查询上限扩展至 1000，并校验租户账号归属。
+- `XYM-PUB-005～006`：新增 `V41__repair_qa_publish_outcome_evidence.sql` 回填隔离 QA 历史结果；本地待处理和结果未知均提供禁止真实通道重复发布的恢复提示，UNKNOWN 持久化 `QA_MOCK / QA_FIXTURE / platformNetworkCalls=false / platformWrite=NOT_PERFORMED`。
+- `XYM-PUB-007`：结果页完整展示 requestId、taskId、itemId、通道、核验状态、来源、恢复建议和查询入口。
+- `XYM-PUB-008`：发布执行及任务查询对跨租户/无归属账号返回 404，避免泄露资源存在性。
+- 测试：中文失败原因和 QA UNKNOWN 安全证据单测通过；前端类型检查、生产构建、后端 155 项测试通过。MySQL 5.7 迁移和 API/界面回归在隔离 QA 3000 端口执行。
+- 部署：仅更新隔离 QA `http://127.0.0.1:3000`；生产 2000 保持不变。
+
 ## 批次 8：XYM-ORD-001～003 售后幂等与 QA 权限（v2.4.1）
 
 - `XYM-ORD-001`：命中 `requestId` 后逐项核对售后记录、方向、物流公司、运单号、状态、物流事件及毫秒精度时间；不同载荷返回 409。

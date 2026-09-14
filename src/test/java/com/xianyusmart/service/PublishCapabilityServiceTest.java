@@ -93,6 +93,14 @@ class PublishCapabilityServiceTest {
         assertEquals("SUPPORTED", features.get("sku"));
     }
 
+    @Test
+    void utf8FailureReasonIsReturnedWithoutReencoding() {
+        assertEquals("部分平台字段未同步",
+                service.reason("DEGRADED", "NOT_APPLICABLE", "部分平台字段未同步"));
+        assertEquals("隔离环境模拟凭据过期",
+                service.reason("EXPIRED", "EXPIRED", "隔离环境模拟凭据过期"));
+    }
+
     private Map<String, Object> connectedQrChannel() {
         Map<String, Object> channel = new LinkedHashMap<>();
         channel.put("channelCode", "QR_COOKIE");

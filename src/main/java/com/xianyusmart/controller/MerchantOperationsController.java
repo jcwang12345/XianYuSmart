@@ -175,14 +175,14 @@ public class MerchantOperationsController {
     }
 
     @GetMapping("/tasks")
-    public ResultObject<List<MerchantTask>> listTasks(@RequestParam(required = false) String taskType,
+    public ResultObject<List<MerchantTask>> listTasks(@RequestParam(required = false) Long taskId,
+                                                       @RequestParam(required = false) String requestId,
+                                                       @RequestParam(required = false) Long accountId,
+                                                       @RequestParam(required = false) String taskType,
                                                        @RequestParam(required = false) Integer status,
                                                        @RequestParam(required = false) Integer limit) {
-        try {
-            return ResultObject.success(operationsService.listTasks(taskType, status, limit));
-        } catch (Exception e) {
-            return ResultObject.failed(e.getMessage());
-        }
+        return ResultObject.success(operationsService.listTasks(taskId, requestId, accountId,
+                taskType, status, limit));
     }
 
     @PostMapping("/tasks")

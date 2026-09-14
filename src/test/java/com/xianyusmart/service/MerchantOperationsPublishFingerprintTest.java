@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class MerchantOperationsPublishFingerprintTest {
 
@@ -74,5 +75,16 @@ class MerchantOperationsPublishFingerprintTest {
                 () -> MerchantOperationsService.validatePublishAmountAndStock(new BigDecimal("1.00"), "1.5"));
         assertDoesNotThrow(() -> MerchantOperationsService.validatePublishAmountAndStock(
                 new BigDecimal("1.00"), "2"));
+    }
+
+    @Test
+    void qaUnknownEvidenceAlwaysDeclaresNoPlatformWrite() {
+        Map<String, Object> evidence = MerchantOperationsService.qaUnknownEvidence();
+
+        assertEquals("QA_MOCK", evidence.get("executionChannel"));
+        assertEquals("QA_FIXTURE", evidence.get("dataSource"));
+        assertFalse((Boolean) evidence.get("platformNetworkCalls"));
+        assertEquals("NOT_PERFORMED", evidence.get("platformWrite"));
+        assertEquals("UNKNOWN", evidence.get("outcomeState"));
     }
 }

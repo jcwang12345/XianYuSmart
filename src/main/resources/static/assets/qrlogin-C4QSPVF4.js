@@ -1,0 +1,1 @@
+import{r}from"./index-D5ntdT-w.js";function o(e){return r({url:"/qrlogin/generate",method:"POST",data:e?{targetAccountId:e}:{}})}function a(e){return r({url:`/qrlogin/status/${e}`,method:"POST"})}export{a,o as g};

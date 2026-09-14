@@ -20,6 +20,8 @@ const publishFingerprint = ref('')
 const accounts = ref<Account[]>([])
 const materials = ref<MerchantResource[]>([])
 const capabilities = ref<Record<string, any> | null>(null)
+const capabilityLoading = ref(false)
+const capabilityError = ref('')
 const preflightResult = ref<Record<string, any> | null>(null)
 const publishResult = ref<Record<string, any> | null>(null)
 const preflightRequestId = ref('')
@@ -56,6 +58,7 @@ const channels = computed<Record<string, any>[]>(() => capabilities.value?.chann
 const availableChannels = computed(() => channels.value.filter(channel => channel.available === true))
 const selectedChannel = computed(() => channels.value.find(channel => channel.channelCode === form.publishChannel) || null)
 const selectedAccount = computed(() => accounts.value.find(account => account.id === form.xianyuAccountId) || null)
+let capabilityLoadSerial = 0
 
 const images = computed<string[]>({
   get: () => form.imagesText.split('\n').map(value => value.trim()).filter(Boolean),
@@ -97,14 +100,31 @@ const load = async () => {
 }
 
 const loadCapabilities = async () => {
+  const serial = ++capabilityLoadSerial
+  const accountId = form.xianyuAccountId
   capabilities.value = null
+  capabilityError.value = ''
   form.publishChannel = ''
-  if (!form.xianyuAccountId) return
+  if (!accountId) {
+    capabilityLoading.value = false
+    return
+  }
+  capabilityLoading.value = true
   try {
-    capabilities.value = (await getPublishingCapabilities(form.xianyuAccountId)).data || null
+    const response = await getPublishingCapabilities(accountId)
+    if (serial !== capabilityLoadSerial || accountId !== form.xianyuAccountId) return
+    if (!response.data || !Array.isArray(response.data.channels)) {
+      capabilityError.value = '能力响应缺少渠道证据，请重试或检查账号连接状态'
+      return
+    }
+    capabilities.value = response.data
     form.publishChannel = String(availableChannels.value[0]?.channelCode || '')
-  } catch {
-    capabilities.value = null
+  } catch (error: any) {
+    if (serial === capabilityLoadSerial && accountId === form.xianyuAccountId) {
+      capabilityError.value = error?.message || '发布能力加载失败，请重试'
+    }
+  } finally {
+    if (serial === capabilityLoadSerial) capabilityLoading.value = false
   }
 }
 
@@ -261,7 +281,7 @@ onMounted(load)
         <label class="workbench__field">商品标题<input v-model="form.name" class="workbench__input" maxlength="120"><small>{{ form.name.length }} / 120</small></label>
         <label class="workbench__field">商品详情<textarea v-model="form.description" class="workbench__textarea" maxlength="3000"></textarea><small>{{ form.description.length }} / 3000</small></label>
       </template>
-      <template v-else-if="step === 2">
+      <div v-show="step === 2" class="publish__step-content">
         <div class="publish__limits"><strong>当前平台适配边界</strong><span>叶子类目、原价、成色、outerId、完整类目属性、视频与多 SKU 尚未取得稳定适配证据，暂不提交这些字段，避免静默丢失。</span></div>
         <div class="workbench__grid workbench__grid--two">
           <label class="workbench__field">商品类型<select v-model="form.productType" class="workbench__select"><option v-for="item in PRODUCT_TYPE_OPTIONS" :key="item.value" :value="item.value">{{ item.label }} · {{ item.description }}</option></select></label>
@@ -274,22 +294,26 @@ onMounted(load)
         </div>
         <label class="workbench__field">商品图片（最多 9 张）<MediaUploader v-model="images" :account-id="form.xianyuAccountId" :max="9" label="上传商品图" /><small>优先上传到闲鱼图片服务；失败会保存到本机，实际发布时自动同步。</small></label>
         <label class="workbench__field">或粘贴图片地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea" maxlength="5000" placeholder="支持 HTTPS 图片地址，也可使用上方上传"></textarea><small>{{ form.imagesText.length }} / 5000</small></label>
-      </template>
-      <template v-else-if="step === 3">
+      </div>
+      <template v-if="step === 3">
         <div class="publish__notice">所选省、市、区会直接用于平台发布校验，不再依赖账号是否保存过常用位置。</div>
         <div class="workbench__grid workbench__grid--two">
           <label class="workbench__field">发布账号<select v-model="form.xianyuAccountId" class="workbench__select"><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select></label>
           <label class="workbench__field">发布通道<select v-model="form.publishChannel" class="workbench__select" :disabled="!availableChannels.length"><option v-if="!availableChannels.length" value="">没有已验证可用通道</option><option v-for="channel in availableChannels" :key="channel.channelCode" :value="channel.channelCode">{{ channel.channelName }} · {{ channel.channelCode }}</option></select><small>未授权、未连接或未适配的通道不会出现在可选项中。</small></label>
           <PublishAddressFields v-model="publishAddress" />
         </div>
+        <div class="publish__account-context"><strong>当前账号</strong><span>{{ selectedAccount?.accountNote || selectedAccount?.unb || '未选择' }} · ID {{ form.xianyuAccountId || '—' }}</span></div>
         <div class="publish__capability" :class="{ 'publish__capability--unknown': !selectedChannel }">
-          <div><strong>账号发布能力</strong><span v-if="selectedChannel">{{ selectedChannel.channelName }} · {{ selectedChannel.coverageStatus || '覆盖未知' }} · 检查于 {{ formatCheckedTime(selectedChannel.lastCheckedTime) }}</span><span v-else>尚未取得可核验发布能力，发布前校验会阻止提交。</span></div>
+          <div><strong>账号发布能力</strong><span v-if="capabilityLoading">正在加载账号 {{ form.xianyuAccountId }} 的渠道证据…</span><span v-else-if="selectedChannel">{{ selectedChannel.channelName }} · {{ selectedChannel.coverageStatus || '覆盖未知' }} · 检查于 {{ formatCheckedTime(selectedChannel.lastCheckedTime) }}</span><span v-else-if="capabilityError">加载失败，当前账号上下文已保留。</span><span v-else>没有已验证可用通道，发布前校验会阻止提交。</span></div>
+          <div v-if="capabilityLoading" class="publish__capability-state" role="status"><span class="publish__spinner"></span>读取连接、授权和能力覆盖证据</div>
+          <div v-else-if="capabilityError" class="publish__capability-error" role="alert"><span>{{ capabilityError }}</span><button class="workbench__btn" type="button" @click="loadCapabilities">重试当前账号</button></div>
           <div v-if="selectedChannel" class="publish__feature-grid"><span v-for="(value, key) in selectedChannel.features" :key="key"><small>{{ featureName(String(key)) }}</small>{{ featureLabel(value) }}</span></div>
           <p v-if="selectedChannel?.reason">{{ selectedChannel.reason }}</p>
+          <ul v-else-if="!capabilityLoading && !capabilityError && channels.length" class="publish__unavailable-list"><li v-for="channel in channels" :key="channel.channelCode"><strong>{{ channel.channelName || channel.channelCode }}</strong><span>{{ channel.reason || '该通道尚未取得可用证据' }}</span></li></ul>
         </div>
         <div v-if="form.publishChannel === 'QA_LOCAL'" class="publish__qa-notice" role="status"><strong>隔离验收通道</strong><span>只生成 QA 夹具和持久化任务，不调用闲鱼网络，也不会发布真实商品。</span></div>
       </template>
-      <template v-else>
+      <template v-if="step === 4">
         <div class="publish__summary">
           <img :src="images[0]" alt="">
           <div>
@@ -301,12 +325,12 @@ onMounted(load)
         </div>
         <div class="publish__notice">{{ form.publishChannel === 'QA_LOCAL' ? '当前为隔离验收通道：预检与任务状态可完整验证，但不会调用闲鱼平台。' : '先使用与真实提交相同的最终请求构造器完成校验。内容变化后必须重新校验；只有平台返回真实商品 ID 才显示成功。' }}</div>
         <section v-if="preflightResult" class="publish__evidence" aria-live="polite"><header><strong>{{ preflightResult.platform?.executionChannel === 'QA_MOCK' ? '隔离发布预检已通过' : '发布前校验已通过' }}</strong><span>{{ preflightResult.outcomeState }}</span></header><dl><div><dt>请求 ID</dt><dd>{{ preflightResult.requestId }}</dd></div><div><dt>通道</dt><dd>{{ preflightResult.platform?.publishChannel }}</dd></div><div><dt>{{ preflightResult.platform?.executionChannel === 'QA_MOCK' ? '夹具类目' : '平台类目' }}</dt><dd>{{ preflightResult.platform?.category?.catName || preflightResult.platform?.category?.categoryName || '未返回名称' }}</dd></div><div><dt>图片</dt><dd>{{ preflightResult.platform?.imageCount }} 张</dd></div></dl><small>{{ preflightResult.platform?.executionChannel === 'QA_MOCK' ? '隔离预检不使用生产构造器，平台网络调用：0' : `预览与提交共用生产请求构造器：${preflightResult.platform?.previewUsesProductionBuilder ? '是' : '未确认'}` }}</small></section>
-        <section v-if="publishResult" class="publish__evidence"><header><strong>发布结果</strong><span>{{ publishResult.outcomeState || publishResult.status }}</span></header><p>{{ publishResult.recoveryHint || publishResult.error || '平台结果已记录' }}</p><button v-if="['UNKNOWN','PENDING'].includes(String(publishResult.outcomeState || publishResult.verificationStatus))" class="workbench__btn" type="button" @click="refreshRequestStatus">按请求 ID 查询结果</button></section>
+        <section v-if="publishResult" class="publish__evidence" aria-live="polite"><header><strong>发布结果证据</strong><span>{{ publishResult.outcomeState || publishResult.status }}</span></header><dl><div><dt>请求 ID</dt><dd>{{ publishResult.requestId || publishRequestId }}</dd></div><div><dt>任务 ID</dt><dd>{{ publishResult.taskId || publishResult.task?.id || '尚未生成' }}</dd></div><div><dt>商品 ID</dt><dd>{{ publishResult.platform?.itemId || publishResult.material?.xyGoodsId || '未确认' }}</dd></div><div><dt>执行通道</dt><dd>{{ publishResult.platform?.executionChannel || publishResult.executionChannel || form.publishChannel }}</dd></div><div><dt>验证状态</dt><dd>{{ publishResult.verificationStatus || publishResult.task?.verificationStatus || '未同步' }}</dd></div><div><dt>数据来源</dt><dd>{{ publishResult.platform?.dataSource || publishResult.task?.dataSource || '未同步' }}</dd></div></dl><p>{{ publishResult.recoveryHint || publishResult.error || '结果已持久化，可按请求 ID 再次查询。' }}</p><small v-if="publishResult.platform?.executionChannel === 'QA_MOCK' || publishResult.executionChannel === 'QA_MOCK'">隔离 QA Mock：未调用闲鱼网络，平台写入 NOT_PERFORMED，不代表真实商品已发布。</small><button v-if="publishResult.requestId || publishRequestId" class="workbench__btn" type="button" @click="refreshRequestStatus">按请求 ID 查询结果</button></section>
         <div v-if="submitError" class="publish__error" role="alert">{{ submitError }}</div>
       </template>
       <footer class="workbench__actions publish__footer">
         <button v-if="step > 1" class="workbench__btn" @click="step--">上一步</button>
-        <button v-if="step < 4" class="workbench__btn workbench__btn--primary" :disabled="step === 3 && !form.publishChannel" @click="next">下一步</button>
+        <button v-if="step < 4" class="workbench__btn workbench__btn--primary" :disabled="step === 3 && (capabilityLoading || !!capabilityError || !form.publishChannel)" @click="next">下一步</button>
         <template v-else>
           <button class="workbench__btn" :disabled="loading" @click="submit(true)">发布前校验</button>
           <button class="workbench__btn workbench__btn--primary" :disabled="loading || !canExecute" @click="submit(false)">提交发布</button>
@@ -330,7 +354,7 @@ onMounted(load)
 .publish__section-head span { color: #9a6200; font-size: 11px; font-weight: 750; letter-spacing: .06em; }
 .publish__section-head h2 { margin: 3px 0 0; font-size: 19px; }
 .publish__section-head p { margin: 0; color: #77736b; font-size: 13px; }
-.publish__panel > .workbench__field { margin-bottom: 14px; }
+.publish__panel > .workbench__field, .publish__step-content > .workbench__field { margin-bottom: 14px; }
 .publish__footer { position: sticky; bottom: -24px; z-index: 3; justify-content: flex-end; margin: 24px -24px -24px; padding: 14px 24px; border-top: 1px solid var(--glass-border); border-radius: 0 0 var(--surface-radius) var(--surface-radius); background: rgba(255,255,255,.96); }
 .publish__images { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 12px; }
 .publish__images button { position: relative; overflow: hidden; padding: 0; border: 0; border-radius: 7px; background: #f2f4f7; cursor: pointer; }
@@ -350,6 +374,12 @@ onMounted(load)
 .publish__feature-grid span { padding: 8px 10px; border-radius: 7px; background: rgba(255,255,255,.78); font-weight: 700; }
 .publish__feature-grid small { display: block; margin-bottom: 3px; color: #667085; font-weight: 500; }
 .publish__capability--unknown { border-color: #efd175; color: #704700; background: var(--xy-yellow-soft); }
+.publish__account-context { display:flex; justify-content:space-between; gap:12px; margin-top:14px; padding:10px 14px; border-radius:9px; background:#f4f6f8; color:#344054; font-size:12px; }
+.publish__capability-state,.publish__capability-error { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px; border-radius:8px; background:rgba(255,255,255,.72); }
+.publish__capability-state { justify-content:flex-start; }
+.publish__capability-error { color:#9b1c1c; }
+.publish__spinner { width:14px; height:14px; border:2px solid #d0d5dd; border-top-color:#9a6200; border-radius:50%; animation:publish-spin .7s linear infinite; }
+.publish__unavailable-list { display:grid; gap:8px; margin:0; padding:0; list-style:none; }.publish__unavailable-list li { display:flex; justify-content:space-between; gap:12px; padding:9px 10px; border-radius:7px; background:rgba(255,255,255,.75); }.publish__unavailable-list span { color:#7a5a16; }
 .publish__qa-notice { display: flex; gap: 10px; margin-top: 12px; padding: 12px 14px; border: 1px dashed #7c6de0; border-radius: 10px; color: #40358b; background: #f7f5ff; font-size: 12px; }
 .publish__qa-notice span { color: #5e5793; }
 .publish__evidence { margin-top: 14px; padding: 14px; border: 1px solid #cfd8e3; border-radius: 10px; background: #f8fafc; }
@@ -369,7 +399,9 @@ onMounted(load)
   .publish__summary { grid-template-columns: 1fr; }
   .publish__summary img { width: 100%; height: auto; aspect-ratio: 1; }
   .publish__capability > div:first-child { flex-direction: column; }
+  .publish__account-context,.publish__capability-error,.publish__unavailable-list li { align-items:flex-start; flex-direction:column; }
   .publish__qa-notice { flex-direction: column; }
   .publish__evidence dl { grid-template-columns: 1fr; }
 }
+@keyframes publish-spin { to { transform:rotate(360deg); } }
 </style>

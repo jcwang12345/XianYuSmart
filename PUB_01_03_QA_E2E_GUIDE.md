@@ -5,7 +5,7 @@
 - 地址：`http://127.0.0.1:3000`
 - Compose：`/private/tmp/xianyusmart-qa-handoff/compose.yaml`
 - 环境文件：`/private/tmp/xianyusmart-qa-handoff/.env`
-- 版本：`v2.5.0`
+- 版本：`v2.5.1`
 - 数据库：MySQL 5.7.18，Tenant-A
 - 账号：`101` 可执行、`102` 部分覆盖、`103` 过期/无可用通道。
 

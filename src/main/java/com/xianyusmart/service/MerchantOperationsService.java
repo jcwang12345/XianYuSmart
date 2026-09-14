@@ -472,10 +472,13 @@ public class MerchantOperationsService {
             result.put("valid", false);
             result.put("dryRun", false);
             result.put("requestId", requestKey);
+            result.put("taskId", current.getId());
             result.put("payloadFingerprint", payloadFingerprint);
             result.put("material", material);
             result.put("task", current);
+            result.put("platform", readJson(current.getResultJson()));
             result.put("outcomeState", current.getOutcomeState() == null ? "FAILED" : current.getOutcomeState());
+            result.put("verificationStatus", current.getVerificationStatus());
             result.put("recoveryHint", current.getRecoveryHint());
             result.put("error", error == null || error.isBlank() ? "商品发布失败" : error);
             return result;
@@ -484,6 +487,7 @@ public class MerchantOperationsService {
         result.put("valid", true);
         result.put("dryRun", false);
         result.put("requestId", requestKey);
+        result.put("taskId", completedTask.getId());
         result.put("payloadFingerprint", payloadFingerprint);
         result.put("material", material);
         result.put("task", completedTask);
@@ -652,6 +656,7 @@ public class MerchantOperationsService {
             result.put("valid", true);
             result.put("dryRun", false);
             result.put("requestId", task.getRequestKey());
+            result.put("taskId", task.getId());
             result.put("payloadFingerprint", payloadFingerprint);
             result.put("material", toResponse(material));
             result.put("task", task);
@@ -665,8 +670,10 @@ public class MerchantOperationsService {
         result.put("valid", false);
         result.put("dryRun", false);
         result.put("requestId", task.getRequestKey());
+        result.put("taskId", task.getId());
         result.put("payloadFingerprint", payloadFingerprint);
         result.put("task", task);
+        result.put("platform", readJson(task.getResultJson()));
         result.put("outcomeState", task.getOutcomeState());
         result.put("recoveryHint", task.getRecoveryHint());
         result.put("idempotentReplay", true);
@@ -762,11 +769,21 @@ public class MerchantOperationsService {
         return taskMapper.selectById(task.getId());
     }
 
-    public List<MerchantTask> listTasks(String taskType, Integer status, Integer limit) {
+    public List<MerchantTask> listTasks(Long taskId, String requestId, Long accountId,
+                                        String taskType, Integer status, Integer limit) {
+        if (taskId != null && taskId <= 0) {
+            throw new BusinessException(400, "taskId必须为正整数");
+        }
+        String normalizedRequestId = blankToNull(requestId);
+        if (normalizedRequestId != null && normalizedRequestId.length() > 64) {
+            throw new BusinessException(400, "requestId不能超过64个字符");
+        }
+        if (accountId != null) validateOwnedAccount(accountId);
         if (taskType != null && !taskType.isBlank()) {
             requireTaskType(taskType);
         }
-        return taskMapper.selectRecent(taskType, status, normalizeLimit(limit));
+        return taskMapper.selectRecent(taskId, normalizedRequestId, accountId,
+                taskType, status, normalizeLimit(limit));
     }
 
     public List<MerchantDistribution> listDistributions(Integer status, Integer settlementStatus, Integer limit) {
@@ -895,10 +912,12 @@ public class MerchantOperationsService {
             log.warn("运营任务平台结果未知，停止自动重试: taskId={}, type={}, error={}",
                     task.getId(), task.getTaskType(), e.getMessage());
         } catch (PublishQaMockService.QaPublishOutcomeUnknownException e) {
-            taskMapper.markQaOutcomeUnknown(task.getId(), trimError(e.getMessage()));
+            Map<String, Object> qaEvidence = qaUnknownEvidence();
+            String evidenceJson = writeJson(qaEvidence);
+            taskMapper.markQaOutcomeUnknown(task.getId(), evidenceJson, trimError(e.getMessage()));
             logTaskExecution(task, OperationConstants.Module.MERCHANT_OPERATIONS,
                     task.getTaskType() + "隔离测试结果未知", OperationConstants.Status.PARTIAL,
-                    "UNKNOWN", "QA_FIXTURE", null, trimError(e.getMessage()));
+                    "UNKNOWN", "QA_FIXTURE", evidenceJson, trimError(e.getMessage()));
         } catch (Exception e) {
             int attempt = task.getAttemptCount() == null ? 1 : task.getAttemptCount() + 1;
             taskMapper.fail(task.getId(), trimError(e.getMessage()), LocalDateTime.now().plusMinutes(Math.min(60, attempt * 5L)));
@@ -1491,8 +1510,18 @@ public class MerchantOperationsService {
 
     private void validateOwnedAccount(Long accountId) {
         if (accountId != null && accountMapper.selectById(accountId) == null) {
-            throw new IllegalArgumentException("账号不存在或无权访问");
+            throw new BusinessException(404, "账号不存在或无权访问");
         }
+    }
+
+    static Map<String, Object> qaUnknownEvidence() {
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("executionChannel", "QA_MOCK");
+        evidence.put("dataSource", "QA_FIXTURE");
+        evidence.put("platformNetworkCalls", false);
+        evidence.put("platformWrite", "NOT_PERFORMED");
+        evidence.put("outcomeState", "UNKNOWN");
+        return evidence;
     }
 
     private Long requireTenantId() {
@@ -1521,7 +1550,7 @@ public class MerchantOperationsService {
     }
 
     private int normalizeLimit(Integer limit) {
-        return limit == null ? 100 : Math.max(1, Math.min(limit, 500));
+        return limit == null ? 100 : Math.max(1, Math.min(limit, 1000));
     }
 
     private Map<String, Object> readJson(String json) {

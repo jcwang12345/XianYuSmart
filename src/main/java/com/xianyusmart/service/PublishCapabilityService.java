@@ -143,7 +143,7 @@ public class PublishCapabilityService {
         return value == null || String.valueOf(value).isBlank() ? fallback : String.valueOf(value);
     }
 
-    private String reason(String connection, String authorization, String error) {
+    String reason(String connection, String authorization, String error) {
         if (error != null && !error.isBlank()) return error;
         if (!"CONNECTED".equals(connection)) return "连接状态为" + connection;
         return "授权状态为" + authorization;

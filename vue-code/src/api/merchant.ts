@@ -62,6 +62,7 @@ export interface MerchantResource {
 export interface MerchantTask {
   id: number
   taskType: string
+  requestKey?: string
   batchId?: string
   resourceId?: number
   xianyuAccountId?: number
@@ -123,7 +124,7 @@ export function convertSupplyToMaterial(id: number) {
   return request<MerchantResource>({ url: `/merchant/supplies/${id}/material`, method: 'POST' })
 }
 
-export function getTasks(params: { taskType?: string; status?: number; limit?: number } = {}) {
+export function getTasks(params: { taskId?: number; requestId?: string; accountId?: number; taskType?: string; status?: number; limit?: number } = {}) {
   return request<MerchantTask[]>({ url: '/merchant/tasks', method: 'GET', params })
 }
 

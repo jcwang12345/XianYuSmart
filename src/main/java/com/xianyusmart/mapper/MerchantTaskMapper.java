@@ -18,9 +18,15 @@ import java.util.Map;
 public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
 
     @Select("<script>SELECT * FROM merchant_task WHERE 1=1 " +
+            "<if test='taskId != null'>AND id = #{taskId}</if> " +
+            "<if test='requestId != null and requestId != \"\"'>AND request_key = #{requestId}</if> " +
+            "<if test='accountId != null'>AND xianyu_account_id = #{accountId}</if> " +
             "<if test='taskType != null and taskType != \"\"'>AND task_type = #{taskType}</if> " +
             "<if test='status != null'>AND status = #{status}</if> ORDER BY created_time DESC LIMIT #{limit}</script>")
-    List<MerchantTask> selectRecent(@Param("taskType") String taskType,
+    List<MerchantTask> selectRecent(@Param("taskId") Long taskId,
+                                    @Param("requestId") String requestId,
+                                    @Param("accountId") Long accountId,
+                                    @Param("taskType") String taskType,
                                     @Param("status") Integer status,
                                     @Param("limit") int limit);
 
@@ -60,7 +66,7 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "recovery_hint = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
             "AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' " +
             "AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
-            "THEN '隔离 QA 已确认执行但本地商品未落库；未调用闲鱼平台，可按任务结果修复夹具' " +
+            "THEN '隔离 QA 已确认执行但本地商品未落库；未调用闲鱼平台，可按任务结果修复夹具；禁止据此在真实通道重复发布' " +
             "WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
             "AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
             "THEN '平台已发布成功，请按商品ID修复本地缓存；不要重复发布' ELSE NULL END WHERE id = #{id}")
@@ -77,9 +83,11 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
     int markOutcomeUnknown(@Param("id") Long id, @Param("errorMessage") String errorMessage);
 
     @Update("UPDATE merchant_task SET status = 4, verification_status='UNKNOWN', outcome_state='UNKNOWN', " +
-            "data_source='QA_FIXTURE', error_message=#{errorMessage}, next_retry_time=NULL, " +
-            "recovery_hint='隔离 QA 结果未知；未调用闲鱼平台，可按请求ID检查状态' WHERE id=#{id}")
-    int markQaOutcomeUnknown(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+            "data_source='QA_FIXTURE', result_json=#{resultJson}, error_message=#{errorMessage}, next_retry_time=NULL, " +
+            "recovery_hint='隔离 QA 结果未知；未调用闲鱼平台，可按请求ID检查状态；禁止据此在真实通道重复发布' WHERE id=#{id}")
+    int markQaOutcomeUnknown(@Param("id") Long id,
+                             @Param("resultJson") String resultJson,
+                             @Param("errorMessage") String errorMessage);
 
     @Update("UPDATE merchant_task SET status = 0, attempt_count = 0, scheduled_time = NOW(3), next_retry_time = NULL, error_message = NULL WHERE id = #{id}")
     int requeue(@Param("id") Long id);
