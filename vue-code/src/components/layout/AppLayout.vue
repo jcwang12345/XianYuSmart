@@ -5,6 +5,7 @@ import NavMenu from './NavMenu.vue'
 import UpdateDialog from './UpdateDialog.vue'
 import { checkUpdate, getCurrentUser } from '@/api/system'
 import { hasPermission } from '@/utils/permission'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 // 导入所有页面图标
 import IconChart from '@/components/icons/IconChart.vue'
@@ -67,6 +68,8 @@ const isDesktop = ref(initialWidth >= 1024) // > 1024px
 
 // 移动端和平板端共用的抽屉状态
 const drawerVisible = ref(false)
+const drawerMenu = ref<HTMLElement | null>(null)
+useModalFocusTrap(drawerVisible, drawerMenu)
 
 // 页面特定的导航栏内容
 const headerContent = shallowRef<any>(null)
@@ -194,7 +197,7 @@ onUnmounted(() => {
     </button>
     <!-- 手机端: 顶部导航栏 -->
     <div v-if="isMobile" class="mobile-header">
-      <button class="menu-toggle-btn" @click="toggleDrawer">
+      <button class="menu-toggle-btn" aria-label="打开主导航" aria-controls="app-navigation-drawer" :aria-expanded="drawerVisible" @click="toggleDrawer">
         <span class="menu-icon">☰</span>
       </button>
       <div class="header-title-section">
@@ -213,7 +216,7 @@ onUnmounted(() => {
 
     <!-- 平板端: 顶部导航栏（带抽屉按钮） -->
     <div v-if="isTablet" class="tablet-header">
-      <button class="menu-toggle-btn" @click="toggleDrawer">
+      <button class="menu-toggle-btn" aria-label="打开主导航" aria-controls="app-navigation-drawer" :aria-expanded="drawerVisible" @click="toggleDrawer">
         <span class="menu-icon">☰</span>
       </button>
       <div class="header-title-section">
@@ -228,7 +231,7 @@ onUnmounted(() => {
     <!-- 手机端和平板端: 左侧抽屉菜单 -->
     <transition name="drawer">
       <div v-if="(isMobile || isTablet) && drawerVisible" class="drawer-overlay" @click="closeDrawer">
-        <div class="drawer-menu" @click.stop>
+        <div id="app-navigation-drawer" ref="drawerMenu" class="drawer-menu" aria-label="主导航" tabindex="-1" @click.stop>
           <div class="drawer-header">
             <div class="logo" :class="{ 'is-update-entry': isAdmin }" @click="openUpdateDialog">
               <div class="logo-icon">闲</div>
@@ -240,7 +243,7 @@ onUnmounted(() => {
                 </div>
               </div>
             </div>
-            <button class="drawer-close-btn" @click="closeDrawer">
+            <button class="drawer-close-btn" aria-label="关闭主导航" @click="closeDrawer">
               <span class="close-icon">✕</span>
             </button>
           </div>

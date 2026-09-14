@@ -147,10 +147,45 @@ const handleGroupChange = async () => {
 }
 
 let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => {
-  const routeAccount = Number(route.query.accountId)
-  if (Number.isSafeInteger(routeAccount) && routeAccount > 0) accountId.value = routeAccount
-  void loadStatistics()
+const routePositiveInteger = (value: unknown) => {
+  const source = Array.isArray(value) ? value[0] : value
+  if (typeof source !== 'string' || !/^\d+$/.test(source)) return undefined
+  const parsed = Number(source)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+const hydrateScopeFromRoute = async () => {
+  const hasAccount = route.query.accountId !== undefined
+  const hasGroup = route.query.groupId !== undefined
+  if (!hasAccount && !hasGroup) return true
+  if (hasAccount && hasGroup) {
+    scopeError.value = '链接同时包含店铺和分组范围，系统未扩大查询；请只保留其中一个筛选。'
+    return false
+  }
+  const routeAccount = routePositiveInteger(route.query.accountId)
+  const routeGroup = routePositiveInteger(route.query.groupId)
+  if ((hasAccount && !routeAccount) || (hasGroup && !routeGroup)) {
+    scopeError.value = '链接中的店铺或分组范围无效，系统未按全部店铺查询。'
+    return false
+  }
+  await loadScopes()
+  if (scopeError.value) return false
+  if (routeAccount && !accounts.value.some(account => String(account.id) === String(routeAccount))) {
+    scopeError.value = '链接中的店铺不在当前账号权限范围，系统未扩大查询。'
+    return false
+  }
+  if (routeGroup && !groups.value.some(group => String(group.id) === String(routeGroup))) {
+    scopeError.value = '链接中的店铺分组不存在或无权访问，系统未扩大查询。'
+    return false
+  }
+  accountId.value = routeAccount
+  groupId.value = routeGroup
+  return true
+}
+const retryScope = async () => {
+  if (await hydrateScopeFromRoute()) await loadStatistics()
+}
+onMounted(async () => {
+  if (await hydrateScopeFromRoute()) await loadStatistics()
   timer = setInterval(() => document.visibilityState === 'visible' && loadStatistics(), 60000)
 })
 onUnmounted(() => timer && clearInterval(timer))
@@ -171,7 +206,7 @@ onUnmounted(() => timer && clearInterval(timer))
     </section>
 
     <div v-if="error" class="dashboard__notice dashboard__notice--error" role="alert"><span>{{ error }}</span><button class="dashboard__link" @click="loadStatistics">重试</button></div>
-    <div v-if="scopeError" class="dashboard__notice dashboard__notice--error" role="alert"><span>{{ scopeError }}</span><button class="dashboard__link" :disabled="scopeLoading" @click="loadScopes">{{ scopeLoading ? '重试中' : '重试范围' }}</button></div>
+    <div v-if="scopeError" class="dashboard__notice dashboard__notice--error" role="alert"><span>{{ scopeError }}</span><button class="dashboard__link" :disabled="scopeLoading" @click="retryScope">{{ scopeLoading ? '重试中' : '重试范围' }}</button></div>
     <div class="dashboard__notice" role="note"><strong>{{ coverageLabel(summary?.coverageStatus) }}</strong><span>{{ evidenceText }}</span><time>{{ summary?.syncedAt ? `最近同步 ${new Date(summary.syncedAt).toLocaleString('zh-CN')}` : '尚无可核验同步时间' }}</time></div>
 
     <section class="dashboard__metrics" aria-label="经营核心指标">
