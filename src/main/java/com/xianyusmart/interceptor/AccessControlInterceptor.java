@@ -202,7 +202,13 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             return PermissionCatalog.ACTION_GOODS_BATCH_PRICE;
         }
         if (uri.startsWith("/api/product-matrix/batches/")
-                && (uri.endsWith("/create") || uri.endsWith("/retry"))) {
+                && (uri.endsWith("/create") || uri.endsWith("/retry") || uri.endsWith("/cancel"))) {
+            return PermissionCatalog.ACTION_GOODS_WRITE;
+        }
+        if (uri.contains("/api/product-matrix/accounts/") && uri.endsWith("/raw-snapshot")) {
+            return PermissionCatalog.ACTION_AUDIT_EXPORT;
+        }
+        if (uri.startsWith("/api/product-matrix/accounts/") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_GOODS_WRITE;
         }
         if (uri.startsWith("/api/product-matrix/filters") && !"GET".equalsIgnoreCase(method)) {

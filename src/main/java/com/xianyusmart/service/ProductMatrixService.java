@@ -15,6 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -36,8 +38,10 @@ public class ProductMatrixService {
     private static final Set<String> BATCH_OPERATIONS = Set.of(
             "ON_SALE", "OFF_SHELF", "CHANGE_PRICE", "CHANGE_STOCK", "POLISH", "DELETE", "SYNC");
     private static final Set<String> BATCH_STATUSES = Set.of(
-            "PREVIEW", "QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "PARTIAL", "CANCELLED");
-    private static final Set<String> ITEM_RETRYABLE = Set.of("FAILED", "UNKNOWN");
+            "PENDING_CONFIRMATION", "QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "PARTIAL_SUCCESS",
+            "CANCEL_REQUESTED", "CANCELLED");
+    private static final Set<String> ITEM_RETRYABLE = Set.of("FAILED");
+    private static final int MAX_BATCH_ITEMS = 1000;
 
     private final JdbcTemplate jdbcTemplate;
     private final NamedParameterJdbcTemplate namedJdbc;
@@ -69,6 +73,11 @@ public class ProductMatrixService {
                 SELECT goods.*, account.account_note, account.unb
                 """ + withStatus.fromWhere() + " ORDER BY goods.updated_time DESC, goods.id DESC LIMIT :limit OFFSET :offset",
                 pageParams, (rs, rowNum) -> productRow(rs));
+        records.forEach(product -> {
+            enrichWarehouseEvidence(product);
+            product.put("metric", metricWindow(((Number) product.get("accountId")).longValue(),
+                    string(product.get("goodsId")), normalized.metricWindowDays()));
+        });
 
         Map<String, Integer> statusCounts = new LinkedHashMap<>();
         for (String bucket : List.of("ALL", "ON_SALE", "SOLD", "OFF_SHELF", "OTHER", "DRAFT")) {
@@ -86,10 +95,104 @@ public class ProductMatrixService {
         response.put("page", normalized.page());
         response.put("pageSize", normalized.pageSize());
         response.put("totalPages", (int) Math.ceil((double) safeTotal / normalized.pageSize()));
-        response.put("summaryScope", "CURRENT_PAGE");
-        response.put("summary", pageSummary(records));
+        response.put("summaryScope", "FILTERED_RESULT");
+        response.put("summary", filteredSummary(withStatus, normalized.metricWindowDays()));
+        response.put("metricWindowDays", normalized.metricWindowDays());
         response.put("dataNotice", "商品主字段来自本地缓存；每行 source、syncStatus、coverageStatus、lastSyncedTime 表示其平台同步证据。");
         return response;
+    }
+
+    public Map<String, Object> capabilities(Long accountId, String goodsId) {
+        Map<String, Object> product = findProduct(accountId, goodsId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String operation : BATCH_OPERATIONS) {
+            String reason = conflict(operation, Map.of(
+                    "price", product.get("sold_price") == null ? BigDecimal.ONE : product.get("sold_price"),
+                    "stock", product.get("stock") == null ? 0 : product.get("stock")), product);
+            result.put(operation, Map.of("available", reason == null, "reason", reason == null ? "" : reason,
+                    "mode", reason == null ? "PLATFORM" : "SAFE_DEGRADATION"));
+        }
+        result.put("EDIT", Map.of("available", true, "mode", "LOCAL_ONLY",
+                "reason", "当前平台通道未验证完整编辑协议，只允许维护本地资料并保留来源标识"));
+        result.put("MARKETING", Map.of("available", false, "mode", "SAFE_DEGRADATION",
+                "reason", "粉丝价、小刀和闲鱼币平台接口尚未接入；仅展示同步状态，不提供假入口"));
+        return result;
+    }
+
+    @Transactional
+    public Map<String, Object> updateLocalDetails(Long accountId, String goodsId, LocalProductUpdate command) {
+        requireProductAccess(accountId, goodsId);
+        if (command == null) throw new BusinessException(400, "本地商品资料不能为空");
+        String requestId = requireText(command.requestId(), "requestId", 80);
+        Map<String, Object> before = findProduct(accountId, goodsId);
+        Long expected = command.expectedVersion();
+        if (expected == null || expected != longValue(before.get("row_version"))) {
+            throw new BusinessException(409, "商品资料已被其他用户更新，请刷新后重试");
+        }
+        String title = command.title() == null ? string(before.get("title")) : requireText(command.title(), "商品标题", 500);
+        int updated = jdbcTemplate.update("""
+                UPDATE xianyu_goods SET title=?,support_policy=?,location_text=?,row_version=row_version+1,
+                       sync_status='LOCAL_CHANGED',coverage_status='PARTIAL'
+                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=? AND row_version=?
+                """, title, limit(command.supportPolicy(), 1000), limit(command.location(), 255),
+                requireTenant(), accountId, goodsId, expected);
+        if (updated != 1) throw new BusinessException(409, "商品资料版本冲突，请刷新后重试");
+        Map<String, Object> after = findProduct(accountId, goodsId);
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_goods_event
+                (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
+                 operator_user_id,operator_username,request_id,idempotency_key,before_json,after_json,field_diff_json)
+                VALUES (?,?,?,'LOCAL_DETAILS_EDIT','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE id=id
+                """, requireTenant(), accountId, goodsId, UserContext.getUserId(), UserContext.getUsername(),
+                requestId, requestId, json(before), json(after), json(Map.of("mode", "LOCAL_ONLY")));
+        audit(accountId, "PRODUCT_LOCAL_EDIT", "编辑本地商品资料", requestId, "LOCAL_SUCCESS", command, after);
+        Map<String, Object> result = detail(accountId, goodsId);
+        result.put("capabilityMode", "LOCAL_ONLY");
+        return result;
+    }
+
+    @Transactional
+    public Map<String, Object> updateAutomation(Long accountId, String goodsId, AutomationUpdate command) {
+        requireProductAccess(accountId, goodsId);
+        if (command == null) throw new BusinessException(400, "自动化配置不能为空");
+        String requestId = requireText(command.requestId(), "requestId", 80);
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_goods_config
+                (tenant_id,xianyu_account_id,xy_goods_id,xianyu_auto_delivery_on,xianyu_auto_reply_on,
+                 xianyu_auto_rate_on,xianyu_auto_polish_on,human_intervention_on)
+                VALUES (?,?,?,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE xianyu_auto_delivery_on=VALUES(xianyu_auto_delivery_on),
+                 xianyu_auto_reply_on=VALUES(xianyu_auto_reply_on),xianyu_auto_rate_on=VALUES(xianyu_auto_rate_on),
+                 xianyu_auto_polish_on=VALUES(xianyu_auto_polish_on),human_intervention_on=VALUES(human_intervention_on)
+                """, requireTenant(), accountId, goodsId, bool(command.autoDelivery()), bool(command.autoReply()),
+                bool(command.autoRate()), bool(command.autoPolish()), bool(command.humanTakeover()));
+        Map<String, Object> current = marketing(accountId, goodsId);
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_goods_event
+                (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
+                 operator_user_id,operator_username,request_id,idempotency_key,after_json)
+                VALUES (?,?,?,'AUTOMATION_CONFIG_CHANGED','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE id=id
+                """, requireTenant(), accountId, goodsId, UserContext.getUserId(), UserContext.getUsername(),
+                requestId, requestId, json(current));
+        audit(accountId, "PRODUCT_AUTOMATION_UPDATE", "更新商品自动化配置", requestId,
+                "LOCAL_SUCCESS", command, current);
+        return current;
+    }
+
+    public Map<String, Object> rawSnapshotMetadata(Long accountId, String goodsId, Long eventId) {
+        requireProductAccess(accountId, goodsId);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id,raw_snapshot_hash,data_source,created_time FROM xianyu_goods_event
+                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=? AND id=?
+                """, requireTenant(), accountId, goodsId, eventId);
+        if (rows.isEmpty()) throw new BusinessException(404, "事件不存在");
+        Map<String, Object> result = new LinkedHashMap<>(rows.getFirst());
+        result.put("storageStatus", "HASH_ONLY");
+        result.put("redacted", true);
+        result.put("message", "系统只保留脱敏摘要，不保存 Cookie、令牌或完整敏感快照");
+        return result;
     }
 
     public Map<String, Object> detail(Long accountId, String goodsId) {
@@ -103,7 +206,10 @@ public class ProductMatrixService {
                 """, (rs, rowNum) -> productRow(rs), tenantId, accountId, goodsId);
         if (products.isEmpty()) throw new BusinessException(404, "商品不存在或不属于当前经营主体");
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("basic", products.getFirst());
+        Map<String, Object> basic = products.getFirst();
+        enrichWarehouseEvidence(basic);
+        response.put("basic", basic);
+        response.put("orderSummary", orderSummary(accountId, goodsId));
         response.put("skus", skus(accountId, goodsId));
         response.put("marketing", marketing(accountId, goodsId));
         response.put("metrics", Map.of(
@@ -111,7 +217,35 @@ public class ProductMatrixService {
                 "day7", metricWindow(accountId, goodsId, 7),
                 "day30", metricWindow(accountId, goodsId, 30)));
         response.put("timeline", events(accountId, goodsId, 200));
+        response.put("capabilities", capabilities(accountId, goodsId));
+        response.put("refreshModes", List.of(
+                Map.of("code", "CACHE", "label", "读取缓存", "available", true),
+                Map.of("code", "PRODUCT", "label", "同步商品", "available", true),
+                Map.of("code", "METRICS", "label", "同步罗盘", "available", false, "reason", "平台指标适配器未接入"),
+                Map.of("code", "MARKETING", "label", "同步营销", "available", false, "reason", "平台营销适配器未接入")));
         return response;
+    }
+
+    private Map<String, Object> orderSummary(Long accountId, String goodsId) {
+        Map<String, Object> row = jdbcTemplate.queryForMap("""
+                SELECT COUNT(*) totalOrders,
+                       SUM(delivery_status='DELIVERED') deliveredOrders,
+                       SUM(refund_status IS NOT NULL AND refund_status<>'NONE') refundOrders,
+                       SUM(order_amount IS NOT NULL) knownAmountOrders,
+                       SUM(order_amount) knownAmountTotal,
+                       MAX(create_time) latestOrderTime,
+                       MAX(last_synced_time) latestSyncedTime
+                  FROM xianyu_goods_order
+                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
+                """, requireTenant(), accountId, goodsId);
+        long total = longValue(row.get("totalOrders"));
+        Map<String, Object> result = new LinkedHashMap<>(row);
+        result.put("coverageStatus", total == 0 ? "UNSYNCED"
+                : longValue(row.get("knownAmountOrders")) == total ? "FULL" : "PARTIAL");
+        result.put("message", total == 0
+                ? "当前缓存没有可验证订单；不把缺失数据显示为 0 笔成交"
+                : "金额仅汇总有同步证据的订单");
+        return result;
     }
 
     public List<Map<String, Object>> events(Long accountId, String goodsId, Integer limit) {
@@ -119,7 +253,8 @@ public class ProductMatrixService {
         int safeLimit = limit == null ? 100 : Math.max(1, Math.min(limit, 500));
         return jdbcTemplate.query("""
                 SELECT id, event_type, event_origin, outcome_state, data_source, operator_user_id,
-                       operator_username, request_id, idempotency_key, before_json, after_json,
+                       operator_username, request_id, idempotency_key, batch_job_id, batch_item_id,
+                       platform_request_id, before_json, after_json,
                        field_diff_json, raw_snapshot_hash, platform_response_code, error_message, created_time
                   FROM xianyu_goods_event
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
@@ -192,13 +327,18 @@ public class ProductMatrixService {
             if (conflict != null) conflicts++;
             accounts.add(ref.accountId());
             candidates.add(new BatchCandidate(ref.accountId(), ref.goodsId(), string(product.get("title")),
-                    integer(product.get("status")), conflict == null, conflict));
+                    integer(product.get("status")), longValue(product.get("row_version")),
+                    oldValue(product), conflict == null, conflict));
         }
         int executable = selected.size() - conflicts;
+        String previewToken = sha256(normalized.operationType() + "|" + json(normalized.operationParams()) + "|"
+                + candidates.stream().map(item -> item.accountId() + ":" + item.goodsId() + ":" + item.status()
+                + ":" + item.executable()).toList());
         String confirmation = "确认对" + accounts.size() + "个店铺的" + executable + "个商品执行"
-                + operationLabel(normalized.operationType()) + "，冲突" + conflicts + "个";
+                + operationLabel(normalized.operationType()) + "，冲突" + conflicts + "个"
+                + ("DELETE".equals(normalized.operationType()) ? "；删除不可恢复" : "");
         return new BatchPreview(normalized.operationType(), normalized.selectionMode(), selected.size(),
-                accounts.size(), conflicts, executable, confirmation, List.copyOf(candidates));
+                accounts.size(), conflicts, executable, confirmation, previewToken, List.copyOf(candidates));
     }
 
     @Transactional
@@ -206,8 +346,8 @@ public class ProductMatrixService {
         BatchRequest normalized = normalizeBatchRequest(request, true);
         Long tenantId = requireTenant();
         List<Map<String, Object>> replay = jdbcTemplate.queryForList(
-                "SELECT id, batch_id FROM xianyu_goods_batch_job WHERE tenant_id=? AND request_id=?",
-                tenantId, normalized.requestId());
+                "SELECT id, batch_id FROM xianyu_goods_batch_job WHERE tenant_id=? AND idempotency_key=?",
+                tenantId, normalized.idempotencyKey());
         if (!replay.isEmpty()) {
             Long jobId = ((Number) replay.getFirst().get("id")).longValue();
             Map<String, Object> existing = batchDetail(jobId);
@@ -218,16 +358,21 @@ public class ProductMatrixService {
         if (!preview.confirmationSummary().equals(normalized.confirmationText())) {
             throw new BusinessException(400, "确认范围已变化，请重新预检并使用最新确认文案");
         }
+        if (!preview.previewToken().equals(normalized.previewToken())) {
+            throw new BusinessException(409, "商品范围、版本或能力已变化，请重新预检");
+        }
         if (preview.executableCount() == 0) throw new BusinessException(409, "所选商品全部存在冲突，无法创建任务");
         String batchId = "PB-" + UUID.randomUUID().toString().replace("-", "").substring(0, 20).toUpperCase(Locale.ROOT);
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_batch_job
-                (tenant_id, batch_id, request_id, operation_type, selection_mode, selection_query_json,
+                (tenant_id, batch_id, request_id, idempotency_key, operation_type, selection_mode, selection_query_json,
+                 filter_snapshot_hash,
                  operation_params_json, status, selected_count, conflict_count, executable_count,
                  max_operations_per_minute, confirmation_summary, operator_user_id, operator_username)
-                VALUES (?,?,?,?,?,?,?,'QUEUED',?,?,?,?,?,?,?)
-                """, tenantId, batchId, normalized.requestId(), normalized.operationType(), normalized.selectionMode(),
-                json(normalized.filter()), json(normalized.operationParams()), preview.selectedCount(), preview.conflictCount(),
+                VALUES (?,?,?,?,?,?,?,?,?,'QUEUED',?,?,?,?,?,?,?)
+                """, tenantId, batchId, normalized.requestId(), normalized.idempotencyKey(), normalized.operationType(), normalized.selectionMode(),
+                json(selectionSnapshot(normalized)),
+                preview.previewToken(), json(normalized.operationParams()), preview.selectedCount(), preview.conflictCount(),
                 preview.executableCount(), normalized.maxOperationsPerMinute(), preview.confirmationSummary(),
                 UserContext.getUserId(), UserContext.getUsername());
         Long jobId = jdbcTemplate.queryForObject(
@@ -237,9 +382,11 @@ public class ProductMatrixService {
             jdbcTemplate.update("""
                     INSERT INTO xianyu_goods_batch_item
                     (tenant_id, batch_job_id, batch_id, xianyu_account_id, xy_goods_id, operation_type,
+                     expected_goods_version, old_value_json, new_value_json,
                      status, conflict_code, conflict_message, outcome_state)
-                    VALUES (?,?,?,?,?,?,?, ?,?, 'UNKNOWN')
+                    VALUES (?,?,?,?,?,?,?,?,?,?, ?,?, 'PENDING')
                     """, tenantId, jobId, batchId, item.accountId(), item.goodsId(), normalized.operationType(),
+                    item.rowVersion(), json(item.oldValue()), json(normalized.operationParams()),
                     item.executable() ? "QUEUED" : "CONFLICT", item.executable() ? null : "PRECHECK_CONFLICT",
                     item.conflictMessage());
         }
@@ -264,7 +411,30 @@ public class ProductMatrixService {
         Object[] args = normalizedStatus == null
                 ? new Object[]{requireTenant(), safeLimit}
                 : new Object[]{requireTenant(), normalizedStatus, safeLimit};
-        return jdbcTemplate.query(sql, (rs, rowNum) -> batchRow(rs), args);
+        List<Map<String, Object>> jobs = jdbcTemplate.query(sql, (rs, rowNum) -> batchRow(rs), args);
+        jobs.forEach(this::redactJobToVisibleScope);
+        return jobs;
+    }
+
+    public List<Map<String, Object>> batches(BatchQuery query) {
+        BatchQuery q = query == null ? new BatchQuery(null, null, null, null, null, null, null, 50) : query;
+        String status = normalizeOptional(q.status(), BATCH_STATUSES, "批量任务状态");
+        int limit = q.limit() == null ? 50 : Math.max(1, Math.min(q.limit(), 200));
+        MapSqlParameterSource params = new MapSqlParameterSource("tenantId", requireTenant()).addValue("limit", limit);
+        StringBuilder sql = new StringBuilder("SELECT DISTINCT job.* FROM xianyu_goods_batch_job job JOIN xianyu_goods_batch_item item")
+                .append(" ON item.tenant_id=job.tenant_id AND item.batch_job_id=job.id WHERE job.tenant_id=:tenantId")
+                .append(itemScopeCondition("item"));
+        if (status != null) { sql.append(" AND job.status=:status"); params.addValue("status", status); }
+        if (trim(q.operationType()) != null) { sql.append(" AND job.operation_type=:operation"); params.addValue("operation", upper(q.operationType())); }
+        if (q.accountId() != null) { accountAccessService.requireAccess(q.accountId()); sql.append(" AND item.xianyu_account_id=:accountId"); params.addValue("accountId", q.accountId()); }
+        if (q.operatorUserId() != null) { sql.append(" AND job.operator_user_id=:operatorId"); params.addValue("operatorId", q.operatorUserId()); }
+        if (trim(q.search()) != null) { sql.append(" AND (job.batch_id LIKE :search OR job.request_id LIKE :search)"); params.addValue("search", "%" + trim(q.search()) + "%"); }
+        if (trim(q.createdFrom()) != null) { sql.append(" AND job.created_time>=:createdFrom"); params.addValue("createdFrom", q.createdFrom()); }
+        if (trim(q.createdTo()) != null) { sql.append(" AND job.created_time<=:createdTo"); params.addValue("createdTo", q.createdTo()); }
+        sql.append(" ORDER BY job.created_time DESC,job.id DESC LIMIT :limit");
+        List<Map<String, Object>> jobs = namedJdbc.query(sql.toString(), params, (rs, rowNum) -> batchRow(rs));
+        jobs.forEach(this::redactJobToVisibleScope);
+        return jobs;
     }
 
     public Map<String, Object> batchDetail(Long jobId) {
@@ -288,11 +458,63 @@ public class ProductMatrixService {
                 """ + itemScopeCondition("item") + " ORDER BY item.id", (rs, rowNum) -> batchItemRow(rs),
                 requireTenant(), jobId);
         result.put("items", items);
+        redactJobToVisibleItems(result, items);
+        int rate = result.get("maxOperationsPerMinute") instanceof Number n ? Math.max(1, n.intValue()) : 10;
+        long remaining = items.stream().filter(item -> Set.of("QUEUED", "RUNNING").contains(item.get("status"))).count();
+        result.put("estimatedWaitSeconds", remaining == 0 ? 0 : (long) Math.ceil(remaining * 60d / rate));
+        result.put("unknownRequiresManualReview", items.stream().anyMatch(item -> "UNKNOWN".equals(item.get("status"))));
         return result;
+    }
+
+    private void redactJobToVisibleScope(Map<String, Object> job) {
+        AccountScopeContext.Scope scope = AccountScopeContext.get();
+        if (scope == null || scope.unrestricted()) return;
+        Long jobId = job.get("jobId") instanceof Number number ? number.longValue() : null;
+        if (jobId == null) return;
+        List<Map<String, Object>> visibleItems = jdbcTemplate.queryForList("""
+                SELECT status FROM xianyu_goods_batch_item item
+                 WHERE item.tenant_id=? AND item.batch_job_id=?
+                """ + itemScopeCondition("item"), requireTenant(), jobId);
+        redactJobToVisibleItems(job, visibleItems);
+    }
+
+    private void redactJobToVisibleItems(Map<String, Object> job, List<Map<String, Object>> visibleItems) {
+        AccountScopeContext.Scope scope = AccountScopeContext.get();
+        if (scope == null || scope.unrestricted()) return;
+        Map<String, Long> counts = visibleItems.stream().collect(java.util.stream.Collectors.groupingBy(
+                item -> string(item.get("status")), java.util.stream.Collectors.counting()));
+        long success = counts.getOrDefault("SUCCEEDED", 0L);
+        long failed = counts.getOrDefault("FAILED", 0L);
+        long unknown = counts.getOrDefault("UNKNOWN", 0L);
+        long skipped = counts.getOrDefault("SKIPPED", 0L);
+        long cancelled = counts.getOrDefault("CANCELLED", 0L);
+        long conflicts = counts.getOrDefault("CONFLICT", 0L);
+        long active = counts.getOrDefault("QUEUED", 0L) + counts.getOrDefault("RUNNING", 0L);
+        long total = visibleItems.size();
+        job.put("selectedCount", total);
+        job.put("executableCount", Math.max(0, total - conflicts));
+        job.put("conflictCount", conflicts);
+        job.put("successCount", success);
+        job.put("failedCount", failed);
+        job.put("unknownCount", unknown);
+        job.put("skippedCount", skipped);
+        job.put("cancelledCount", cancelled);
+        job.put("progressPercent", total == 0 ? BigDecimal.ZERO : BigDecimal.valueOf(
+                (success + failed + unknown + skipped + cancelled + conflicts) * 100d / total).setScale(2, RoundingMode.HALF_UP));
+        int rate = job.get("maxOperationsPerMinute") instanceof Number number ? Math.max(1, number.intValue()) : 10;
+        job.put("estimatedWaitSecondsUpperBound", active == 0 ? 0 : (long) Math.ceil(active * 60d / rate));
+        job.put("visibleScopeOnly", true);
+        job.put("status", active > 0 ? "RUNNING" : success > 0 && failed + unknown + skipped + cancelled + conflicts > 0
+                ? "PARTIAL_SUCCESS" : success == total && total > 0 ? "SUCCEEDED" : "FAILED");
     }
 
     @Transactional
     public Map<String, Object> retryBatchFailures(Long jobId, String requestId) {
+        return retryBatchFailures(jobId, requestId, null);
+    }
+
+    @Transactional
+    public Map<String, Object> retryBatchFailures(Long jobId, String requestId, List<Long> selectedItemIds) {
         requireText(requestId, "requestId", 80);
         Map<String, Object> batch = batchDetail(jobId);
         @SuppressWarnings("unchecked")
@@ -302,6 +524,7 @@ public class ProductMatrixService {
             String status = string(item.get("status"));
             if (!ITEM_RETRYABLE.contains(status)) continue;
             Long itemId = ((Number) item.get("itemId")).longValue();
+            if (selectedItemIds != null && !selectedItemIds.contains(itemId)) continue;
             Long accountId = ((Number) item.get("accountId")).longValue();
             String goodsId = string(item.get("goodsId"));
             int inserted = jdbcTemplate.update("""
@@ -315,7 +538,7 @@ public class ProductMatrixService {
                     UPDATE xianyu_goods_batch_item
                        SET status='QUEUED', next_retry_time=NULL, error_message=NULL,
                            outcome_state='UNKNOWN', completed_time=NULL
-                     WHERE tenant_id=? AND id=? AND status IN ('FAILED','UNKNOWN')
+                     WHERE tenant_id=? AND id=? AND status='FAILED'
                     """, requireTenant(), itemId);
         }
         if (retried > 0) {
@@ -327,6 +550,46 @@ public class ProductMatrixService {
         Map<String, Object> result = batchDetail(jobId);
         result.put("retriedCount", retried);
         result.put("idempotentReplay", retried == 0);
+        return result;
+    }
+
+    @Transactional
+    public Map<String, Object> cancelBatch(Long jobId, String requestId, String reason) {
+        requireText(requestId, "requestId", 80);
+        Map<String, Object> before = batchDetail(jobId);
+        String status = string(before.get("status"));
+        if (Set.of("SUCCEEDED", "FAILED", "PARTIAL_SUCCESS", "CANCELLED").contains(status)) {
+            Map<String, Object> replay = new LinkedHashMap<>(before);
+            replay.put("idempotentReplay", true);
+            return replay;
+        }
+        int event = jdbcTemplate.update("""
+                INSERT IGNORE INTO xianyu_goods_event
+                (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
+                 operator_user_id,operator_username,request_id,idempotency_key,batch_job_id,error_message)
+                SELECT item.tenant_id,item.xianyu_account_id,item.xy_goods_id,'BATCH_CANCEL','USER','LOCAL_SUCCESS','LOCAL',
+                       ?,?,?,?,item.batch_job_id,?
+                  FROM xianyu_goods_batch_item item
+                 WHERE item.tenant_id=? AND item.batch_job_id=? LIMIT 1
+                """, UserContext.getUserId(), UserContext.getUsername(), requestId, requestId, limit(reason, 500), requireTenant(), jobId);
+        if (event == 0) {
+            Map<String, Object> replay = batchDetail(jobId);
+            replay.put("idempotentReplay", true);
+            return replay;
+        }
+        jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_job SET status='CANCEL_REQUESTED',cancel_requested_time=NOW(3),cancellation_reason=?
+                 WHERE tenant_id=? AND id=? AND status IN ('PENDING_CONFIRMATION','QUEUED','RUNNING','CANCEL_REQUESTED')
+                """, limit(reason, 500), requireTenant(), jobId);
+        jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_item SET status='CANCELLED',outcome_state='NOT_EXECUTED',
+                       cancelled_time=NOW(3),completed_time=NOW(3)
+                 WHERE tenant_id=? AND batch_job_id=? AND status='QUEUED'
+                """, requireTenant(), jobId);
+        audit(null, "PRODUCT_BATCH_CANCEL", "取消商品批量任务", requestId, "LOCAL_SUCCESS",
+                Map.of("jobId", jobId, "reason", reason == null ? "" : reason), null);
+        Map<String, Object> result = batchDetail(jobId);
+        result.put("idempotentReplay", false);
         return result;
     }
 
@@ -352,15 +615,18 @@ public class ProductMatrixService {
     }
 
     private ProductFilter normalizeFilter(ProductFilter value) {
-        ProductFilter filter = value == null ? new ProductFilter(null, null, null, null, null, 1, 20) : value;
+        ProductFilter filter = value == null ? new ProductFilter(null, null, null, null, null, null, 7, 1, 20) : value;
         String bucket = filter.statusBucket() == null ? "ALL" : requireEnum(filter.statusBucket(), STATUS_BUCKETS, "商品状态");
         int page = filter.page() == null || filter.page() < 1 ? 1 : filter.page();
         int size = filter.pageSize() == null || filter.pageSize() < 1 ? 20 : Math.min(filter.pageSize(), 100);
         List<Long> accountIds = filter.accountIds() == null ? List.of() : filter.accountIds().stream()
                 .filter(id -> id != null && id > 0).distinct().toList();
         accountIds.forEach(accountAccessService::requireAccess);
-        return new ProductFilter(trim(filter.search()), accountIds, bucket, upper(filter.source()),
-                upper(filter.publishChannel()), page, size);
+        int window = filter.metricWindowDays() == null ? 7 : filter.metricWindowDays();
+        if (!Set.of(1, 7, 30).contains(window)) throw new BusinessException(400, "数据窗口仅支持1、7、30天");
+        if (filter.groupId() != null && filter.groupId() <= 0) throw new BusinessException(400, "店铺分组无效");
+        return new ProductFilter(trim(filter.search()), accountIds, filter.groupId(), bucket, upper(filter.source()),
+                upper(filter.publishChannel()), window, page, size);
     }
 
     private QueryParts queryParts(ProductFilter filter, boolean includeStatus) {
@@ -369,6 +635,11 @@ public class ProductMatrixService {
                 .append(" ON account.id=goods.xianyu_account_id AND account.tenant_id=goods.tenant_id")
                 .append(" WHERE goods.tenant_id=:tenantId");
         appendAccountScope(where, params, "goods", filter.accountIds());
+        if (filter.groupId() != null) {
+            where.append(" AND EXISTS (SELECT 1 FROM xianyu_account_group_member gm WHERE gm.tenant_id=goods.tenant_id")
+                    .append(" AND gm.xianyu_account_id=goods.xianyu_account_id AND gm.group_id=:groupId)");
+            params.addValue("groupId", filter.groupId());
+        }
         if (filter.search() != null) {
             where.append(" AND (goods.xy_good_id LIKE :search OR goods.title LIKE :search OR goods.outer_id LIKE :search)");
             params.addValue("search", "%" + filter.search() + "%");
@@ -442,8 +713,13 @@ public class ProductMatrixService {
         map.put("categoryName", rs.getString("category_name"));
         map.put("businessMode", rs.getString("business_mode"));
         map.put("conditionCode", rs.getString("condition_code"));
+        map.put("supportPolicy", rs.getString("support_policy"));
+        map.put("location", rs.getString("location_text"));
         map.put("syncStatus", rs.getString("sync_status"));
         map.put("coverageStatus", rs.getString("coverage_status"));
+        map.put("rowVersion", rs.getLong("row_version"));
+        map.put("createdTime", instant(rs, "created_time"));
+        map.put("updatedTime", instant(rs, "updated_time"));
         map.put("platformUpdatedTime", instant(rs, "platform_updated_time"));
         map.put("lastSyncedTime", instant(rs, "last_synced_time"));
         map.put("lastSyncRequestId", rs.getString("last_sync_request_id"));
@@ -452,9 +728,27 @@ public class ProductMatrixService {
         return map;
     }
 
+    private void enrichWarehouseEvidence(Map<String, Object> product) {
+        Long accountId = product.get("accountId") instanceof Number n ? n.longValue() : null;
+        String goodsId = string(product.get("goodsId"));
+        if (accountId == null || goodsId.isBlank()) return;
+        Map<String, Object> evidence = jdbcTemplate.queryForMap("""
+                SELECT COUNT(*) mappingCount,
+                       SUM(CASE WHEN delivery_mode=2 THEN 1 ELSE 0 END) cardPoolMappingCount,
+                       MAX(update_time) mappingSyncedAt
+                  FROM xianyu_goods_auto_delivery_config
+                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
+                """, requireTenant(), accountId, goodsId);
+        long mappings = evidence.get("mappingCount") instanceof Number n ? n.longValue() : 0;
+        product.put("warehouseStatus", mappings == 0 ? "UNCONFIGURED" : "CONFIGURED");
+        product.put("fulfillmentMappingCount", mappings);
+        product.put("cardPoolMappingCount", evidence.get("cardPoolMappingCount"));
+        product.put("fulfillmentSyncedAt", evidence.get("mappingSyncedAt"));
+    }
+
     private List<Map<String, Object>> skus(Long accountId, String goodsId) {
         return jdbcTemplate.query("""
-                SELECT sku_key, property_text, price, quantity, sku_id
+                SELECT sku_key, property_text, price, quantity, sku_id, features
                   FROM xianyu_goods_sku
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=? ORDER BY id
                 """, (rs, rowNum) -> {
@@ -464,8 +758,18 @@ public class ProductMatrixService {
             sku.put("price", rs.getBigDecimal("price"));
             sku.put("stock", nullableInteger(rs, "quantity"));
             sku.put("platformStatus", null);
-            sku.put("syncDifference", null);
+            sku.put("originalPrice", null);
+            sku.put("image", null);
+            sku.put("syncDifference", "平台 SKU 状态和划线价尚未同步");
             sku.put("skuId", rs.getString("sku_id"));
+            sku.put("features", readJson(rs.getString("features")));
+            List<Map<String, Object>> fulfillment = jdbcTemplate.queryForList("""
+                    SELECT delivery_mode deliveryMode, sku_name skuName, kami_config_ids cardPoolIds,
+                           kami_delivery_template deliveryTemplate, update_time updatedTime
+                      FROM xianyu_goods_auto_delivery_config
+                     WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=? AND sku_key=COALESCE(?, '')
+                    """, requireTenant(), accountId, goodsId, rs.getString("sku_id"));
+            sku.put("fulfillment", fulfillment.isEmpty() ? null : fulfillment.getFirst());
             return sku;
         }, requireTenant(), accountId, goodsId);
     }
@@ -473,7 +777,7 @@ public class ProductMatrixService {
     private Map<String, Object> marketing(Long accountId, String goodsId) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 SELECT xianyu_auto_delivery_on, xianyu_auto_reply_on, xianyu_auto_rate_on,
-                       xianyu_auto_polish_on, last_polish_time
+                       xianyu_auto_polish_on, human_intervention_on, last_polish_time
                   FROM xianyu_goods_config
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
                 """, (rs, rowNum) -> {
@@ -482,6 +786,7 @@ public class ProductMatrixService {
             value.put("autoReplyEnabled", rs.getInt("xianyu_auto_reply_on") == 1);
             value.put("autoRateEnabled", rs.getInt("xianyu_auto_rate_on") == 1);
             value.put("autoPolishEnabled", rs.getInt("xianyu_auto_polish_on") == 1);
+            value.put("humanTakeoverEnabled", rs.getInt("human_intervention_on") == 1);
             value.put("lastPolishTime", nullableLong(rs, "last_polish_time"));
             value.put("fanPrice", null);
             value.put("bargain", null);
@@ -495,6 +800,7 @@ public class ProductMatrixService {
         unknown.put("autoReplyEnabled", false);
         unknown.put("autoRateEnabled", false);
         unknown.put("autoPolishEnabled", false);
+        unknown.put("humanTakeoverEnabled", false);
         unknown.put("lastPolishTime", null);
         unknown.put("fanPrice", null);
         unknown.put("bargain", null);
@@ -512,7 +818,7 @@ public class ProductMatrixService {
                        SUM(paid_amount) paid_amount,
                        CASE WHEN COUNT(*)=0 THEN 'UNSYNCED'
                             WHEN SUM(coverage_status='FULL')=COUNT(*) THEN 'FULL' ELSE 'PARTIAL' END coverage_status,
-                       MAX(synced_at) synced_at
+                       MAX(metric_date) data_date, MAX(synced_at) synced_at
                   FROM xianyu_goods_metric_daily
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
                    AND metric_date >= DATE_SUB(CURRENT_DATE(), INTERVAL ? DAY)
@@ -529,6 +835,8 @@ public class ProductMatrixService {
             metric.put("paidOrderCount", samples == 0 ? null : nullableLong(rs, "paid_order_count"));
             metric.put("paidAmount", samples == 0 ? null : rs.getBigDecimal("paid_amount"));
             metric.put("coverageStatus", samples == 0 ? "UNSYNCED" : rs.getString("coverage_status"));
+            metric.put("dataDate", samples == 0 || rs.getDate("data_date") == null
+                    ? null : rs.getDate("data_date").toLocalDate());
             metric.put("syncedAt", samples == 0 ? null : instant(rs, "synced_at"));
             return metric;
         }, requireTenant(), accountId, goodsId, Math.max(0, days - 1));
@@ -546,6 +854,9 @@ public class ProductMatrixService {
         event.put("operatorUsername", rs.getString("operator_username"));
         event.put("requestId", rs.getString("request_id"));
         event.put("idempotencyKey", rs.getString("idempotency_key"));
+        event.put("jobId", nullableLong(rs, "batch_job_id"));
+        event.put("taskItemId", nullableLong(rs, "batch_item_id"));
+        event.put("platformRequestId", rs.getString("platform_request_id"));
         event.put("before", readJson(rs.getString("before_json")));
         event.put("after", readJson(rs.getString("after_json")));
         event.put("fieldDiff", readJson(rs.getString("field_diff_json")));
@@ -561,6 +872,7 @@ public class ProductMatrixService {
         job.put("jobId", rs.getLong("id"));
         job.put("batchId", rs.getString("batch_id"));
         job.put("requestId", rs.getString("request_id"));
+        job.put("idempotencyKey", rs.getString("idempotency_key"));
         job.put("operationType", rs.getString("operation_type"));
         job.put("selectionMode", rs.getString("selection_mode"));
         job.put("operationParams", readJson(rs.getString("operation_params_json")));
@@ -570,13 +882,25 @@ public class ProductMatrixService {
         job.put("executableCount", rs.getInt("executable_count"));
         job.put("successCount", rs.getInt("success_count"));
         job.put("failedCount", rs.getInt("failed_count"));
+        job.put("skippedCount", rs.getInt("skipped_count"));
         job.put("unknownCount", rs.getInt("unknown_count"));
+        job.put("cancelledCount", rs.getInt("cancelled_count"));
+        job.put("progressPercent", rs.getBigDecimal("progress_percent"));
         job.put("maxOperationsPerMinute", rs.getInt("max_operations_per_minute"));
+        int remaining = Math.max(0, rs.getInt("executable_count") - rs.getInt("success_count")
+                - rs.getInt("failed_count") - rs.getInt("skipped_count")
+                - rs.getInt("unknown_count") - rs.getInt("cancelled_count"));
+        job.put("estimatedWaitSecondsUpperBound", remaining == 0 ? 0
+                : (int) Math.ceil(remaining * 60d / Math.max(1, rs.getInt("max_operations_per_minute"))));
         job.put("confirmationSummary", rs.getString("confirmation_summary"));
         job.put("operatorUserId", nullableLong(rs, "operator_user_id"));
         job.put("operatorUsername", rs.getString("operator_username"));
         job.put("startedTime", instant(rs, "started_time"));
         job.put("completedTime", instant(rs, "completed_time"));
+        job.put("cancelRequestedTime", instant(rs, "cancel_requested_time"));
+        job.put("cancellationReason", rs.getString("cancellation_reason"));
+        job.put("recoveryCount", rs.getInt("recovery_count"));
+        job.put("lastDispatchTime", instant(rs, "last_dispatch_time"));
         job.put("createdTime", instant(rs, "created_time"));
         return job;
     }
@@ -589,6 +913,9 @@ public class ProductMatrixService {
         item.put("goodsId", rs.getString("xy_goods_id"));
         item.put("title", rs.getString("title"));
         item.put("operationType", rs.getString("operation_type"));
+        item.put("expectedGoodsVersion", nullableLong(rs, "expected_goods_version"));
+        item.put("oldValue", readJson(rs.getString("old_value_json")));
+        item.put("newValue", readJson(rs.getString("new_value_json")));
         item.put("status", rs.getString("status"));
         item.put("conflictCode", rs.getString("conflict_code"));
         item.put("conflictMessage", rs.getString("conflict_message"));
@@ -597,6 +924,8 @@ public class ProductMatrixService {
         item.put("nextRetryTime", instant(rs, "next_retry_time"));
         item.put("outcomeState", rs.getString("outcome_state"));
         item.put("platformResponseCode", rs.getString("platform_response_code"));
+        item.put("platformRequestId", rs.getString("platform_request_id"));
+        item.put("errorCode", rs.getString("error_code"));
         item.put("result", readJson(rs.getString("result_json")));
         item.put("errorMessage", rs.getString("error_message"));
         item.put("startedTime", instant(rs, "started_time"));
@@ -610,15 +939,16 @@ public class ProductMatrixService {
             ProductFilter filter = normalizeFilter(request.filter());
             QueryParts query=queryParts(filter,true);
             List<Map<String,Object>> products=namedJdbc.query("SELECT goods.*,account.account_note,account.unb "+query.fromWhere()
-                    +" ORDER BY goods.updated_time DESC,goods.id DESC LIMIT 501",query.params(),(rs,row)->productRow(rs));
+                    +" ORDER BY goods.updated_time DESC,goods.id DESC LIMIT 1001",query.params(),(rs,row)->productRow(rs));
             products.forEach(product -> refs.add(new ProductRef(
                     ((Number) product.get("accountId")).longValue(), string(product.get("goodsId")))));
-            if (products.size() > 500) throw new BusinessException(400, "跨页批量单次最多500个商品，请缩小筛选范围");
+            if (products.size() > MAX_BATCH_ITEMS) throw new BusinessException(400, "跨页批量单次最多1000个商品，请缩小筛选范围");
         } else {
             if (request.items() != null) refs.addAll(request.items());
         }
+        if (request.excludedItems() != null) refs.removeAll(request.excludedItems());
         if (refs.isEmpty()) throw new BusinessException(400, "请选择至少一个商品");
-        if (refs.size() > 500) throw new BusinessException(400, "批量任务单次最多500个商品");
+        if (refs.size() > MAX_BATCH_ITEMS) throw new BusinessException(400, "批量任务单次最多1000个商品");
         refs.forEach(ref -> {
             if (ref == null || ref.accountId() == null || ref.accountId() <= 0 || trim(ref.goodsId()) == null) {
                 throw new BusinessException(400, "商品选择范围包含无效账号或商品ID");
@@ -633,7 +963,10 @@ public class ProductMatrixService {
         String operation = requireEnum(request.operationType(), BATCH_OPERATIONS, "批量操作");
         String selectionMode = request.selectionMode() == null ? "EXPLICIT_IDS"
                 : requireEnum(request.selectionMode(), Set.of("EXPLICIT_IDS", "FILTER_SNAPSHOT"), "选择范围");
-        if (forCreate) requireText(request.requestId(), "requestId", 80);
+        String requestId = forCreate ? requireText(request.requestId(), "requestId", 80) : trim(request.requestId());
+        String idempotencyKey = forCreate
+                ? requireText(request.idempotencyKey() == null ? requestId : request.idempotencyKey(), "idempotencyKey", 100)
+                : trim(request.idempotencyKey());
         int rate = request.maxOperationsPerMinute() == null ? 10
                 : Math.max(1, Math.min(request.maxOperationsPerMinute(), 30));
         Map<String, Object> params = request.operationParams() == null ? Map.of() : request.operationParams();
@@ -645,15 +978,21 @@ public class ProductMatrixService {
             Integer stock = integer(params.get("stock"));
             if (stock == null || stock < 0) throw new BusinessException(400, "批量改库存需要不小于0的stock");
         }
-        return new BatchRequest(trim(request.requestId()), operation, selectionMode, request.items(), request.filter(),
-                params, rate, request.confirmationText());
+        return new BatchRequest(requestId, idempotencyKey, operation, selectionMode, request.items(), request.excludedItems(),
+                request.filter(), params, rate, request.confirmationText(), trim(request.previewToken()));
     }
 
     private Map<String, Object> findProduct(Long accountId, String goodsId) {
         requireProductAccess(accountId, goodsId);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT title, status, product_source, sync_status, coverage_status
-                  FROM xianyu_goods WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=?
+                SELECT goods.title, goods.status, goods.product_source, goods.publish_channel,
+                       goods.sync_status, goods.coverage_status, goods.row_version, goods.sold_price, goods.stock,
+                       account.status account_status,
+                       CASE WHEN cookie.cookie_status=1 AND cookie.cookie_text IS NOT NULL AND cookie.cookie_text<>'' THEN 1 ELSE 0 END credential_ready
+                  FROM xianyu_goods goods JOIN xianyu_account account
+                    ON account.id=goods.xianyu_account_id AND account.tenant_id=goods.tenant_id
+                  LEFT JOIN xianyu_cookie cookie ON cookie.xianyu_account_id=account.id AND cookie.tenant_id=goods.tenant_id
+                 WHERE goods.tenant_id=? AND goods.xianyu_account_id=? AND goods.xy_good_id=?
                 """, requireTenant(), accountId, goodsId);
         if (rows.isEmpty()) throw new BusinessException(404, "商品不存在：" + goodsId);
         return rows.getFirst();
@@ -662,6 +1001,10 @@ public class ProductMatrixService {
     private String conflict(String operation, Map<String, Object> params, Map<String, Object> product) {
         Integer status = integer(product.get("status"));
         String source = string(product.get("product_source"));
+        if (!Integer.valueOf(1).equals(integer(product.get("account_status")))) return "店铺当前未启用";
+        if (!Integer.valueOf(1).equals(integer(product.get("credential_ready")))) return "店铺授权凭据不可用";
+        String syncStatus = string(product.get("sync_status"));
+        if (!"SYNC".equals(operation) && !"SUCCEEDED".equals(syncStatus)) return "商品数据不是最新平台真值，请先同步";
         if ("LOCAL_DRAFT".equals(source) && !"SYNC".equals(operation)) return "本地草稿尚无平台商品，不能执行平台操作";
         if ("ON_SALE".equals(operation) && Integer.valueOf(0).equals(status)) return "商品已经在售";
         if ("OFF_SHELF".equals(operation) && status != null && Set.of(1, -1, -98).contains(status)) return "商品已经下架或删除";
@@ -677,28 +1020,54 @@ public class ProductMatrixService {
         return null;
     }
 
-    private Map<String, Object> pageSummary(List<Map<String, Object>> records) {
-        BigDecimal priceTotal = BigDecimal.ZERO;
-        long stockTotal = 0;
-        int knownPrices = 0;
-        int knownStocks = 0;
-        for (Map<String, Object> record : records) {
-            if (record.get("price") instanceof BigDecimal price) {
-                priceTotal = priceTotal.add(price);
-                knownPrices++;
-            }
-            if (record.get("stock") instanceof Number stock) {
-                stockTotal += stock.longValue();
-                knownStocks++;
-            }
-        }
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("productCount", records.size());
-        summary.put("knownPriceCount", knownPrices);
-        summary.put("averagePrice", knownPrices == 0 ? null : priceTotal.divide(BigDecimal.valueOf(knownPrices), 2, RoundingMode.HALF_UP));
-        summary.put("knownStockCount", knownStocks);
-        summary.put("knownStockTotal", knownStocks == 0 ? null : stockTotal);
-        summary.put("metricCoverageStatus", "UNSYNCED");
+    private Map<String, Object> oldValue(Map<String, Object> product) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("status", product.get("status"));
+        value.put("price", product.get("sold_price"));
+        value.put("stock", product.get("stock"));
+        return value;
+    }
+
+    private Map<String, Object> selectionSnapshot(BatchRequest request) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("filter", request.filter());
+        snapshot.put("excludedItems", request.excludedItems() == null ? List.of() : request.excludedItems());
+        return snapshot;
+    }
+
+    private Map<String, Object> filteredSummary(QueryParts query, int metricWindowDays) {
+        Map<String, Object> aggregate = namedJdbc.queryForMap("""
+                SELECT COUNT(*) productCount,
+                       SUM(goods.sold_price IS NOT NULL AND goods.sold_price<>'') knownPriceCount,
+                       AVG(CASE WHEN goods.sold_price REGEXP '^[0-9]+(\\.[0-9]+)?$' THEN CAST(goods.sold_price AS DECIMAL(12,2)) END) averagePrice,
+                       SUM(goods.stock IS NOT NULL) knownStockCount,
+                       SUM(goods.stock) knownStockTotal,
+                       SUM(goods.coverage_status='UNSYNCED') unsyncedCount,
+                       MAX(goods.last_synced_time) lastSyncedTime
+                """ + query.fromWhere(), query.params());
+        MapSqlParameterSource metricParams = copy(query.params()).addValue("metricDays", Math.max(0, metricWindowDays - 1));
+        Map<String, Object> metrics = namedJdbc.queryForMap("""
+                SELECT COUNT(metric.id) sampleRows, COUNT(DISTINCT metric.metric_date) sampleDays,
+                       MAX(metric.metric_date) dataDate, MAX(metric.synced_at) metricSyncedAt,
+                       CASE WHEN COUNT(metric.id)=0 THEN 'UNSYNCED'
+                            WHEN SUM(metric.coverage_status='FULL')=COUNT(metric.id) THEN 'FULL' ELSE 'PARTIAL' END metricCoverageStatus,
+                       SUM(metric.exposure_count) exposureCount, SUM(metric.visitor_count) visitorCount,
+                       SUM(metric.inquiry_count) inquiryCount, SUM(metric.paid_order_count) paidOrderCount
+                FROM (SELECT goods.tenant_id, goods.xianyu_account_id, goods.xy_good_id
+                """ + query.fromWhere() + ") filtered LEFT JOIN xianyu_goods_metric_daily metric"
+                + " ON metric.tenant_id=filtered.tenant_id AND metric.xianyu_account_id=filtered.xianyu_account_id"
+                + " AND metric.xy_goods_id=filtered.xy_good_id AND metric.metric_date>=DATE_SUB(CURRENT_DATE(), INTERVAL :metricDays DAY)", metricParams);
+        Map<String, Object> summary = new LinkedHashMap<>(aggregate);
+        long samples = metrics.get("sampleRows") instanceof Number n ? n.longValue() : 0;
+        summary.put("metricWindowDays", metricWindowDays);
+        summary.put("metricCoverageStatus", samples == 0 ? "UNSYNCED" : metrics.get("metricCoverageStatus"));
+        summary.put("metricSampleDays", samples == 0 ? null : metrics.get("sampleDays"));
+        summary.put("metricDataDate", samples == 0 ? null : metrics.get("dataDate"));
+        summary.put("metricSyncedAt", samples == 0 ? null : metrics.get("metricSyncedAt"));
+        summary.put("exposureCount", samples == 0 ? null : metrics.get("exposureCount"));
+        summary.put("visitorCount", samples == 0 ? null : metrics.get("visitorCount"));
+        summary.put("inquiryCount", samples == 0 ? null : metrics.get("inquiryCount"));
+        summary.put("paidOrderCount", samples == 0 ? null : metrics.get("paidOrderCount"));
         return summary;
     }
 
@@ -813,6 +1182,11 @@ public class ProductMatrixService {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    private static String limit(String value, int max) {
+        if (value == null) return null;
+        return value.length() <= max ? value : value.substring(0, max);
+    }
+
     private static String string(Object value) {
         return value == null ? "" : String.valueOf(value);
     }
@@ -821,6 +1195,23 @@ public class ProductMatrixService {
         if (value instanceof Number number) return number.intValue();
         try { return value == null ? null : Integer.valueOf(String.valueOf(value)); }
         catch (NumberFormatException e) { return null; }
+    }
+
+    private static int bool(Boolean value) {
+        return Boolean.TRUE.equals(value) ? 1 : 0;
+    }
+
+    private static long longValue(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            throw new IllegalStateException("无法生成商品范围摘要", e);
+        }
     }
 
     private static BigDecimal decimal(Object value) {
@@ -850,21 +1241,32 @@ public class ProductMatrixService {
 
     private record QueryParts(String fromWhere, MapSqlParameterSource params) {}
 
-    public record ProductFilter(String search, List<Long> accountIds, String statusBucket,
-                                String source, String publishChannel, Integer page, Integer pageSize) {}
+    public record ProductFilter(String search, List<Long> accountIds, Long groupId, String statusBucket,
+                                String source, String publishChannel, Integer metricWindowDays,
+                                Integer page, Integer pageSize) {}
 
     public record SavedFilterCommand(String name,ProductFilter filter,String requestId) {}
 
+    public record LocalProductUpdate(String title, String supportPolicy, String location,
+                                     Long expectedVersion, String requestId) {}
+
+    public record AutomationUpdate(Boolean autoDelivery, Boolean autoReply, Boolean autoRate,
+                                   Boolean autoPolish, Boolean humanTakeover, String requestId) {}
+
     public record ProductRef(Long accountId, String goodsId) {}
 
-    public record BatchRequest(String requestId, String operationType, String selectionMode,
-                               List<ProductRef> items, ProductFilter filter, Map<String, Object> operationParams,
-                               Integer maxOperationsPerMinute, String confirmationText) {}
+    public record BatchQuery(String status, String operationType, Long accountId, Long operatorUserId,
+                             String search, String createdFrom, String createdTo, Integer limit) {}
 
-    public record BatchCandidate(Long accountId, String goodsId, String title, Integer status,
-                                 boolean executable, String conflictMessage) {}
+    public record BatchRequest(String requestId, String idempotencyKey, String operationType, String selectionMode,
+                               List<ProductRef> items, List<ProductRef> excludedItems, ProductFilter filter,
+                               Map<String, Object> operationParams, Integer maxOperationsPerMinute,
+                               String confirmationText, String previewToken) {}
+
+    public record BatchCandidate(Long accountId, String goodsId, String title, Integer status, long rowVersion,
+                                 Map<String, Object> oldValue, boolean executable, String conflictMessage) {}
 
     public record BatchPreview(String operationType, String selectionMode, int selectedCount,
                                int accountCount, int conflictCount, int executableCount,
-                               String confirmationSummary, List<BatchCandidate> items) {}
+                               String confirmationSummary, String previewToken, List<BatchCandidate> items) {}
 }

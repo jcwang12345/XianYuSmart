@@ -63,7 +63,7 @@ class ProductMatrixServiceTest {
         assertNull(summary.get("averagePrice"));
         assertNull(summary.get("knownStockTotal"));
         assertEquals("UNSYNCED", summary.get("metricCoverageStatus"));
-        assertEquals("CURRENT_PAGE", result.get("summaryScope"));
+        assertEquals("FILTERED_RESULT", result.get("summaryScope"));
     }
 
     @Test
@@ -110,8 +110,8 @@ class ProductMatrixServiceTest {
             return List.of();
         });
         ProductMatrixService.BatchRequest draft = request("SYNC", Map.of(), null);
-        String confirmation = service.previewBatch(draft).confirmationSummary();
-        ProductMatrixService.BatchRequest confirmed = request("SYNC", Map.of(), confirmation);
+        ProductMatrixService.BatchPreview preview = service.previewBatch(draft);
+        ProductMatrixService.BatchRequest confirmed = confirmedRequest("SYNC", Map.of(), preview);
 
         Map<String, Object> result = service.createBatch(confirmed);
 
@@ -124,11 +124,11 @@ class ProductMatrixServiceTest {
         boolean itemShape = false;
         for (int i = 0; i < sql.getAllValues().size(); i++) {
             if (sql.getAllValues().get(i).contains("INSERT INTO xianyu_goods_batch_job")) {
-                assertEquals(14, args.getAllValues().get(i).length);
+                assertEquals(16, args.getAllValues().get(i).length);
                 jobShape = true;
             }
             if (sql.getAllValues().get(i).contains("INSERT INTO xianyu_goods_batch_item")) {
-                assertEquals(9, args.getAllValues().get(i).length);
+                assertEquals(12, args.getAllValues().get(i).length);
                 itemShape = true;
             }
         }
@@ -136,8 +136,16 @@ class ProductMatrixServiceTest {
     }
 
     private ProductMatrixService.BatchRequest request(String operation, Map<String, Object> params, String confirmation) {
-        return new ProductMatrixService.BatchRequest("req-products", operation, "EXPLICIT_IDS",
-                List.of(new ProductMatrixService.ProductRef(2L, "goods-1")), null, params, 10, confirmation);
+        return new ProductMatrixService.BatchRequest("req-products", "idem-products", operation, "EXPLICIT_IDS",
+                List.of(new ProductMatrixService.ProductRef(2L, "goods-1")), List.of(), null,
+                params, 10, confirmation, null);
+    }
+
+    private ProductMatrixService.BatchRequest confirmedRequest(String operation, Map<String, Object> params,
+                                                                ProductMatrixService.BatchPreview preview) {
+        return new ProductMatrixService.BatchRequest("req-products", "idem-products", operation, "EXPLICIT_IDS",
+                List.of(new ProductMatrixService.ProductRef(2L, "goods-1")), List.of(), null,
+                params, 10, preview.confirmationSummary(), preview.previewToken());
     }
 
     private Map<String, Object> product(int status, String source) {
@@ -147,6 +155,11 @@ class ProductMatrixServiceTest {
         product.put("product_source", source);
         product.put("sync_status", "SUCCEEDED");
         product.put("coverage_status", "PARTIAL");
+        product.put("row_version", 1L);
+        product.put("account_status", 1);
+        product.put("credential_ready", 1);
+        product.put("sold_price", "10.00");
+        product.put("stock", 2);
         return product;
     }
 

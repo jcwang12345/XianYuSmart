@@ -285,3 +285,35 @@
 - 正式本地服务与隔离 QA 均使用 `xianyusmart:2.2.1`；应用、QA 应用和两套 MySQL 均健康。
 - 正式地址 `https://127.0.0.1:2000/`，隔离 QA 地址 `http://127.0.0.1:12401/`；两个版本接口均返回 `2.2.1`。
 - 只对隔离 QA 容器执行慢请求、数据库中断与恢复注入；正式本地服务仅进行只读健康和版本检查。
+
+## 批次 6：PRD-01～04 商品模块硬验收收口
+
+### 需求范围
+
+- `PRD_01_04_ACCEPTANCE.md` 的 P01-01～14、P02-01～14、P03-01～14、P04-01～22。
+- 本批只修改商品矩阵、商品详情、单品能力和持久化商品任务中心；生产商品不参与破坏性测试。
+
+### 已完成
+
+- 商品列表改为服务端生命周期聚合、组合筛选、分页、来源/覆盖/窗口口径和行级经营指标；未同步保持空值。
+- 详情五页签接入真实详情模型，增加订单摘要、本地资料编辑、焦点陷阱和平台能力安全降级。
+- 增加跨页筛选快照、排除项、预检、父子任务、幂等、row_version、按店限速、退避、部分成功、UNKNOWN、重启恢复、安全取消、失败重试、导出、通知、事件和审计。
+- 任务执行前再次复核用户状态、动作权限和店铺范围；受限用户的任务汇总按可见子项重新计算，避免数量和错误泄漏。
+- 新增完整任务中心的动作/店铺/操作者/状态/时间/任务 ID 筛选、逐件证据和响应式界面。
+
+### 变更文件与迁移
+
+- 后端：`ProductMatrixController.java`、`ProductMatrixService.java`、`ProductBatchExecutionService.java`、`NotificationCenterService.java`、`AccessControlInterceptor.java`。
+- 前端：`vue-code/src/views/goods/index.vue`、`vue-code/src/views/product-tasks/index.vue`、`vue-code/src/api/matrix.ts`、路由/导航/请求层及生成静态资源。
+- 测试：`ProductMatrixServiceTest.java`、`ProductBatchExecutionServiceTest.java`。
+- 迁移：`V35__product_batch_state_machine.sql`。
+- 逐项报告：`PRD_01_04_IMPLEMENTATION_REPORT.md`。
+
+### 测试与 Product Design QA
+
+- Docker 内 `npm run type-check && npm run build:spring`：通过，Vite 337 模块。
+- Docker 内 `./mvnw clean package`：114 项通过，0 失败/错误/跳过。
+- `docker build -t xianyusmart:2.3.0 .`：成功，摘要 `sha256:a2b6181262f0a4d322ccf45a4c401dfa6732aaa848b3575297fc1442861fc1b4`。
+- 隔离 QA：`http://127.0.0.1:12401/`，MySQL 5.7 Flyway 35/35 校验，应用 healthy。
+- Chrome：桌面、390×844、缩放、1000 商品、五页签、未同步语义、跨页预检、部分成功/失败/UNKNOWN、CSV 导出和键盘焦点完成开发侧设计 QA。
+- 安全边界：未创建真实平台写任务；未执行生产商品上下架、改价、库存、擦亮或删除。

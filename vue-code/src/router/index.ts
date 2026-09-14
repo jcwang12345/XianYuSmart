@@ -94,6 +94,12 @@ const router = createRouter({
       meta: { title: '商品管理', icon: '📦', permission: 'menu:goods', writePermission: 'action:goods-write' }
     },
     {
+      path: '/product-tasks',
+      name: 'product-tasks',
+      component: () => import('@/views/product-tasks/index.vue'),
+      meta: { title: '商品任务', icon: '⇄', permission: 'menu:goods', writePermission: 'action:goods-write' }
+    },
+    {
       path: '/operations',
       name: 'operations',
       component: () => import('@/views/operations/index.vue'),

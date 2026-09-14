@@ -1,4 +1,4 @@
-import { request } from '@/utils/request'
+import service, { getAuthToken, request } from '@/utils/request'
 
 export type CoverageStatus = 'FULL' | 'PARTIAL' | 'UNSYNCED'
 
@@ -137,9 +137,11 @@ export function getBusinessAnalytics(params: { start?: string; end?: string; acc
 export interface ProductFilter {
   search?: string
   accountIds?: number[]
+  groupId?: number
   statusBucket?: string
   source?: string
   publishChannel?: string
+  metricWindowDays?: 1 | 7 | 30
   page?: number
   pageSize?: number
 }
@@ -147,6 +149,7 @@ export interface ProductFilter {
 export interface MatrixProduct {
   id: number
   goodsId: string
+  outerId?: string
   accountId: number
   accountNote?: string
   accountUnb?: string
@@ -163,6 +166,20 @@ export interface MatrixProduct {
   coverageStatus: CoverageStatus
   lastSyncedTime?: string
   lastSyncErrorMessage?: string
+  warehouseStatus?: string
+  fulfillmentMappingCount?: number
+  rowVersion: number
+  metric?: {
+    windowDays: number
+    sampleDays: number
+    exposureCount?: number | null
+    visitorCount?: number | null
+    inquiryCount?: number | null
+    paidOrderCount?: number | null
+    coverageStatus: CoverageStatus
+    dataDate?: string | null
+    syncedAt?: string | null
+  }
 }
 
 export interface ProductMatrixPage extends MatrixPage<MatrixProduct> {
@@ -191,13 +208,16 @@ export function saveProductFilter(data: { name: string; filter: ProductFilter; r
 export interface ProductRef { accountId: number; goodsId: string }
 export interface ProductBatchRequest {
   requestId: string
+  idempotencyKey: string
   operationType: string
-  selectionMode: 'EXPLICIT' | 'FILTER_SNAPSHOT'
+  selectionMode: 'EXPLICIT_IDS' | 'FILTER_SNAPSHOT'
   items?: ProductRef[]
+  excludedItems?: ProductRef[]
   filter?: ProductFilter
   operationParams?: Record<string, unknown>
   maxOperationsPerMinute?: number
   confirmationText?: string
+  previewToken?: string
 }
 
 export function previewProductBatch(data: ProductBatchRequest) {
@@ -209,8 +229,36 @@ export function createProductBatch(data: ProductBatchRequest) {
   return request<Record<string, any>>({ url: `/product-matrix/batches/${operation}/create`, method: 'POST', data })
 }
 
-export function getProductBatches(status?: string) {
-  return request<Array<Record<string, any>>>({ url: '/product-matrix/batches', method: 'GET', params: { status, limit: 20 } })
+export function getProductBatches(params?: { status?: string; operationType?: string; accountId?: number; operatorUserId?: number; search?: string; createdFrom?: string; createdTo?: string; limit?: number }) {
+  return request<Array<Record<string, any>>>({ url: '/product-matrix/batches', method: 'GET', params: { ...params, limit: params?.limit || 50 } })
+}
+
+export function getProductBatch(jobId: number) {
+  return request<Record<string, any>>({ url: `/product-matrix/batches/${jobId}`, method: 'GET' })
+}
+
+export function cancelProductBatch(jobId: number, requestId: string, reason: string) {
+  return request<Record<string, any>>({ url: `/product-matrix/batches/${jobId}/cancel`, method: 'POST', data: { requestId, reason } })
+}
+
+export function retryProductBatch(jobId: number, operationType: string, itemIds: number[], requestId: string) {
+  const operation = operationType.toLowerCase().replace(/_/g, '-')
+  return request<Record<string, any>>({ url: `/product-matrix/batches/${operation}/${jobId}/retry`, method: 'POST', data: { requestId, itemIds } })
+}
+
+export function updateProductLocalDetails(accountId: number, goodsId: string, data: Record<string, unknown>) {
+  return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/local-details`, method: 'PUT', data })
+}
+
+export function updateProductAutomation(accountId: number, goodsId: string, data: Record<string, unknown>) {
+  return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/automation`, method: 'PUT', data })
+}
+
+export async function exportProductBatchFailures(jobId: number, requestId: string) {
+  const response = await service.post(`/product-matrix/batches/${jobId}/failures/export`, { requestId }, {
+    responseType: 'blob', headers: { Authorization: `Bearer ${getAuthToken() || ''}` }
+  })
+  return response.data as Blob
 }
 
 export interface OrderFilter {

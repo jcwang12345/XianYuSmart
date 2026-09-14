@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import jakarta.annotation.PostConstruct;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -25,24 +26,46 @@ public class ProductBatchExecutionService {
     private final ItemDetailSyncService itemDetailSyncService;
     private final GoodsAutomationService goodsAutomationService;
     private final ObjectMapper objectMapper;
+    private final NotificationCenterService notificationCenterService;
+    private final String workerId = "product-batch-" + java.util.UUID.randomUUID().toString().substring(0, 8);
 
     public ProductBatchExecutionService(JdbcTemplate jdbcTemplate,
                                         PlatformPublishService platformPublishService,
                                         ItemDetailSyncService itemDetailSyncService,
                                         GoodsAutomationService goodsAutomationService,
-                                        ObjectMapper objectMapper) {
+                                        ObjectMapper objectMapper,
+                                        NotificationCenterService notificationCenterService) {
         this.jdbcTemplate = jdbcTemplate;
         this.platformPublishService = platformPublishService;
         this.itemDetailSyncService = itemDetailSyncService;
         this.goodsAutomationService = goodsAutomationService;
         this.objectMapper = objectMapper;
+        this.notificationCenterService = notificationCenterService;
+    }
+
+    @PostConstruct
+    public void recoverInterruptedWork() {
+        int unknown = jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_item
+                   SET status='UNKNOWN',outcome_state='UNKNOWN',error_code='WORKER_RESTART',
+                       error_message='服务重启时子项正在执行，平台结果需人工核对',completed_time=NOW(3)
+                 WHERE status='RUNNING'
+                """);
+        int recovered = jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_job
+                   SET status='QUEUED',recovery_count=recovery_count+1,last_dispatch_time=NULL
+                 WHERE status='RUNNING' AND EXISTS (
+                    SELECT 1 FROM xianyu_goods_batch_item item
+                     WHERE item.batch_job_id=xianyu_goods_batch_job.id AND item.status='QUEUED')
+                """);
+        if (unknown + recovered > 0) log.warn("已恢复商品任务: 未知子项={}, 重新排队任务={}", unknown, recovered);
     }
 
     @Scheduled(fixedDelayString = "${app.product-batch.dispatch-delay-ms:5000}", initialDelay = 30000)
     public void dispatch() {
         List<Map<String, Object>> jobs = jdbcTemplate.queryForList("""
                 SELECT * FROM xianyu_goods_batch_job
-                 WHERE status IN ('QUEUED','RUNNING') ORDER BY created_time, id LIMIT 10
+                 WHERE status IN ('QUEUED','RUNNING','CANCEL_REQUESTED') ORDER BY created_time, id LIMIT 10
                 """);
         for (Map<String, Object> job : jobs) {
             executeJob(job);
@@ -55,8 +78,13 @@ public class ProductBatchExecutionService {
         if (tenantId == null || jobId == null) return;
         TenantContext.set(tenantId);
         try {
+            if ("CANCEL_REQUESTED".equals(text(job.get("status")))) {
+                cancelQueuedItems(tenantId, jobId);
+                refreshJob(jobId, tenantId);
+                return;
+            }
             jdbcTemplate.update("""
-                    UPDATE xianyu_goods_batch_job SET status='RUNNING', started_time=COALESCE(started_time,NOW(3))
+                    UPDATE xianyu_goods_batch_job SET status='RUNNING', started_time=COALESCE(started_time,NOW(3)),last_dispatch_time=NOW(3)
                      WHERE tenant_id=? AND id=? AND status IN ('QUEUED','RUNNING')
                     """, tenantId, jobId);
             List<Map<String, Object>> due = jdbcTemplate.queryForList("""
@@ -88,12 +116,35 @@ public class ProductBatchExecutionService {
         Long accountId = number(item.get("xianyu_account_id"));
         String goodsId = text(item.get("xy_goods_id"));
         String operation = text(item.get("operation_type")).toUpperCase(Locale.ROOT);
+        if (!authorizationStillValid(job, accountId)) {
+            jdbcTemplate.update("""
+                    UPDATE xianyu_goods_batch_item SET status='SKIPPED',outcome_state='AUTHORIZATION_REVOKED',
+                           error_code='AUTHORIZATION_REVOKED',error_message='任务创建人的商品操作权限或店铺范围已被撤销',completed_time=NOW(3)
+                     WHERE tenant_id=? AND id=? AND status='QUEUED'
+                    """, tenantId, itemId);
+            recordEvent(job, item, "AUTHORIZATION_REVOKED", null, "执行前实时权限复核未通过");
+            return;
+        }
+        if (!versionMatches(tenantId, accountId, goodsId, item.get("expected_goods_version"))) {
+            jdbcTemplate.update("""
+                    UPDATE xianyu_goods_batch_item SET status='SKIPPED',outcome_state='PRECHECK_CONFLICT',
+                           error_code='STALE_PRODUCT_VERSION',error_message='商品已在预检后发生变化，请重新预检',completed_time=NOW(3)
+                     WHERE tenant_id=? AND id=? AND status='QUEUED'
+                    """, tenantId, itemId);
+            recordEvent(job, item, "PRECHECK_CONFLICT", null, "商品版本已变化");
+            return;
+        }
+        int rate = integer(job.get("max_operations_per_minute"), 10);
+        if (!acquireRateSlot(tenantId, accountId, rate)) return;
+        String platformRequestId = "PR-" + java.util.UUID.randomUUID().toString();
         int claimed = jdbcTemplate.update("""
                 UPDATE xianyu_goods_batch_item
-                   SET status='RUNNING', started_time=NOW(3), attempt_count=attempt_count+1
+                   SET status='RUNNING', started_time=NOW(3), attempt_count=attempt_count+1,
+                       platform_request_id=?,claimed_by=?,claimed_time=NOW(3)
                  WHERE tenant_id=? AND id=? AND status IN ('QUEUED','FAILED')
-                """, tenantId, itemId);
+                """, platformRequestId, workerId, tenantId, itemId);
         if (claimed != 1) return;
+        item.put("platform_request_id", platformRequestId);
         try {
             Map<String, Object> result = switch (operation) {
                 case "SYNC" -> sync(accountId, goodsId);
@@ -113,6 +164,7 @@ public class ProductBatchExecutionService {
                      WHERE tenant_id=? AND id=?
                     """, outcome, json(result), localUpdated || "SYNC".equals(operation) ? null : "平台已成功，本地状态待修复",
                     tenantId, itemId);
+            updateRateOutcome(tenantId, accountId, true, rate);
             recordEvent(job, item, outcome, result, null);
         } catch (Exception e) {
             String message = limit(e.getMessage());
@@ -126,6 +178,7 @@ public class ProductBatchExecutionService {
                        SET status=?, outcome_state=?, error_message=?, next_retry_time=?, completed_time=NOW(3)
                      WHERE tenant_id=? AND id=?
                     """, status, unknown ? "UNKNOWN" : "FAILED", message, retryAt, tenantId, itemId);
+            updateRateOutcome(tenantId, accountId, false, rate);
             recordEvent(job, item, unknown ? "UNKNOWN" : "FAILED", null, message);
         }
     }
@@ -144,7 +197,7 @@ public class ProductBatchExecutionService {
         };
         if (status == null) return true;
         return jdbcTemplate.update("""
-                UPDATE xianyu_goods SET status=?, sync_status='SUCCEEDED', coverage_status='PARTIAL',
+                UPDATE xianyu_goods SET status=?, row_version=row_version+1, sync_status='SUCCEEDED', coverage_status='PARTIAL',
                        last_synced_time=NOW(3), last_sync_error_code=NULL, last_sync_error_message=NULL
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=?
                 """, status, tenantId, accountId, goodsId) == 1;
@@ -156,13 +209,15 @@ public class ProductBatchExecutionService {
                 INSERT INTO xianyu_goods_event
                 (tenant_id, xianyu_account_id, xy_goods_id, event_type, event_origin, outcome_state,
                  data_source, operator_user_id, operator_username, request_id, idempotency_key,
+                 batch_job_id,batch_item_id,platform_request_id,
                  after_json, error_message)
-                VALUES (?,?,?,?, 'BATCH_TASK',?,'PLATFORM_WEB',?,?,?,?,?,?)
+                VALUES (?,?,?,?, 'BATCH_TASK',?,'PLATFORM_WEB',?,?,?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state), after_json=VALUES(after_json),
                  error_message=VALUES(error_message)
                 """, number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id")),
                 "BATCH_" + text(item.get("operation_type")), outcome, number(job.get("operator_user_id")),
-                job.get("operator_username"), job.get("request_id"), job.get("request_id"), json(result), error);
+                job.get("operator_username"), job.get("request_id"), job.get("idempotency_key"), number(job.get("id")),
+                number(item.get("id")), item.get("platform_request_id"), json(result), error);
     }
 
     private void refreshJob(Long jobId, Long tenantId) {
@@ -172,6 +227,8 @@ public class ProductBatchExecutionService {
                        SUM(status='FAILED') failed,
                        SUM(status='UNKNOWN') unknown_count,
                        SUM(status IN ('QUEUED','RUNNING')) active,
+                       SUM(status='SKIPPED') skipped,
+                       SUM(status='CANCELLED') cancelled,
                        SUM(status='CONFLICT') conflicts
                   FROM xianyu_goods_batch_item WHERE tenant_id=? AND batch_job_id=?
                 """, tenantId, jobId);
@@ -179,17 +236,104 @@ public class ProductBatchExecutionService {
         long success = longValue(counts.get("succeeded"));
         long failed = longValue(counts.get("failed"));
         long unknown = longValue(counts.get("unknown_count"));
+        long skipped = longValue(counts.get("skipped"));
+        long cancelled = longValue(counts.get("cancelled"));
+        long total = longValue(counts.get("total"));
+        String current = jdbcTemplate.queryForObject("SELECT status FROM xianyu_goods_batch_job WHERE tenant_id=? AND id=?",
+                String.class, tenantId, jobId);
         String status;
-        if (active > 0) status = "RUNNING";
-        else if (failed == 0 && unknown == 0) status = "SUCCEEDED";
+        if ("CANCEL_REQUESTED".equals(current) && active == 0) status = "CANCELLED";
+        else if (active > 0) status = "RUNNING";
+        else if (failed == 0 && unknown == 0 && skipped == 0 && cancelled == 0) status = "SUCCEEDED";
         else if (success == 0) status = "FAILED";
-        else status = "PARTIAL";
+        else status = "PARTIAL_SUCCESS";
+        java.math.BigDecimal progress = total == 0 ? java.math.BigDecimal.ZERO
+                : java.math.BigDecimal.valueOf((success + failed + unknown + skipped + cancelled) * 100d / total)
+                .setScale(2, java.math.RoundingMode.HALF_UP);
         jdbcTemplate.update("""
                 UPDATE xianyu_goods_batch_job
-                   SET status=?, success_count=?, failed_count=?, unknown_count=?,
+                   SET status=?, success_count=?, failed_count=?, unknown_count=?,skipped_count=?,cancelled_count=?,progress_percent=?,
                        completed_time=IF(?='RUNNING',NULL,NOW(3))
                  WHERE tenant_id=? AND id=?
-                """, status, success, failed, unknown, status, tenantId, jobId);
+                """, status, success, failed, unknown, skipped, cancelled, progress, status, tenantId, jobId);
+        if (!"RUNNING".equals(status)) notifyCompletion(jobId, tenantId, status, success, failed, unknown, skipped, cancelled);
+    }
+
+    private boolean versionMatches(Long tenantId, Long accountId, String goodsId, Object expected) {
+        if (!(expected instanceof Number number)) return true;
+        Long current = jdbcTemplate.queryForObject("SELECT row_version FROM xianyu_goods WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=?",
+                Long.class, tenantId, accountId, goodsId);
+        return current != null && current.longValue() == number.longValue();
+    }
+
+    /**
+     * 任务采用“创建时校验 + 每个子项执行前实时复核”策略。撤权后未开始的子项跳过，
+     * 已经完成的真实平台结果不回滚，避免后台任务绕过人员停用、功能撤权或店铺范围收窄。
+     */
+    private boolean authorizationStillValid(Map<String, Object> job, Long accountId) {
+        Long userId = number(job.get("operator_user_id"));
+        Long tenantId = number(job.get("tenant_id"));
+        if (userId == null) return true;
+        Integer allowed = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM sys_user user
+                 WHERE user.id=? AND user.tenant_id=? AND user.status=1
+                   AND (UPPER(user.role)='ADMIN' OR (
+                        EXISTS (SELECT 1 FROM sys_user_permission permission
+                                 WHERE permission.user_id=user.id AND permission.permission_code='action:goods-write')
+                        AND (UPPER(user.account_scope_mode)='ALL'
+                             OR EXISTS (SELECT 1 FROM sys_user_account_scope scope
+                                         WHERE scope.user_id=user.id AND scope.xianyu_account_id=?)
+                             OR EXISTS (SELECT 1 FROM sys_user_account_group_scope group_scope
+                                         JOIN xianyu_account_group_member member
+                                           ON member.tenant_id=group_scope.tenant_id AND member.group_id=group_scope.group_id
+                                        WHERE group_scope.user_id=user.id AND member.xianyu_account_id=?))
+                   ))
+                """, Integer.class, userId, tenantId, accountId, accountId);
+        return allowed != null && allowed > 0;
+    }
+
+    private boolean acquireRateSlot(Long tenantId, Long accountId, int perMinute) {
+        long delayMs = Math.max(2000L, 60000L / Math.max(1, Math.min(perMinute, 30)));
+        jdbcTemplate.update("INSERT IGNORE INTO xianyu_goods_batch_rate_limit(tenant_id,xianyu_account_id) VALUES (?,?)", tenantId, accountId);
+        return jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_rate_limit SET next_allowed_time=DATE_ADD(NOW(3),INTERVAL ? MICROSECOND)
+                 WHERE tenant_id=? AND xianyu_account_id=? AND (next_allowed_time IS NULL OR next_allowed_time<=NOW(3))
+                """, delayMs * 1000L, tenantId, accountId) == 1;
+    }
+
+    private void updateRateOutcome(Long tenantId, Long accountId, boolean success, int perMinute) {
+        if (success) {
+            jdbcTemplate.update("UPDATE xianyu_goods_batch_rate_limit SET consecutive_failures=0 WHERE tenant_id=? AND xianyu_account_id=?", tenantId, accountId);
+        } else {
+            jdbcTemplate.update("""
+                    UPDATE xianyu_goods_batch_rate_limit
+                       SET consecutive_failures=LEAST(consecutive_failures+1,8),
+                           next_allowed_time=DATE_ADD(NOW(3),INTERVAL LEAST(300,POW(2,consecutive_failures+1)*5) SECOND)
+                     WHERE tenant_id=? AND xianyu_account_id=?
+                    """, tenantId, accountId);
+        }
+    }
+
+    private void cancelQueuedItems(Long tenantId, Long jobId) {
+        jdbcTemplate.update("""
+                UPDATE xianyu_goods_batch_item SET status='CANCELLED',outcome_state='NOT_EXECUTED',
+                       cancelled_time=NOW(3),completed_time=NOW(3)
+                 WHERE tenant_id=? AND batch_job_id=? AND status='QUEUED'
+                """, tenantId, jobId);
+    }
+
+    private void notifyCompletion(Long jobId, Long tenantId, String status, long success, long failed,
+                                  long unknown, long skipped, long cancelled) {
+        int claimed = jdbcTemplate.update("UPDATE xianyu_goods_batch_job SET notification_sent=1 WHERE tenant_id=? AND id=? AND notification_sent=0",
+                tenantId, jobId);
+        if (claimed != 1) return;
+        String event = "SUCCEEDED".equals(status) ? "PRODUCT_BATCH_SUCCEEDED"
+                : "FAILED".equals(status) ? "PRODUCT_BATCH_FAILED" : "PRODUCT_BATCH_PARTIAL";
+        notificationCenterService.dispatch(event, null, "商品批量任务" + status,
+                "任务 " + jobId + "：成功 " + success + "，失败 " + failed + "，未知 " + unknown
+                        + "，跳过 " + skipped + "，取消 " + cancelled,
+                Map.of("jobId", jobId, "status", status, "successCount", success, "failedCount", failed,
+                        "unknownCount", unknown, "skippedCount", skipped, "cancelledCount", cancelled));
     }
 
     private boolean isUnknownResult(String message) {

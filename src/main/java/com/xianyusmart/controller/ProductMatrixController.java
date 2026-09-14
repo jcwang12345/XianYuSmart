@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
@@ -40,6 +41,29 @@ public class ProductMatrixController {
     @GetMapping("/accounts/{accountId}/products/{goodsId}")
     public ResultObject<Map<String, Object>> detail(@PathVariable Long accountId, @PathVariable String goodsId) {
         return ResultObject.success(productMatrixService.detail(accountId, goodsId));
+    }
+
+    @GetMapping("/accounts/{accountId}/products/{goodsId}/capabilities")
+    public ResultObject<Map<String, Object>> capabilities(@PathVariable Long accountId, @PathVariable String goodsId) {
+        return ResultObject.success(productMatrixService.capabilities(accountId, goodsId));
+    }
+
+    @PutMapping("/accounts/{accountId}/products/{goodsId}/local-details")
+    public ResultObject<Map<String, Object>> updateLocalDetails(@PathVariable Long accountId, @PathVariable String goodsId,
+                                                                @RequestBody ProductMatrixService.LocalProductUpdate request) {
+        return ResultObject.success(productMatrixService.updateLocalDetails(accountId, goodsId, request));
+    }
+
+    @PutMapping("/accounts/{accountId}/products/{goodsId}/automation")
+    public ResultObject<Map<String, Object>> updateAutomation(@PathVariable Long accountId, @PathVariable String goodsId,
+                                                              @RequestBody ProductMatrixService.AutomationUpdate request) {
+        return ResultObject.success(productMatrixService.updateAutomation(accountId, goodsId, request));
+    }
+
+    @GetMapping("/accounts/{accountId}/products/{goodsId}/events/{eventId}/raw-snapshot")
+    public ResultObject<Map<String, Object>> rawSnapshot(@PathVariable Long accountId, @PathVariable String goodsId,
+                                                         @PathVariable Long eventId) {
+        return ResultObject.success(productMatrixService.rawSnapshotMetadata(accountId, goodsId, eventId));
     }
 
     @GetMapping("/accounts/{accountId}/products/{goodsId}/events")
@@ -84,8 +108,15 @@ public class ProductMatrixController {
 
     @GetMapping("/batches")
     public ResultObject<List<Map<String, Object>>> batches(@RequestParam(required = false) String status,
+                                                           @RequestParam(required = false) String operationType,
+                                                           @RequestParam(required = false) Long accountId,
+                                                           @RequestParam(required = false) Long operatorUserId,
+                                                           @RequestParam(required = false) String search,
+                                                           @RequestParam(required = false) String createdFrom,
+                                                           @RequestParam(required = false) String createdTo,
                                                            @RequestParam(required = false) Integer limit) {
-        return ResultObject.success(productMatrixService.batches(status, limit));
+        return ResultObject.success(productMatrixService.batches(new ProductMatrixService.BatchQuery(
+                status, operationType, accountId, operatorUserId, search, createdFrom, createdTo, limit)));
     }
 
     @GetMapping("/batches/{jobId}")
@@ -95,10 +126,15 @@ public class ProductMatrixController {
 
     @PostMapping("/batches/{operation}/{jobId}/retry")
     public ResultObject<Map<String, Object>> retry(@PathVariable String operation, @PathVariable Long jobId,
-                                                   @RequestBody RequestIdentity request) {
+                                                   @RequestBody RetryRequest request) {
         Map<String, Object> batch = productMatrixService.batchDetail(jobId);
         requireOperationMatches(operation, String.valueOf(batch.get("operationType")));
-        return ResultObject.success(productMatrixService.retryBatchFailures(jobId, request.requestId()));
+        return ResultObject.success(productMatrixService.retryBatchFailures(jobId, request.requestId(), request.itemIds()));
+    }
+
+    @PostMapping("/batches/{jobId}/cancel")
+    public ResultObject<Map<String, Object>> cancel(@PathVariable Long jobId, @RequestBody CancelRequest request) {
+        return ResultObject.success(productMatrixService.cancelBatch(jobId, request.requestId(), request.reason()));
     }
 
     @PostMapping("/batches/{jobId}/failures/export")
@@ -118,5 +154,7 @@ public class ProductMatrixController {
     }
 
     public record RequestIdentity(String requestId) {}
+    public record RetryRequest(String requestId, List<Long> itemIds) {}
+    public record CancelRequest(String requestId, String reason) {}
     public record ProductExportRequest(ProductMatrixService.ProductFilter filter,String requestId) {}
 }

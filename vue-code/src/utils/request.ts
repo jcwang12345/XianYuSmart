@@ -112,6 +112,10 @@ service.interceptors.request.use(
 // 响应拦截器
 service.interceptors.response.use(
   async (response: AxiosResponse<ApiResponse<any>>) => {
+    // 文件下载返回 Blob/ArrayBuffer，不应按统一 JSON 响应码解析。
+    if (response.config.responseType === 'blob' || response.config.responseType === 'arraybuffer') {
+      return response
+    }
     const res = response.data
 
     // 401未登录 -> 跳转登录页
