@@ -22,6 +22,7 @@ import IconChat from '@/components/icons/IconChat.vue'
 
 import GoodsDetail from '../goods/components/GoodsDetail.vue'
 import MultiImageUploader from '@/components/MultiImageUploader.vue'
+import GoodsThumbnail from '@/components/product/GoodsThumbnail.vue'
 
 const goodsPanelCollapsed = ref(true)
 const isDesktopCollapsed = computed(() => !isMobile.value && goodsPanelCollapsed.value)
@@ -209,7 +210,7 @@ onMounted(() => {
               :class="{ 'ad__goods-item--active': selectedGoods?.item.xyGoodId === goods.item.xyGoodId, 'ad__goods-item--offline': goods.item.status !== 0 }"
               @click="selectGoods(goods)"
             >
-              <img
+              <GoodsThumbnail
                 :src="goods.item.coverPic"
                 :alt="goods.item.title"
                 class="ad__goods-cover"
@@ -267,7 +268,11 @@ onMounted(() => {
               :title="goods.item.title"
               @click="selectGoods(goods)"
             >
-              <img :src="goods.item.coverPic" class="ad__goods-icon-img" />
+              <GoodsThumbnail
+                :src="goods.item.coverPic"
+                :alt="goods.item.title"
+                class="ad__goods-icon-img"
+              />
             </div>
           </div>
         </template>
@@ -292,7 +297,7 @@ onMounted(() => {
             <IconChevronLeft />
             返回
           </button>
-          <img
+          <GoodsThumbnail
             v-if="selectedGoods"
             :src="selectedGoods.item.coverPic"
             :alt="selectedGoods.item.title"
@@ -318,7 +323,7 @@ onMounted(() => {
 
         <!-- Desktop config header -->
         <div v-if="!isMobile && selectedGoods" class="ad__config-header">
-          <img
+          <GoodsThumbnail
             :src="selectedGoods.item.coverPic"
             :alt="selectedGoods.item.title"
             class="ad__config-goods-cover"

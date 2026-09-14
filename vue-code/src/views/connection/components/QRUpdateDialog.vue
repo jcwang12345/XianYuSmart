@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { generateQRCode, getQRCodeStatus } from '@/api/qrlogin'
 import { showSuccess, showError } from '@/utils'
 import type { QRLoginSession } from '@/types'
@@ -7,6 +7,8 @@ import type { QRLoginSession } from '@/types'
 interface Props {
   modelValue: boolean
   accountId: number
+  accountDisplayId?: string
+  accountRemark?: string
 }
 
 interface Emits {
@@ -21,30 +23,76 @@ const qrCodeUrl = ref('')
 const sessionId = ref('')
 const status = ref<QRLoginSession['status']>('pending')
 const statusText = ref('正在生成二维码...')
+const expiresAt = ref<number | null>(null)
+const now = ref(Date.now())
 let pollTimer: number | null = null
 let pollRequestPending = false
+let countdownTimer: number | null = null
+
+const remainingSeconds = computed(() => Math.max(0, Math.ceil(((expiresAt.value || 0) - now.value) / 1000)))
+const remainingText = computed(() => {
+  if (!expiresAt.value) return '有效时间读取中'
+  const minutes = Math.floor(remainingSeconds.value / 60)
+  const seconds = remainingSeconds.value % 60
+  return remainingSeconds.value > 0
+    ? `剩余 ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : '本轮二维码已过期'
+})
+const canRegenerate = computed(() => status.value === 'expired' || status.value === 'error' || remainingSeconds.value === 0)
 
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
+    startCountdown()
     generateQR()
   } else {
     stopPolling()
+    stopCountdown()
   }
 })
 
 const generateQR = async () => {
+  stopPolling()
+  qrCodeUrl.value = ''
+  sessionId.value = ''
+  expiresAt.value = null
+  status.value = 'pending'
+  statusText.value = '正在生成二维码...'
   try {
     const response = await generateQRCode(props.accountId)
     if (response.code === 0 || response.code === 200) {
       qrCodeUrl.value = response.data?.qrCodeUrl || ''
       sessionId.value = response.data?.sessionId || ''
+      expiresAt.value = response.data?.expiresAt || null
+      now.value = Date.now()
       startPolling()
     } else {
       throw new Error(response.msg || '生成二维码失败')
     }
   } catch (error: any) {
     console.error('生成二维码失败:', error)
-    showError('生成二维码失败')
+    status.value = 'error'
+    statusText.value = error?.message || '生成二维码失败，请重试'
+    showError(statusText.value)
+  }
+}
+
+const startCountdown = () => {
+  stopCountdown()
+  now.value = Date.now()
+  countdownTimer = window.setInterval(() => {
+    now.value = Date.now()
+    if (expiresAt.value && now.value >= expiresAt.value && status.value !== 'confirmed') {
+      status.value = 'expired'
+      statusText.value = '二维码已过期，请重新生成'
+      stopPolling()
+    }
+  }, 1000)
+}
+
+const stopCountdown = () => {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
   }
 }
 
@@ -110,8 +158,14 @@ const handleLoginSuccess = async () => {
 
 const handleClose = () => {
   stopPolling()
+  stopCountdown()
   emit('update:modelValue', false)
 }
+
+onBeforeUnmount(() => {
+  stopPolling()
+  stopCountdown()
+})
 </script>
 
 <template>
@@ -124,6 +178,11 @@ const handleClose = () => {
             <button class="modal-close" @click="handleClose">×</button>
           </div>
           <div class="modal-body">
+            <div class="account-card">
+              <div><span>闲鱼账号 ID</span><strong>{{ accountDisplayId || '未同步' }}</strong></div>
+              <div><span>系统店铺 ID</span><strong>{{ accountId || '—' }}</strong></div>
+              <div><span>账号备注</span><strong>{{ accountRemark || '未填写备注' }}</strong></div>
+            </div>
             <div class="qr-code-wrap">
               <img v-if="qrCodeUrl" :src="qrCodeUrl" alt="二维码" class="qr-code" />
               <div v-else class="qr-loading"><div class="loading-spinner"></div></div>
@@ -132,10 +191,13 @@ const handleClose = () => {
             <div class="qr-status">
               <span class="status-tag" :class="status === 'confirmed' ? 'is-success' : ''">{{ statusText }}</span>
             </div>
-            <p v-if="sessionId" class="session-id">会话ID: {{ sessionId }}</p>
+            <p class="expiry" :class="{ 'is-expired': remainingSeconds === 0 && !!expiresAt }">{{ remainingText }}</p>
+            <p class="expiry-note">本地最长保留 15 分钟；闲鱼平台可能提前使二维码失效。</p>
+            <details v-if="sessionId" class="session-detail"><summary>会话详情</summary><code>{{ sessionId }}</code></details>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="handleClose">取消</button>
+            <button v-if="canRegenerate" class="btn btn-primary" @click="generateQR">重新生成二维码</button>
           </div>
         </div>
       </div>
@@ -209,6 +271,21 @@ const handleClose = () => {
   text-align: center;
 }
 
+.account-card {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 4px;
+  padding: 12px;
+  border: 1px solid rgba(203, 152, 0, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 214, 10, 0.09);
+  text-align: left;
+}
+
+.account-card > div { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.account-card span { color: rgba(28,28,30,.55); font-size: 12px; }
+.account-card strong { color: #1c1c1e; font-size: 13px; text-align: right; overflow-wrap: anywhere; }
+
 .modal-footer {
   display: flex;
   justify-content: flex-end;
@@ -235,6 +312,9 @@ const handleClose = () => {
 .btn-secondary:hover {
   background: rgba(0, 0, 0, 0.1);
 }
+
+.btn-primary { background: #ffd60a; color: #1c1c1e; }
+.btn-primary:hover { background: #f1c400; }
 
 .qr-code-wrap {
   margin: 16px 0;
@@ -298,11 +378,11 @@ const handleClose = () => {
   color: #30D158;
 }
 
-.session-id {
-  margin: 8px 0;
-  font-size: 11px;
-  color: rgba(28,28,30,.55);
-}
+.expiry { margin: 2px 0 0; color: #8a6400; font-size: 13px; font-weight: 700; }
+.expiry.is-expired { color: #c9342f; }
+.expiry-note { margin: 6px auto 0; max-width: 280px; color: rgba(28,28,30,.55); font-size: 11px; line-height: 1.5; }
+.session-detail { margin-top: 10px; color: rgba(28,28,30,.55); font-size: 11px; }
+.session-detail code { display: block; margin-top: 5px; overflow-wrap: anywhere; }
 
 .modal-enter-active,
 .modal-leave-active {

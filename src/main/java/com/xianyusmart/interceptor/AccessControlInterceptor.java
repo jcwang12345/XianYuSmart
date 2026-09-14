@@ -99,6 +99,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveMenuPermission(String uri) {
+        if (uri.startsWith("/api/qa/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/account-groups")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
@@ -177,6 +178,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (uri.startsWith("/api/qa/business-analytics") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
         if (uri.equals("/api/business-analytics/refresh-local") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }

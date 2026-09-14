@@ -182,4 +182,24 @@ class BusinessAnalyticsServiceTest {
         assertTrue(sql.getValue().contains("SELECT metric_date,SUM(active_product_count) day_active"));
         assertTrue(sql.getValue().contains("SELECT MAX(day_active)"));
     }
+
+    @Test
+    void trendCoverageRequiresEveryRequestedAccountAndEverySourceRowToBeFull() throws Exception {
+        JdbcTemplate jdbc=mock(JdbcTemplate.class);
+        NamedParameterJdbcTemplate named=mock(NamedParameterJdbcTemplate.class);
+        BusinessAnalyticsService service=new BusinessAnalyticsService(jdbc,named,
+                mock(AccountAccessService.class),mock(AccountGroupService.class),mock(AccountMatrixService.class),mock(OperationLogService.class));
+        TenantContext.set(9L);
+
+        Method method=BusinessAnalyticsService.class.getDeclaredMethod(
+                "trend", LocalDate.class, LocalDate.class, List.class);
+        method.setAccessible(true);
+        method.invoke(service,LocalDate.of(2026,9,14),LocalDate.of(2026,9,14),List.of(101L,102L));
+
+        ArgumentCaptor<String> sql=ArgumentCaptor.forClass(String.class);
+        verify(named).query(sql.capture(),any(MapSqlParameterSource.class),
+                any(org.springframework.jdbc.core.RowCallbackHandler.class));
+        assertTrue(sql.getValue().contains("COUNT(*) sourceRows"));
+        assertTrue(sql.getValue().contains("SUM(CASE WHEN coverage_status='FULL' THEN 1 ELSE 0 END) fullRows"));
+    }
 }

@@ -1,5 +1,7 @@
 # XianYuSmart 闲鱼矩阵产品需求与交付验收基线
 
+> 2026-09-14 补充：在逐路由、逐页签、逐弹窗完成本地系统点击审查后，新增 `XIANYU_MATRIX_FULL_UI_AUDIT_2026-09-14.md`、`XIANYU_MATRIX_V3_PRODUCT_REQUIREMENTS.md` 和 `XIANYU_MATRIX_LONG_TERM_EXECUTION_PLAN.md`。本文件的既有需求编号和验收合同继续有效；V3 文件负责新增的详细页面状态、响应式、可靠性和长期实施要求。如有冲突，以更严格且不夸大平台能力的一项为准。
+
 版本：1.0
 日期：2026-09-13
 用途：交付“继续处理咸鱼矩阵工作”开发任务、Product Design 前端阶段和独立测试任务的共同基线。

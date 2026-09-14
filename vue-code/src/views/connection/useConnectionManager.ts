@@ -30,6 +30,8 @@ export function useConnectionManager() {
   const selectedAccountId = ref<number | null>(null)
   const connectionStatus = ref<ConnectionStatus | null>(null)
   const statusLoading = ref(false)
+  const accountListError = ref('')
+  const connectionListError = ref('')
   const logs = ref<LogEntry[]>([])
   let statusInterval: number | null = null
 
@@ -46,6 +48,7 @@ export function useConnectionManager() {
   // Load account list
   const loadAccounts = async () => {
     loading.value = true
+    accountListError.value = ''
     try {
       const response = await getAccountList()
       if (response.code === 0 || response.code === 200) {
@@ -56,6 +59,7 @@ export function useConnectionManager() {
         throw new Error(response.msg || '获取账号列表失败')
       }
     } catch (error: any) {
+      accountListError.value = `账号列表读取失败：${error.message || '未知错误'}`
       if (!error.messageShown) {
         showError('加载账号列表失败: ' + error.message)
       }
@@ -66,8 +70,9 @@ export function useConnectionManager() {
   }
 
   const loadAllConnectionStatuses = async () => {
-    const newMap = new Map<number, ConnectionStatus>()
-    for (const account of accounts.value) {
+    const newMap = new Map<number, ConnectionStatus>(allConnectionStatuses.value)
+    let failedCount = 0
+    await Promise.allSettled(accounts.value.map(async (account) => {
       try {
         const accountId = Number(account.id)
         const response = await getConnectionStatus(accountId)
@@ -77,11 +82,17 @@ export function useConnectionManager() {
           if (selectedAccountId.value === accountId) {
             connectionStatus.value = status
           }
+        } else {
+          failedCount += 1
         }
       } catch {
+        failedCount += 1
       }
-    }
+    }))
     allConnectionStatuses.value = newMap
+    connectionListError.value = failedCount > 0
+      ? `${failedCount} 个店铺的连接状态读取失败，已保留上次成功结果。`
+      : ''
   }
 
   // Load connection status
@@ -278,6 +289,8 @@ export function useConnectionManager() {
     selectedAccountId,
     connectionStatus,
     statusLoading,
+    accountListError,
+    connectionListError,
     logs,
     dialogs,
     allConnectionStatuses,

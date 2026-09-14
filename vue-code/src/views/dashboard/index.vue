@@ -7,8 +7,8 @@ const route = useRoute()
 const router = useRouter()
 const {
   loading, error, periodMode, accountId, groupId, customStart, customEnd, accounts,
-  analytics, accountSummary, groups, operations, queryDates,
-  selectAccount, selectGroup, loadStatistics
+  analytics, accountSummary, groups, operations, queryDates, scopeError, scopeLoading,
+  selectAccount, selectGroup, loadStatistics, loadScopes
 } = useDashboard()
 
 const sourceLabel = (value?: string) => ({
@@ -51,10 +51,12 @@ const metrics = computed(() => [
   { key: 'paidOrderCount', label: '支付订单', kind: 'number' as const, help: '已同步支付订单数' },
   { key: 'paidBuyerCount', label: '支付买家', kind: 'number' as const, help: '按店铺日去重，跨店可能重复' },
   { key: 'averageOrderValue', label: '客单价', kind: 'money' as const, help: '成交金额 ÷ 支付订单' },
-  { key: 'refundAmount', label: '退款金额', kind: 'money' as const, help: `退款率 ${valueText(summary.value?.refundRate, 'percent')}` },
+  { key: 'refundAmount', label: '退款金额', kind: 'money' as const, help: '已同步退款金额' },
+  { key: 'refundRate', label: '退款率', kind: 'percent' as const, help: '退款订单 ÷ 支付订单' },
   { key: 'exposureCount', label: '平台曝光', kind: 'number' as const, help: summary.value?.exposureCount == null ? '平台数据未同步' : `访问率 ${valueText(summary.value?.visitRate, 'percent')}` },
   { key: 'visitorCount', label: '详情访客', kind: 'number' as const, help: '仅使用平台同步访客' },
-  { key: 'inquiryCount', label: '咨询买家', kind: 'number' as const, help: `回复率 ${valueText(summary.value?.replyRate, 'percent')}` },
+  { key: 'inquiryCount', label: '咨询买家', kind: 'number' as const, help: '已同步咨询买家数' },
+  { key: 'replyRate', label: '回复率', kind: 'percent' as const, help: '已回复咨询 ÷ 咨询买家' },
   { key: 'activeProductCount', label: '单日动销峰值', kind: 'number' as const, help: '各店单日动销之和的区间峰值' },
   { key: 'connection', label: '连接正常', kind: 'number' as const, help: `${accountSummary.value?.attentionAccountCount ?? '—'} 个店铺需关注`, localValue: accountSummary.value ? `${accountSummary.value.connectedCount}/${accountSummary.value.accountCount}` : '—' }
 ])
@@ -88,8 +90,8 @@ const funnel = computed(() => {
 const todoCount = computed(() => operations.value.pendingTaskCount + operations.value.reviewRequiredCount + operations.value.failedTaskCount + operations.value.lowStockConfigCount)
 const rankingType = ref<'shop'|'product'>('shop')
 const rankingDirection = ref<'top'|'bottom'>('top')
-const shopMetric = ref<'gmv'|'paidOrderCount'|'replyRate'|'refundRate'>('gmv')
-const productMetric = ref<'paidAmount'|'paidOrderCount'|'exposureCount'|'paymentRate'>('paidAmount')
+const shopMetric = ref<'gmv'|'paidOrderCount'|'inquiryCount'|'replyRate'|'refundRate'>('gmv')
+const productMetric = ref<'paidAmount'|'paidOrderCount'|'exposureCount'|'clickCount'|'inquiryCount'|'favoriteCount'|'paymentRate'>('paidAmount')
 const rankingMetric = computed(() => rankingType.value === 'shop' ? shopMetric.value : productMetric.value)
 const rankValueKind = computed<ValueKind>(() => ['gmv', 'paidAmount'].includes(rankingMetric.value) ? 'money' : ['replyRate', 'refundRate', 'paymentRate'].includes(rankingMetric.value) ? 'percent' : 'number')
 const rankedItems = computed(() => {
@@ -98,7 +100,7 @@ const rankedItems = computed(() => {
   return rows.filter(item => item[metric] !== null && item[metric] !== undefined)
     .sort((left, right) => (Number(left[metric]) - Number(right[metric])) * (rankingDirection.value === 'top' ? -1 : 1)).slice(0, 10)
 })
-const metricOptionLabel = (key: string) => ({ gmv: '成交金额', paidAmount: '支付金额', paidOrderCount: '支付订单', replyRate: '回复率', refundRate: '退款率', exposureCount: '曝光', paymentRate: '访问支付率' }[key] || key)
+const metricOptionLabel = (key: string) => ({ gmv: '成交金额', paidAmount: '支付金额', paidOrderCount: '支付订单', inquiryCount: '咨询', clickCount: '点击', favoriteCount: '收藏', replyRate: '回复率', refundRate: '退款率', exposureCount: '曝光', paymentRate: '访问支付率' }[key] || key)
 
 const accountName = (id: unknown) => accounts.value.find(account => String(account.id) === String(id))?.accountNote || `店铺 ${id ?? '—'}`
 type AnomalyItem = Record<string, unknown> & { domain: 'PRODUCT'|'SHOP' }
@@ -125,6 +127,24 @@ const selectRankedShop = (id: unknown) => {
   void router.replace({ path: '/dashboard', query: { accountId: String(value) } })
   void loadStatistics()
 }
+const syncScopeQuery = () => router.replace({
+  path: '/dashboard',
+  query: {
+    ...route.query,
+    accountId: accountId.value ? String(accountId.value) : undefined,
+    groupId: groupId.value ? String(groupId.value) : undefined
+  }
+})
+const handleAccountChange = async () => {
+  selectAccount()
+  await syncScopeQuery()
+  await loadStatistics()
+}
+const handleGroupChange = async () => {
+  selectGroup()
+  await syncScopeQuery()
+  await loadStatistics()
+}
 
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(() => {
@@ -144,13 +164,14 @@ onUnmounted(() => timer && clearInterval(timer))
     </header>
 
     <section class="workbench__card dashboard__filters" aria-label="经营数据范围">
-      <label><span>单个店铺</span><select v-model="accountId" class="workbench__select" @change="selectAccount();loadStatistics()"><option :value="undefined">全部可见店铺</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb || `店铺 ${account.id}` }}</option></select></label>
-      <label><span>店铺分组</span><select v-model="groupId" class="workbench__select" @change="selectGroup();loadStatistics()"><option :value="undefined">不限定分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.groupName }}</option></select></label>
+      <label><span>单个店铺</span><select v-model="accountId" class="workbench__select" @change="handleAccountChange"><option :value="undefined">全部可见店铺</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb || `店铺 ${account.id}` }}</option></select></label>
+      <label><span>店铺分组</span><select v-model="groupId" class="workbench__select" @change="handleGroupChange"><option :value="undefined">不限定分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.groupName }}</option></select></label>
       <div class="dashboard__period" role="group" aria-label="统计周期"><button v-for="value in (['1','7','30','custom'] as const)" :key="value" :class="{active:periodMode===value}" @click="selectPeriod(value)">{{ value === 'custom' ? '自定义' : `${value} 天` }}</button></div>
       <div v-if="periodMode==='custom'" class="dashboard__custom-range"><label><span>开始日期</span><input v-model="customStart" type="date" class="workbench__input"></label><i>至</i><label><span>结束日期</span><input v-model="customEnd" type="date" class="workbench__input"></label><button class="workbench__btn" @click="loadStatistics">应用</button></div>
     </section>
 
     <div v-if="error" class="dashboard__notice dashboard__notice--error" role="alert"><span>{{ error }}</span><button class="dashboard__link" @click="loadStatistics">重试</button></div>
+    <div v-if="scopeError" class="dashboard__notice dashboard__notice--error" role="alert"><span>{{ scopeError }}</span><button class="dashboard__link" :disabled="scopeLoading" @click="loadScopes">{{ scopeLoading ? '重试中' : '重试范围' }}</button></div>
     <div class="dashboard__notice" role="note"><strong>{{ coverageLabel(summary?.coverageStatus) }}</strong><span>{{ evidenceText }}</span><time>{{ summary?.syncedAt ? `最近同步 ${new Date(summary.syncedAt).toLocaleString('zh-CN')}` : '尚无可核验同步时间' }}</time></div>
 
     <section class="dashboard__metrics" aria-label="经营核心指标">
@@ -181,8 +202,8 @@ onUnmounted(() => timer && clearInterval(timer))
     </section>
 
     <section class="workbench__card dashboard__ranking">
-      <div class="dashboard__section-head"><div><h2>{{ rankingType==='shop'?'店铺':'商品' }}排行</h2><p>仅对已有同步样本排序，无样本对象不会被填成 0。</p></div><div class="dashboard__ranking-controls"><div class="dashboard__tabs"><button :class="{active:rankingType==='shop'}" @click="rankingType='shop'">店铺</button><button :class="{active:rankingType==='product'}" @click="rankingType='product'">商品</button></div><select v-if="rankingType==='shop'" v-model="shopMetric" class="workbench__select"><option value="gmv">成交金额</option><option value="paidOrderCount">支付订单</option><option value="replyRate">回复率</option><option value="refundRate">退款率</option></select><select v-else v-model="productMetric" class="workbench__select"><option value="paidAmount">支付金额</option><option value="paidOrderCount">支付订单</option><option value="exposureCount">曝光</option><option value="paymentRate">访问支付率</option></select><select v-model="rankingDirection" class="workbench__select"><option value="top">Top 10</option><option value="bottom">Bottom 10</option></select></div></div>
-      <div v-if="rankedItems.length" class="dashboard__rank-list"><button v-for="(item,index) in rankedItems" :key="`${rankingType}-${item.accountId}-${item.goodsId||''}`" @click="rankingType==='shop'?selectRankedShop(item.accountId):router.push(`/goods?accountId=${item.accountId}&search=${encodeURIComponent(String(item.goodsId))}`)"><b>{{ index+1 }}</b><span><strong>{{ rankingType==='shop'?(item.accountNote||`店铺 ${item.accountId}`):(item.title||item.goodsId) }}</strong><small>{{ rankingType==='product'?`${item.accountNote||`店铺 ${item.accountId}`} · `:'' }}{{ item.sampleDays }} 天样本 · {{ coverageLabel(String(item.coverageStatus)) }}</small></span><em><small>{{ metricOptionLabel(rankingMetric) }}</small>{{ valueText(item[rankingMetric],rankValueKind) }}</em></button></div>
+      <div class="dashboard__section-head"><div><h2>{{ rankingType==='shop'?'店铺':'商品' }}排行</h2><p>仅对已有同步样本排序，无样本对象不会被填成 0。</p></div><div class="dashboard__ranking-controls"><div class="dashboard__tabs"><button :class="{active:rankingType==='shop'}" @click="rankingType='shop'">店铺</button><button :class="{active:rankingType==='product'}" @click="rankingType='product'">商品</button></div><select v-if="rankingType==='shop'" v-model="shopMetric" class="workbench__select"><option value="gmv">成交金额</option><option value="paidOrderCount">支付订单</option><option value="inquiryCount">咨询</option><option value="replyRate">回复率</option><option value="refundRate">退款率</option></select><select v-else v-model="productMetric" class="workbench__select"><option value="paidAmount">支付金额</option><option value="paidOrderCount">支付订单</option><option value="exposureCount">曝光</option><option value="clickCount">点击</option><option value="inquiryCount">咨询</option><option value="favoriteCount">收藏</option><option value="paymentRate">访问支付率</option></select><select v-model="rankingDirection" class="workbench__select"><option value="top">Top 10</option><option value="bottom">Bottom 10</option></select></div></div>
+      <div v-if="rankedItems.length" class="dashboard__rank-list"><button v-for="(item,index) in rankedItems" :key="`${rankingType}-${item.accountId}-${item.goodsId||''}`" @click="rankingType==='shop'?selectRankedShop(item.accountId):router.push(`/goods?accountId=${item.accountId}&search=${encodeURIComponent(String(item.goodsId))}`)"><b>{{ index+1 }}</b><span><strong>{{ rankingType==='shop'?(item.accountNote||`店铺 ${item.accountId}`):(item.title||item.goodsId) }}</strong><small>{{ rankingType==='product'?`${item.accountNote||`店铺 ${item.accountId}`} · ${sourceLabel(String(item.source || ''))} · `:'' }}{{ item.sampleDays }} 天样本 · {{ coverageLabel(String(item.coverageStatus)) }}</small></span><em><small>{{ metricOptionLabel(rankingMetric) }}</small>{{ valueText(item[rankingMetric],rankValueKind) }}</em></button></div>
       <div v-else class="dashboard__empty">当前指标没有可排行的可信样本。</div>
     </section>
 
@@ -191,3 +212,15 @@ onUnmounted(() => timer && clearInterval(timer))
 </template>
 
 <style scoped src="./dashboard.css"></style>
+<style scoped>
+.dashboard__columns > .workbench__card {
+  min-width: 0;
+}
+
+@media (max-width: 980px) {
+  .dashboard__columns,
+  .dashboard__columns--secondary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+</style>

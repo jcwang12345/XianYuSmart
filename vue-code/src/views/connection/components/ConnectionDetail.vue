@@ -39,12 +39,15 @@ interface ConnectionStatus {
 interface Props {
   accountId: number | null
   accountName?: string
+  accountDisplayId?: string
+  accountRemark?: string
 }
 
 const props = defineProps<Props>()
 
 const connectionStatus = ref<ConnectionStatus | null>(null)
 const statusLoading = ref(false)
+const statusError = ref('')
 const operationLogs = ref<OperationLog[]>([])
 let statusInterval: number | null = null
 let countdownInterval: number | null = null
@@ -62,10 +65,12 @@ const loadConnectionStatus = async (silent = false) => {
     const response = await getConnectionStatus(props.accountId)
     if (response.code === 0 || response.code === 200) {
       connectionStatus.value = response.data as ConnectionStatus
+      statusError.value = ''
     } else {
       throw new Error(response.msg || '获取连接状态失败')
     }
   } catch (error: any) {
+    statusError.value = `连接状态读取失败：${error.message || '未知错误'}。已保留上次成功结果。`
     console.error('加载状态失败:', error.message)
   } finally {
     statusLoading.value = false
@@ -230,6 +235,12 @@ const canAutoReply = computed(() => connectionStatus.value?.connected === true)
 const riskGuardNormal = computed(() => (!connectionStatus.value?.riskGuard
   || connectionStatus.value.riskGuard.state === 'NORMAL')
   && !connectionStatus.value?.deferredPlatformActions)
+const cookieCardTone = computed(() => {
+  if (connectionStatus.value?.cookieStatus === 1) return 'status-card--success'
+  if (connectionStatus.value?.cookieStatus === 2) return 'status-card--warning'
+  if (connectionStatus.value?.cookieStatus === 3) return 'status-card--danger'
+  return 'status-card--neutral'
+})
 const riskRemainingSeconds = computed(() => Math.max(0, Math.ceil(
   ((connectionStatus.value?.riskGuard?.retryAt || 0) - now.value) / 1000
 )))
@@ -293,25 +304,29 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-else class="detail-scroll" :class="{ 'detail-scroll--loading': statusLoading }">
+      <div v-if="statusError" class="detail-error" role="alert">
+        <span>{{ statusError }}</span>
+        <button :disabled="statusLoading" @click="loadConnectionStatus()">{{ statusLoading ? '重试中' : '重试' }}</button>
+      </div>
       <div v-if="connectionStatus" class="detail-body">
         <div v-if="accountName" class="detail-account-name">{{ accountName }}</div>
         <div class="status-cards">
-          <div class="status-card" :class="canSyncGoods ? 'status-card--success' : 'status-card--danger'">
+          <div class="status-card" :class="cookieCardTone">
             <div class="status-card__icon">
-              <component :is="canSyncGoods ? IconCheck : IconAlert" />
+              <component :is="connectionStatus.cookieStatus ? (canSyncGoods ? IconCheck : IconAlert) : IconLink" />
             </div>
             <div class="status-card__content">
               <span class="status-card__title">Cookie 状态</span>
-              <span class="status-card__desc">{{ canSyncGoods ? '有效' : '无效' }}</span>
+              <span class="status-card__desc">{{ getCookieStatusText(connectionStatus.cookieStatus) }}</span>
             </div>
             <button class="btn btn--ghost btn--small" @click="showCredentialDialog = true">
               <IconKey /><span>凭证详情</span>
             </button>
           </div>
 
-          <div class="status-card" :class="canAutoReply ? 'status-card--success' : 'status-card--danger'">
+          <div class="status-card" :class="canAutoReply ? 'status-card--success' : 'status-card--neutral'">
             <div class="status-card__icon">
-              <component :is="canAutoReply ? IconCheck : IconAlert" />
+              <component :is="canAutoReply ? IconCheck : IconLink" />
             </div>
             <div class="status-card__content">
               <span class="status-card__title">Websocket 状态</span>
@@ -333,9 +348,9 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div class="status-card" :class="connectionStatus.autoDeliveryOn ? 'status-card--success' : 'status-card--danger'">
+          <div class="status-card" :class="connectionStatus.autoDeliveryOn ? 'status-card--success' : 'status-card--neutral'">
             <div class="status-card__icon">
-              <component :is="connectionStatus.autoDeliveryOn ? IconCheck : IconAlert" />
+              <component :is="connectionStatus.autoDeliveryOn ? IconCheck : IconLink" />
             </div>
             <div class="status-card__content">
               <span class="status-card__title">自动发货</span>
@@ -343,9 +358,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="status-card" :class="connectionStatus.autoReplyOn ? 'status-card--success' : 'status-card--danger'">
+          <div class="status-card" :class="connectionStatus.autoReplyOn ? 'status-card--success' : 'status-card--neutral'">
             <div class="status-card__icon">
-              <component :is="connectionStatus.autoReplyOn ? IconCheck : IconAlert" />
+              <component :is="connectionStatus.autoReplyOn ? IconCheck : IconLink" />
             </div>
             <div class="status-card__content">
               <span class="status-card__title">自动回复</span>
@@ -353,7 +368,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="status-card" :class="riskGuardNormal ? 'status-card--success' : 'status-card--danger'">
+          <div class="status-card" :class="riskGuardNormal ? 'status-card--success' : 'status-card--warning'">
             <div class="status-card__icon">
               <component :is="riskGuardNormal ? IconCheck : IconAlert" />
             </div>
@@ -414,6 +429,8 @@ onBeforeUnmount(() => {
     <QRUpdateDialog
       v-model="showQRUpdateDialog"
       :account-id="accountId || 0"
+      :account-display-id="accountDisplayId"
+      :account-remark="accountRemark || accountName"
       @success="handleQRUpdateSuccess"
     />
     <CaptchaGuideDialog
@@ -492,6 +509,31 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
+.detail-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 16px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 45, 32, 0.24);
+  border-radius: 10px;
+  color: #9f241a;
+  background: #fff4f2;
+  font-size: 12px;
+}
+
+.detail-error button {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(217, 45, 32, 0.28);
+  border-radius: 8px;
+  color: inherit;
+  background: #fff;
+  font-weight: 650;
+  cursor: pointer;
+}
+
 .detail-body {
   display: flex;
   flex-direction: column;
@@ -540,6 +582,16 @@ onBeforeUnmount(() => {
   background: rgba(255, 59, 48, 0.12);
 }
 
+.status-card--warning {
+  border-color: rgba(255, 159, 10, 0.3);
+  background: rgba(255, 159, 10, 0.08);
+}
+
+.status-card--neutral {
+  border-color: rgba(95, 99, 104, 0.16);
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .status-card__icon {
   width: 40px;
   height: 40px;
@@ -558,6 +610,16 @@ onBeforeUnmount(() => {
 .status-card--danger .status-card__icon {
   background: rgba(255, 59, 48, 0.2);
   color: var(--c-danger);
+}
+
+.status-card--warning .status-card__icon {
+  background: rgba(255, 159, 10, 0.16);
+  color: var(--c-warning);
+}
+
+.status-card--neutral .status-card__icon {
+  background: rgba(95, 99, 104, 0.09);
+  color: var(--c-text-2);
 }
 
 .status-card__icon svg { width: 20px; height: 20px; }
@@ -593,6 +655,7 @@ onBeforeUnmount(() => {
 
 .status-card--success .status-card__title { color: var(--c-success); }
 .status-card--danger .status-card__title { color: var(--c-danger); }
+.status-card--warning .status-card__title { color: #9a5d00; }
 
 .status-card .btn {
   flex-shrink: 0;

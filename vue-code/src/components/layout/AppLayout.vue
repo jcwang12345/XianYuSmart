@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, shallowRef, onMounted, onUnmounted, computed, provide, markRaw, watch } from 'vue'
-import { RouterView, useRoute } from 'vue-router'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import NavMenu from './NavMenu.vue'
 import UpdateDialog from './UpdateDialog.vue'
 import { checkUpdate, getCurrentUser } from '@/api/system'
@@ -19,6 +19,21 @@ import IconLog from '@/components/icons/IconLog.vue'
 import IconShield from '@/components/icons/IconShield.vue'
 
 const route = useRoute()
+const router = useRouter()
+const routeLoading = ref(false)
+
+// Lazy route chunks can take noticeably longer on mobile or a cold cache. Keep a
+// visible, non-numeric loading state in the shared shell so the page never looks
+// like it has loaded an empty dataset.
+const removeBeforeEach = router.beforeEach(() => {
+  routeLoading.value = true
+})
+const removeAfterEach = router.afterEach(() => {
+  routeLoading.value = false
+})
+const removeRouterError = router.onError(() => {
+  routeLoading.value = false
+})
 
 declare const __APP_VERSION__: string
 
@@ -166,6 +181,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', checkScreenSize)
+  removeBeforeEach()
+  removeAfterEach()
+  removeRouterError()
 })
 </script>
 
@@ -186,6 +204,11 @@ onUnmounted(() => {
       <div v-if="headerContent" class="header-content-slot">
         <component :is="headerContent" />
       </div>
+    </div>
+
+    <div v-if="routeLoading" class="route-loading" role="status" aria-live="polite">
+      <span class="route-loading__spinner" aria-hidden="true"></span>
+      <span>正在加载{{ currentPageTitle }}…</span>
     </div>
 
     <!-- 平板端: 顶部导航栏（带抽屉按钮） -->
@@ -281,6 +304,51 @@ onUnmounted(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.route-loading {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  z-index: 1500;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 7px 14px;
+  border: 1px solid rgba(226, 169, 0, .32);
+  border-radius: 999px;
+  color: var(--xy-ink);
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 8px 24px rgba(16, 24, 40, .14);
+  transform: translateX(-50%);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.route-loading__spinner {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border: 2px solid rgba(226, 169, 0, .22);
+  border-top-color: var(--xy-yellow-deep, #d19a00);
+  border-radius: 50%;
+  animation: route-loading-spin .7s linear infinite;
+}
+
+@keyframes route-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 767px) {
+  .route-loading {
+    top: 58px;
+    max-width: calc(100vw - 28px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-loading__spinner { animation: none; }
 }
 
 .logo.is-update-entry {

@@ -69,12 +69,12 @@ const getCookieText = (status?: number) => {
 
 const getWsColor = (info?: ConnectionInfo) => {
   if (!info) return 'var(--c-text-3)'
-  return info.connected ? 'var(--c-success)' : 'var(--c-danger)'
+  return info.connected ? 'var(--c-success)' : 'var(--c-text-3)'
 }
 
 const getWsBg = (info?: ConnectionInfo) => {
   if (!info) return 'rgba(120,120,128,.12)'
-  return info.connected ? 'rgba(48,209,88,.2)' : 'rgba(255,69,58,.15)'
+  return info.connected ? 'rgba(48,209,88,.2)' : 'rgba(120,120,128,.12)'
 }
 
 const getWsText = (info?: ConnectionInfo) => {
@@ -96,6 +96,10 @@ const getRiskText = (info?: ConnectionInfo) => {
 <template>
   <!-- Mobile: Card View -->
   <div v-if="isMobile" class="card-list" :class="{ 'card-list--loading': loading }">
+    <div v-if="loading && accounts.length === 0" class="loading-state" role="status">
+      <span class="loading-state__spinner" aria-hidden="true"></span>
+      <div><strong>正在读取账号</strong><small>连接状态会在账号显示后继续更新</small></div>
+    </div>
     <div
       v-for="account in accounts"
       :key="account.id"
@@ -176,6 +180,10 @@ const getRiskText = (info?: ConnectionInfo) => {
 
   <!-- Desktop/Tablet: Grid Card View -->
   <div v-else class="grid-list" :class="{ 'grid-list--loading': loading }">
+    <div v-if="loading && accounts.length === 0" class="loading-state" role="status">
+      <span class="loading-state__spinner" aria-hidden="true"></span>
+      <div><strong>正在读取账号</strong><small>连接状态会在账号显示后继续更新</small></div>
+    </div>
     <div
       v-for="account in accounts"
       :key="account.id"
@@ -254,6 +262,30 @@ const getRiskText = (info?: ConnectionInfo) => {
   --c-r-lg: 22px;
   --c-ease: 0.2s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 180px;
+  padding: 24px;
+  color: var(--c-text-1);
+}
+
+.loading-state > div { display: grid; gap: 3px; }
+.loading-state strong { font-size: 14px; }
+.loading-state small { color: var(--c-text-2); font-size: 12px; }
+.loading-state__spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid rgba(255, 159, 10, .2);
+  border-top-color: var(--c-warning);
+  border-radius: 50%;
+  animation: connection-loading-spin .75s linear infinite;
+}
+@keyframes connection-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-state__spinner { animation: none; } }
 
 /* ============================================================
    Mobile Card View (iOS 26 Glass Card Style)

@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { getDashboardStats, type DashboardStats } from '@/api/dashboard'
 import type { Account } from '@/types'
-import { getBusinessAnalytics, getBusinessAnalyticsScopes, type AccountGroup, type AccountMatrixSummary, type BusinessAnalyticsOverview } from '@/api/matrix'
+import { getBusinessAnalytics, getBusinessAnalyticsScopes, type AccountGroup, type AccountMatrixSummary, type BusinessAnalyticsOverview, type BusinessAnalyticsScopes } from '@/api/matrix'
 
 const emptyOperations: DashboardStats = {
   accountCount: 0, itemCount: 0, sellingItemCount: 0, reviewingItemCount: 0,
@@ -13,6 +13,8 @@ const emptyOperations: DashboardStats = {
 export function useDashboard() {
   const loading = ref(false)
   const error = ref('')
+  const scopeLoading = ref(false)
+  const scopeError = ref('')
   const periodMode = ref<'1'|'7'|'30'|'custom'>('7')
   const accountId = ref<number | undefined>()
   const groupId = ref<number | undefined>()
@@ -41,6 +43,29 @@ export function useDashboard() {
   const selectAccount = () => { if (accountId.value !== undefined) groupId.value = undefined }
   const selectGroup = () => { if (groupId.value !== undefined) accountId.value = undefined }
 
+  const applyScopes = (data: BusinessAnalyticsScopes) => {
+    accounts.value = data.accounts.map(item => ({
+      id: item.id, accountNote: item.accountNote || `店铺 ${item.id}`
+    } as Account))
+    groups.value = data.groups || []
+    accountSummary.value = data.accountSummary || null
+  }
+
+  const loadScopes = async () => {
+    if (scopeLoading.value) return
+    scopeLoading.value = true
+    scopeError.value = ''
+    try {
+      const response = await getBusinessAnalyticsScopes()
+      if (!response.data) throw new Error('范围响应缺少数据')
+      applyScopes(response.data)
+    } catch {
+      scopeError.value = '店铺与分组范围暂时无法读取；当前筛选未自动扩大，请重试。'
+    } finally {
+      scopeLoading.value = false
+    }
+  }
+
   const loadStatistics = async () => {
     if (loading.value) return
     loading.value = true; error.value = ''
@@ -56,15 +81,12 @@ export function useDashboard() {
     if (analyticsResult.status === 'fulfilled') analytics.value = analyticsResult.value.data || null
     else error.value = '经营数据暂时无法读取，未同步指标不会按 0 展示。'
     if (scopeResult.status === 'fulfilled' && scopeResult.value.data) {
-      accounts.value = scopeResult.value.data.accounts.map(item => ({
-        id: item.id, accountNote: item.accountNote || `店铺 ${item.id}`
-      } as Account))
-      groups.value = scopeResult.value.data.groups || []
-      accountSummary.value = scopeResult.value.data.accountSummary || null
-    }
+      applyScopes(scopeResult.value.data)
+      scopeError.value = ''
+    } else scopeError.value = '店铺与分组范围暂时无法读取；当前筛选未自动扩大，请重试。'
     if (operationResult.status === 'fulfilled' && operationResult.value.data) operations.value = operationResult.value.data
     loading.value = false
   }
-  return { loading, error, periodMode, accountId, groupId, customStart, customEnd, accounts,
-    analytics, accountSummary, groups, operations, queryDates, selectAccount, selectGroup, loadStatistics }
+  return { loading, error, scopeLoading, scopeError, periodMode, accountId, groupId, customStart, customEnd, accounts,
+    analytics, accountSummary, groups, operations, queryDates, selectAccount, selectGroup, loadStatistics, loadScopes }
 }

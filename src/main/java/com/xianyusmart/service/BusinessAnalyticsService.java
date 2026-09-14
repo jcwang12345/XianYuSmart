@@ -268,7 +268,10 @@ public class BusinessAnalyticsService {
             namedJdbcTemplate.query("""
                     SELECT metric_date,SUM(gmv) gmv,SUM(paid_order_count) paidOrderCount,
                            SUM(inquiry_count) inquiryCount,SUM(exposure_count) exposureCount,
-                           COUNT(DISTINCT xianyu_account_id) coveredAccountCount,MAX(synced_at) syncedAt
+                           COUNT(DISTINCT xianyu_account_id) coveredAccountCount,
+                           COUNT(*) sourceRows,
+                           SUM(CASE WHEN coverage_status='FULL' THEN 1 ELSE 0 END) fullRows,
+                           MAX(synced_at) syncedAt
                       FROM xianyu_shop_metric_daily
                      WHERE tenant_id=:tenant AND xianyu_account_id IN (:accounts)
                        AND metric_date BETWEEN :start AND :end GROUP BY metric_date ORDER BY metric_date
@@ -280,7 +283,9 @@ public class BusinessAnalyticsService {
                 item.put("inquiryCount", nullableLong(rs, "inquiryCount"));
                 item.put("exposureCount", nullableLong(rs, "exposureCount"));
                 item.put("coveredAccountCount", rs.getLong("coveredAccountCount"));
-                item.put("coverageStatus", rs.getLong("coveredAccountCount") == accounts.size() ? "PARTIAL" : "PARTIAL");
+                boolean fullCoverage = rs.getLong("coveredAccountCount") == accounts.size()
+                        && rs.getLong("fullRows") == rs.getLong("sourceRows");
+                item.put("coverageStatus", fullCoverage ? "FULL" : "PARTIAL");
                 item.put("syncedAt", rs.getTimestamp("syncedAt"));
                 known.put(day, item);
             });

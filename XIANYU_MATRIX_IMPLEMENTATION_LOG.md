@@ -428,3 +428,62 @@
 
 - 本批无数据库结构迁移；最新迁移仍为 `V39`，QA MySQL 5.7.18 继续复用既有 schema。
 - 叶子类目/行业、原价、成色、outerId、完整类目属性、视频与多 SKU 仍为显式安全降级，不宣称已具备真实平台写能力。
+
+## 批次 10：全功能浏览器盘点、V3 基线与发布草稿工作台（开发中）
+
+### 本批需求与证据
+
+- 逐路由点击审查现有系统，并打开账号360、连接凭证/续期、商品/任务详情、订单退款/售后、通知、权限、系统设置等主要二三级入口。
+- 桌面与 390×844 的页面证据、现状判断和缺口编号记录在 `XIANYU_MATRIX_FULL_UI_AUDIT_2026-09-14.md`。
+- 新增长期产品合同 `XIANYU_MATRIX_V3_PRODUCT_REQUIREMENTS.md`，以及 Wave 0～5 实施顺序 `XIANYU_MATRIX_LONG_TERM_EXECUTION_PLAN.md`；历史 PRD/PUB/ORD 等验收编号继续保留。
+- 本批仍处于 Wave 0/Wave 1 开发，不宣称全系统功能、Product Design 或独立测试已经完成。
+
+### 已完成的当前增量
+
+- `PUB-02/04/05/06/09`：商品发布工作台扩展为店铺通道、类目属性、内容媒体、价格库存、多 SKU、交易服务、预检发布和买家预览共用的一份结构化草稿。
+- `PUB-05/07/08`：新增 V42 发布草稿/版本/预检基础模型、草稿服务与接口；真实平台高级字段缺能力时仍安全降级。
+- `ACC-06/07`：扫码续期弹窗展示闲鱼账号 ID、系统店铺 ID、账号备注和后端有效期倒计时；过期/失败可重新生成，本地窗口最长 15 分钟并提示平台可能提前失效。
+- `BASE-02/ACC-03`：共享布局增加路由加载提示；连接页先展示账号、再并行读取各店连接状态，手机首屏增加明确加载状态，不把读取中当作空数据。
+
+### 变更文件与迁移
+
+- 需求：`XIANYU_MATRIX_FULL_UI_AUDIT_2026-09-14.md`、`XIANYU_MATRIX_V3_PRODUCT_REQUIREMENTS.md`、`XIANYU_MATRIX_LONG_TERM_EXECUTION_PLAN.md`。
+- 后端：`ListingDraftService.java`、`PublishingController.java`；迁移 `V42__listing_draft_workbench.sql`。
+- 前端：发布工作台、`ListingSkuEditor.vue`、`ListingPhonePreview.vue`、`matrix.ts`；连接页、二维码续期弹窗、共享布局和最终生产静态资源。
+- 测试：`ListingDraftServiceTest.java`。
+
+### 当前验证结果
+
+- `scripts/local-toolchain.sh npm --prefix vue-code run type-check`：通过。
+- `scripts/local-toolchain.sh npm --prefix vue-code run build-only`：通过，Vite 348 个模块。
+- `scripts/local-toolchain.sh ./mvnw -Dtest=ListingDraftServiceTest test`：5 项通过，0 失败、0 错误。
+- `scripts/local-toolchain.sh ./mvnw test`：165 项通过，0 失败、0 错误、0 跳过。
+- `scripts/native-qa.sh deploy`：JAR 构建成功，macOS 裸机应用在 `127.0.0.1:3000` 启动，MySQL 5.7 Docker 在 `127.0.0.1:13306`；Flyway 校验 42/42，schema 当前版本 V42。
+- 浏览器只读/安全验收：发布六段表单与预览真实渲染；续期二维码成功生成，账号 ID `qa-tenant-a-full`、系统店铺 ID `101`、备注和 `15:00` 倒计时同屏；未扫码确认。
+- 隔离发布 E2E：草稿保存并重新载入成功，预检 `PREFLIGHT_PASSED`；任务 19 返回 `QA_CONFIRMED`、`QA_FIXTURE`、`NOT_PERFORMED`；同 requestId 重放仍返回任务 19，并明确没有重复创建任务。期间修复草稿 ID 字符串/数字比较和幂等回读数据来源不一致。
+- 已知环境噪声：隔离 QA 的版本检查服务返回 HTTP 403，只影响“检查更新”，不影响应用健康、迁移和本批功能；后续应改为可诊断的非错误级降级。
+
+### 安全边界与待办
+
+- 未执行生产商品发布、改价、上下架、删除、发货、退款、申诉、通知发送或权限保存。
+- MySQL 5.7 升级库已验证至 V42；V1～V42 空库迁移随后也已完成。手机 390px 全路由最终复测、错误/无权限/大数据状态和独立测试交接仍待完成，不能以当前单元测试和单条 QA E2E 替代。
+
+### Product Design 当前实现审查（2026-09-15）
+
+- 使用最终源码重新生产构建后，在桌面与 390×844 窄屏重新截图检查商品发布、连接列表/详情、续期二维码、账号矩阵与账号 360；证据和判断记录在 `XIANYU_MATRIX_PRODUCT_DESIGN_AUDIT_2026-09-15.md`。
+- 商品预览的失效图片改为可恢复错误态；桌面连接详情和列表改为成功/警告/危险/中性四级状态；手机连接详情同步状态语义、修复字符串 `"0"` 待恢复数量误判，并将窄屏状态卡改为单列避免动作按钮裁切。
+- 手机商品发布可从第 6 步定位到底部，等待平滑滚动结束后位置正确；滚轮上滑后位置保持，没有复现自动回顶。仍将全局长页滚动列为 Wave 0 回归项，不以单页一次验证关闭用户报告。
+- 本轮最终 `scripts/native-qa.sh deploy` 再次通过前端类型检查、Vite 351 模块生产构建和 Maven 打包；原生 3000 服务健康。完整错误/无权限/大数据/200%/4K 和全路由设计门禁尚未完成，因此没有向独立测试声明完成。
+- 全新 MySQL 5.7 验证：在隔离容器中新建 `xianyusmart_fresh_v42_20260915` 空库，macOS 裸机 Java 临时运行于 13001；Flyway 从空 schema 顺序执行 V1～V42，用时 4.619 秒，`flyway_schema_history` 返回 42 条、最大版本 42、成功 42，健康端点为 `UP`。验证进程已正常停止，原生 3000 QA 服务未中断。
+- Wave 0 手机 P0 回归：商品任务、自动发货、自动回复冷路由均先出现共享加载状态，随后展示真实内容；发货/回复均能从商品列表进入二级配置页面。新增共享 `GoodsThumbnail.vue`，失效或空商品图片显示可访问的中性占位，避免破图图标和 alt 文本挤压商品标题。
+
+### DASH-01～03 独立测试缺口修复（进行中）
+
+- 修复范围筛选不落 URL：单店与分组选择分别写入 `accountId/groupId`，互斥且保留其他查询参数；浏览器验证选择店铺 101 后刷新仍保持 `accountId=101` 和选中值 101。
+- 退款金额/退款率、咨询买家/回复率拆成独立指标卡；店铺排行补咨询维度，商品排行补点击/咨询/收藏，并在商品行展示数据来源。
+- 范围接口失败不再静默忽略，页面保留错误说明与“重试范围”；趋势完整覆盖改为同时要求所有请求店铺均有记录且每条来源均为 FULL。
+- 新增仅 `qa` profile 注册的 `QaBusinessAnalyticsController`：复用租户、店铺和 `QA-` 商品前缀白名单，要求经营看板菜单与系统写权限，只写本地 `QA_FIXTURE/FULL` 商品日指标，平台网络调用为 0。
+- 夹具支持 1～100 条、请求幂等和统一审计；实际写入店铺 101 的 100 条商品指标后，经营接口返回 100 条商品排行、7 条异常，覆盖高曝光低点击、高咨询零支付与低库存。同 requestId 重放后审计总数保持 1。
+- Product Design 验证覆盖 1920×1080 与 390×844；窄屏截图发现趋势/漏斗 Grid 被图表固有宽度撑开，改为可收缩轨道后页面、列和卡片 `scrollWidth===clientWidth`。
+- 将既有 `designqa_admin` 收紧为仅 `menu:dashboard`、`SELECTED` 店铺 101；随机密码只保存在本机钥匙串服务 `xianyusmart-native-qa-designqa`。实际验证 scopes 只返回店铺 101 和完全包含的分组，查询店铺 102 返回 403。
+- 定向测试：`BusinessAnalyticsServiceTest` 7 项、`QaBusinessAnalyticsControllerTest` 2 项通过；完整后端回归 168 项通过、0 失败/错误/跳过；前端类型检查通过；最终 Vite 352 模块生产构建与裸机 3000 部署成功。

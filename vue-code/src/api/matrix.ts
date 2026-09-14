@@ -207,6 +207,50 @@ export function getProductMatrixDetail(accountId: number, goodsId: string) {
   return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}`, method: 'GET' })
 }
 
+export interface ListingFormSchema {
+  accountId: number
+  listingType: 'VIRTUAL' | 'PHYSICAL'
+  source: string
+  verificationStatus: string
+  limits: { title: number; description: number; images: number; skuDimensions: number; skuCombinations: number }
+  businessModes: Array<{ value: string; label: string; description: string }>
+  conditions: Array<{ value: string; label: string; description: string }>
+  shippingModes: Array<{ value: string; label: string; description: string }>
+  industries: Array<{
+    code: string
+    name: string
+    leafCategories: Array<{
+      code: string
+      name: string
+      source: string
+      attributes: Array<{ code: string; name: string; required: boolean; options: string[] }>
+    }>
+  }>
+  serviceProtocols: Array<{ code: string; label: string; description: string; status: string }>
+  channelCapabilities: Record<string, any>
+  notice: string
+}
+
+export function getListingFormSchema(accountId: number, listingType: 'VIRTUAL' | 'PHYSICAL') {
+  return request<ListingFormSchema>({ url: `/publishing/accounts/${accountId}/form-schema`, method: 'GET', params: { listingType } })
+}
+
+export function getListingDrafts(accountId: number) {
+  return request<Array<Record<string, any>>>({ url: `/publishing/accounts/${accountId}/drafts`, method: 'GET' })
+}
+
+export function createListingDraft(payload: Record<string, unknown>) {
+  return request<Record<string, any>>({ url: '/publishing/drafts', method: 'POST', data: { payload } })
+}
+
+export function updateListingDraft(id: number, revision: number, payload: Record<string, unknown>) {
+  return request<Record<string, any>>({ url: `/publishing/drafts/${id}`, method: 'PUT', data: { revision, payload } })
+}
+
+export function validateListingDraft(payload: Record<string, unknown>) {
+  return request<Record<string, any>>({ url: '/publishing/validate', method: 'POST', data: { payload } })
+}
+
 export function getSavedProductFilters() {
   return request<Array<Record<string, any>>>({ url: '/product-matrix/filters', method: 'GET' })
 }

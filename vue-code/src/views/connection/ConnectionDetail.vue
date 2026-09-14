@@ -47,6 +47,8 @@ const router = useRouter()
 const accountId = computed(() => Number(route.params.id) || null)
 
 const accountName = ref('')
+const accountRemark = ref('')
+const accountDisplayId = ref('')
 const loadAccountName = async () => {
   if (!accountId.value) return
   try {
@@ -54,9 +56,13 @@ const loadAccountName = async () => {
     if (res.code === 200 && res.data) {
       const acc = (res.data.accounts || res.data || []).find((a: any) => a.id === accountId.value)
       accountName.value = acc?.accountNote || acc?.unb || ''
+      accountRemark.value = acc?.accountNote || ''
+      accountDisplayId.value = acc?.unb || ''
     }
   } catch (e) {
     accountName.value = ''
+    accountRemark.value = ''
+    accountDisplayId.value = ''
   }
 }
 
@@ -78,6 +84,7 @@ onUnmounted(() => {
 
 const connectionStatus = ref<ConnectionStatus | null>(null)
 const statusLoading = ref(false)
+const statusError = ref('')
 const operationLogs = ref<OperationLog[]>([])
 let statusInterval: number | null = null
 
@@ -93,10 +100,12 @@ const loadConnectionStatus = async (silent = false) => {
     const response = await getConnectionStatus(accountId.value)
     if (response.code === 0 || response.code === 200) {
       connectionStatus.value = response.data as ConnectionStatus
+      statusError.value = ''
     } else {
       throw new Error(response.msg || '获取连接状态失败')
     }
   } catch (error: any) {
+    statusError.value = `连接状态读取失败：${error.message || '未知错误'}。已保留上次成功结果。`
     console.error('加载状态失败:', error.message)
   } finally {
     statusLoading.value = false
@@ -259,24 +268,34 @@ const getOperationStatusColor = (status: number) => {
   return 'rgba(28,28,30,.55)'
 }
 
-const canSyncGoods = computed(() => connectionStatus.value?.cookieStatus === 1)
 const canAutoReply = computed(() => connectionStatus.value?.connected === true)
+const deferredPlatformActions = computed(() => Number(connectionStatus.value?.deferredPlatformActions || 0))
 const riskGuardNormal = computed(() => (!connectionStatus.value?.riskGuard
   || connectionStatus.value.riskGuard.state === 'NORMAL')
-  && !connectionStatus.value?.deferredPlatformActions)
+  && deferredPlatformActions.value === 0)
+const cookieCardTone = computed(() => {
+  if (connectionStatus.value?.cookieStatus === 1) return 'ok'
+  if (connectionStatus.value?.cookieStatus === 2) return 'warning'
+  if (connectionStatus.value?.cookieStatus === 3) return 'err'
+  return 'neutral'
+})
+const riskCardTone = computed(() => {
+  if (!connectionStatus.value?.riskGuard && deferredPlatformActions.value === 0) return 'neutral'
+  return riskGuardNormal.value ? 'ok' : 'warning'
+})
 const riskRemainingSeconds = computed(() => Math.max(0, Math.ceil(
   ((connectionStatus.value?.riskGuard?.retryAt || 0) - now.value) / 1000
 )))
 const riskGuardDescription = computed(() => {
   const state = connectionStatus.value?.riskGuard?.state
-  let text = (!state || state === 'NORMAL') && connectionStatus.value?.deferredPlatformActions
+  let text = (!state || state === 'NORMAL') && deferredPlatformActions.value > 0
     ? '平台任务等待恢复'
     : !state || state === 'NORMAL' ? '正常'
     : state === 'CIRCUIT_OPEN' ? '平台风控冷却中'
       : state === 'RECOVERING' ? '正在恢复' : '写操作等待中'
   if (riskRemainingSeconds.value > 0) text += `，剩余 ${riskRemainingSeconds.value} 秒`
-  if (connectionStatus.value?.deferredPlatformActions) {
-    text += `，等待恢复 ${connectionStatus.value.deferredPlatformActions} 项`
+  if (deferredPlatformActions.value > 0) {
+    text += `，等待恢复 ${deferredPlatformActions.value} 项`
   }
   return text
 })
@@ -334,20 +353,24 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="page__scroll" :class="{ 'page__scroll--loading': statusLoading }">
+      <div v-if="statusError" class="page__error" role="alert">
+        <span>{{ statusError }}</span>
+        <button :disabled="statusLoading" @click="loadConnectionStatus()">{{ statusLoading ? '重试中' : '重试' }}</button>
+      </div>
       <div v-if="connectionStatus" class="page__body">
         <div v-if="accountName" class="page__account-name">{{ accountName }}</div>
         <div class="cap-section">
-          <div class="cap-card" :class="canSyncGoods ? 'cap-card--ok' : 'cap-card--err'">
+          <div class="cap-card" :class="`cap-card--${cookieCardTone}`">
             <div class="cap-card__dot"></div>
             <div class="cap-card__text">
               <span class="cap-card__label">Cookie 状态</span>
-              <span class="cap-card__desc">{{ canSyncGoods ? '有效' : '无效' }}</span>
+              <span class="cap-card__desc">{{ getCookieStatusText(connectionStatus.cookieStatus) }}</span>
             </div>
             <button class="act-btn act-btn--outline act-btn--card" @click="showCredentialSection = !showCredentialSection">
               <IconKey /><span>{{ showCredentialSection ? '收起' : '凭证' }}</span>
             </button>
           </div>
-          <div class="cap-card" :class="canAutoReply ? 'cap-card--ok' : 'cap-card--err'">
+          <div class="cap-card" :class="canAutoReply ? 'cap-card--ok' : 'cap-card--neutral'">
             <div class="cap-card__dot"></div>
             <div class="cap-card__text">
               <span class="cap-card__label">Websocket 状态</span>
@@ -368,21 +391,21 @@ onBeforeUnmount(() => {
               <IconPlay /><span>连接</span>
             </button>
           </div>
-          <div class="cap-card" :class="connectionStatus.autoDeliveryOn ? 'cap-card--ok' : 'cap-card--err'">
+          <div class="cap-card" :class="connectionStatus.autoDeliveryOn ? 'cap-card--ok' : 'cap-card--neutral'">
             <div class="cap-card__dot"></div>
             <div class="cap-card__text">
               <span class="cap-card__label">自动发货</span>
               <span class="cap-card__desc">{{ connectionStatus.autoDeliveryOn ? (connectionStatus.connected ? 'WS 发货' : '凭证发货') : '未开启' }}</span>
             </div>
           </div>
-          <div class="cap-card" :class="connectionStatus.autoReplyOn ? 'cap-card--ok' : 'cap-card--err'">
+          <div class="cap-card" :class="connectionStatus.autoReplyOn ? 'cap-card--ok' : 'cap-card--neutral'">
             <div class="cap-card__dot"></div>
             <div class="cap-card__text">
               <span class="cap-card__label">自动回复</span>
               <span class="cap-card__desc">{{ connectionStatus.autoReplyOn ? '已开启' : '未开启' }}</span>
             </div>
           </div>
-          <div class="cap-card" :class="riskGuardNormal ? 'cap-card--ok' : 'cap-card--err'">
+          <div class="cap-card" :class="`cap-card--${riskCardTone}`">
             <div class="cap-card__dot"></div>
             <div class="cap-card__text">
               <span class="cap-card__label">平台风控</span>
@@ -511,6 +534,8 @@ onBeforeUnmount(() => {
     <QRUpdateDialog
       v-model="showQRUpdateDialog"
       :account-id="accountId || 0"
+      :account-display-id="accountDisplayId"
+      :account-remark="accountRemark"
       @success="handleQRUpdateSuccess"
     />
     <CaptchaGuideDialog
@@ -598,6 +623,32 @@ onBeforeUnmount(() => {
 .page__scroll::-webkit-scrollbar { display: none; }
 .page__scroll--loading { opacity: 0.5; pointer-events: none; }
 
+.page__error {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 14px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 45, 32, 0.24);
+  border-radius: 11px;
+  color: #9f241a;
+  background: #fff4f2;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.page__error button {
+  flex: 0 0 auto;
+  min-width: 56px;
+  min-height: 36px;
+  border: 1px solid rgba(217, 45, 32, 0.28);
+  border-radius: 8px;
+  color: inherit;
+  background: #fff;
+  font-weight: 650;
+}
+
 .page__body {
   display: flex;
   flex-direction: column;
@@ -641,6 +692,16 @@ onBeforeUnmount(() => {
   border-color: rgba(255, 59, 48, 0.2);
 }
 
+.cap-card--warning {
+  background: rgba(255, 159, 10, 0.08);
+  border-color: rgba(255, 159, 10, 0.24);
+}
+
+.cap-card--neutral {
+  background: rgba(120, 120, 128, 0.06);
+  border-color: rgba(120, 120, 128, 0.16);
+}
+
 .cap-card__dot {
   width: 10px;
   height: 10px;
@@ -650,6 +711,8 @@ onBeforeUnmount(() => {
 
 .cap-card--ok .cap-card__dot { background: #30D158; }
 .cap-card--err .cap-card__dot { background: #FF453A; }
+.cap-card--warning .cap-card__dot { background: #FF9F0A; }
+.cap-card--neutral .cap-card__dot { background: rgba(60,60,67,.38); }
 
 .cap-card__text {
   flex: 1;
@@ -667,6 +730,18 @@ onBeforeUnmount(() => {
 
 .cap-card--ok .cap-card__label { color: #30D158; }
 .cap-card--err .cap-card__label { color: #FF453A; }
+.cap-card--warning .cap-card__label { color: #C77700; }
+.cap-card--neutral .cap-card__label { color: #1c1c1e; }
+
+@media (max-width: 520px) {
+  .cap-section {
+    grid-template-columns: 1fr;
+  }
+
+  .cap-card {
+    min-width: 0;
+  }
+}
 
 .cap-card__desc {
   font-size: 12px;

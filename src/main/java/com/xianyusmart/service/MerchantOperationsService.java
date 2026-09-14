@@ -479,6 +479,7 @@ public class MerchantOperationsService {
             result.put("platform", readJson(current.getResultJson()));
             result.put("outcomeState", current.getOutcomeState() == null ? "FAILED" : current.getOutcomeState());
             result.put("verificationStatus", current.getVerificationStatus());
+            result.put("dataSource", current.getDataSource());
             result.put("recoveryHint", current.getRecoveryHint());
             result.put("error", error == null || error.isBlank() ? "商品发布失败" : error);
             return result;
@@ -493,6 +494,7 @@ public class MerchantOperationsService {
         result.put("task", completedTask);
         result.put("platform", readJson(completedTask.getResultJson()));
         result.put("outcomeState", completedTask.getOutcomeState());
+        result.put("dataSource", completedTask.getDataSource());
         result.put("recoveryHint", completedTask.getRecoveryHint());
         return result;
     }
@@ -662,6 +664,7 @@ public class MerchantOperationsService {
             result.put("task", task);
             result.put("platform", readJson(task.getResultJson()));
             result.put("outcomeState", task.getOutcomeState());
+            result.put("dataSource", task.getDataSource());
             result.put("recoveryHint", task.getRecoveryHint());
             result.put("idempotentReplay", true);
             return result;
@@ -675,6 +678,7 @@ public class MerchantOperationsService {
         result.put("task", task);
         result.put("platform", readJson(task.getResultJson()));
         result.put("outcomeState", task.getOutcomeState());
+        result.put("dataSource", task.getDataSource());
         result.put("recoveryHint", task.getRecoveryHint());
         result.put("idempotentReplay", true);
         result.put("error", task.getStatus() != null && task.getStatus() == 1
@@ -698,6 +702,7 @@ public class MerchantOperationsService {
         response.put("status", task.getStatus());
         response.put("outcomeState", task.getOutcomeState());
         response.put("verificationStatus", task.getVerificationStatus());
+        response.put("dataSource", task.getDataSource());
         response.put("platform", readJson(task.getResultJson()));
         response.put("error", task.getErrorMessage());
         response.put("recoveryHint", task.getRecoveryHint());
