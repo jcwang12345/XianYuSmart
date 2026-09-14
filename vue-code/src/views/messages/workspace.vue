@@ -48,6 +48,8 @@ const {
 const selectedSid = ref('')
 const searchText = ref('')
 const profiles = ref<Record<string, ConversationProfile>>({})
+const profileAttemptedSessions = ref(new Set<string>())
+const profileNotice = ref('')
 const failedImages = ref(new Set<string>())
 const contextMessages = ref<ChatMessage[]>([])
 const contextLoading = ref(false)
@@ -584,6 +586,8 @@ watch([handoffStatus, selectedAccountId], () => {
 
 watch(selectedAccountId, () => {
   profiles.value = {}
+  profileAttemptedSessions.value = new Set()
+  profileNotice.value = ''
   failedImages.value = new Set()
   synchronizedSessions.value = new Set()
 })
@@ -592,14 +596,22 @@ watch([selectedAccountId, messageList], async () => {
   if (!selectedAccountId.value) return
   const accountId = selectedAccountId.value
   const sessionIds = [...new Set(messageList.value.map(message => message.sid).filter(Boolean))]
-    .filter(sid => !profiles.value[sid])
+    .filter(sid => !profiles.value[sid] && !profileAttemptedSessions.value.has(sid))
   for (let index = 0; index < sessionIds.length; index += 20) {
-    const response = await getConversationProfiles({
-      xianyuAccountId: accountId,
-      sessionIds: sessionIds.slice(index, index + 20)
-    })
-    if (selectedAccountId.value !== accountId) return
-    for (const profile of response.data || []) profiles.value[profile.sid] = profile
+    const batch = sessionIds.slice(index, index + 20)
+    profileAttemptedSessions.value = new Set([...profileAttemptedSessions.value, ...batch])
+    try {
+      const response = await getConversationProfiles({ xianyuAccountId: accountId, sessionIds: batch }, true)
+      if (selectedAccountId.value !== accountId) return
+      for (const profile of response.data || []) profiles.value[profile.sid] = profile
+      profileNotice.value = ''
+    } catch (error: any) {
+      if (selectedAccountId.value !== accountId) return
+      profileNotice.value = String(error?.message || '').includes('Cookie不可用')
+        ? '店铺登录凭证不可用，买家头像与增量昵称暂未同步；当前使用本地消息记录中的名称。'
+        : '买家增量资料暂未同步；当前使用本地消息记录中的名称。'
+      break
+    }
   }
 }, { deep: false })
 
@@ -676,6 +688,7 @@ onBeforeUnmount(() => {
             <button class="workbench__btn" :disabled="workspaceInboxLoading" @click="loadWorkspaceInbox()">{{ workspaceInboxLoading ? '筛选中' : '应用' }}</button>
           </div>
           <p v-if="workspaceInboxError" class="chat__inline-error" role="alert">{{ workspaceInboxError }} <button @click="loadWorkspaceInbox()">重试</button></p>
+          <p v-if="profileNotice" class="chat__inline-notice" role="status">{{ profileNotice }}</p>
         </div>
         <button
           v-for="conversation in conversations"
@@ -1018,6 +1031,7 @@ onBeforeUnmount(() => {
 .chat__context dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat__inline-error { margin: 0; padding: 8px; border-radius: 6px; color: #b42318; background: #fee4e2; font-size: 12px; }
 .chat__inline-error button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; }
+.chat__inline-notice { margin: 0; padding: 8px; border-radius: 6px; color: #7a5200; background: #fff8dd; font-size: 12px; line-height: 1.5; }
 .chat__notification-filters { display: flex !important; gap: 6px !important; }
 .chat__notification-filters button { padding: 4px 8px; border: 1px solid #eaecf0; border-radius: 12px; color: #667085; background: #fff; font-size: 11px; cursor: pointer; }
 .chat__notification-filters button.active { border-color: #f5d061; color: #7a5200; background: #fff8dd; }

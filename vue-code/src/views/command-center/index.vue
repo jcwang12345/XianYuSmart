@@ -56,17 +56,21 @@ async function load() {
   }
 }
 
-async function changeTab(value: typeof tab.value) {
+function changeTab(value: typeof tab.value) {
   tab.value = value
   if (value === 'capabilities' && !capabilities.value.length) {
     loading.value = true
-    try { capabilities.value = (await getAccountCapabilities()).data || [] }
-    finally { loading.value = false }
+    void getAccountCapabilities()
+      .then(result => { capabilities.value = result.data || [] })
+      .catch(() => { loadError.value = '账号能力暂时无法读取；未知数量不会按 0 展示。' })
+      .finally(() => { loading.value = false })
   }
   if (value === 'conversations' && !conversations.value.length) {
     loading.value = true
-    try { conversations.value = (await getConversationAssignments()).data || [] }
-    finally { loading.value = false }
+    void getConversationAssignments()
+      .then(result => { conversations.value = result.data || [] })
+      .catch(() => { loadError.value = '客服队列暂时无法读取；未知数量不会按 0 展示。' })
+      .finally(() => { loading.value = false })
   }
 }
 
@@ -78,7 +82,7 @@ async function moveTabFocus(event: KeyboardEvent, current: typeof tab.value) {
   event.preventDefault()
   const nextIndex = edgeIndex >= 0 ? edgeIndex : (commandTabs.indexOf(current) + direction + commandTabs.length) % commandTabs.length
   const nextTab = commandTabs[nextIndex]!
-  await changeTab(nextTab)
+  changeTab(nextTab)
   await nextTick()
   document.getElementById(`command-tab-${nextTab}`)?.focus()
 }

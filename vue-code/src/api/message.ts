@@ -88,11 +88,12 @@ export function syncContextMessages(data: {
 export function getConversationProfiles(data: {
   xianyuAccountId: number;
   sessionIds: string[];
-}) {
+}, silent = false) {
   return request<ConversationProfile[]>({
     url: '/msg/conversation-profiles',
     method: 'POST',
-    data
+    data,
+    silent
   });
 }
 
