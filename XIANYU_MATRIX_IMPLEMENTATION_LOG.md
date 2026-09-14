@@ -548,3 +548,44 @@
 - `XYM-IM-004`：根因为旧重放分支只比较账号和商品。现以长度编码后的账号、商品、内容、原始生效时间、失效时间、启用方式和来源生成 SHA-256；异载荷返回 409。五路并发 E2E 全部 code 200，版本 ID 唯一、首次 1/重放 4，统一审计 total=1。
 - 并发回归曾发现 MySQL `REPEATABLE READ` 下锁定读取到赢家后，普通快照查询仍看不到新行。版本回读改为当前锁定读，消除并发中的两个 500；不用重试掩盖该竞态。
 - `XYM-IM-005`：DTO 局部接受 `yyyy-MM-dd'T'HH:mm[:ss][.SSS]`；新增用例覆盖分钟/秒/毫秒和非法格式，全局 `HttpMessageNotReadableException` 映射为可读 400。API E2E 证明 ISO 毫秒可保存，非法生失效区间返回 400，坏格式也返回 400。
+
+## 批次 13：V5 全功能证据重建与 Wave 0 首批修复（v2.7.2 候选）
+
+### 需求与审查基线
+
+- 使用 Product Design 截图优先流程点击/查看29个主路由与隐藏兼容路由、74组主要二三级状态；证据、限制和结论记录在 `XIANYU_MATRIX_V5_SCREEN_EVIDENCE_AUDIT_2026-09-15.md`。
+- 新增 `XIANYU_MATRIX_V5_PRODUCT_REQUIREMENTS.md` 与 `XIANYU_MATRIX_V5_LONG_TERM_EXECUTION_PLAN.md`，以V5编号重新定义长期目标、七个实施波次和硬验收；既有PRD/PUB/ORD/IM门禁继续继承。
+- 本批只完成 Wave 0 的可独立回归增量，不宣称V5全部功能、1080P/4K或200%设计QA已经完成。
+
+### 功能变更
+
+- `V5-BASE-07`：裸机部署改为版本化不可变JAR；构建前快照遗留运行制品，构建后复制到`releases`，停止、原子切换、健康检查，失败时回滚旧制品。运行JVM不再读取会被Maven覆盖的`target/*.jar`。
+- `V5-SEC-01`：团队账号创建字段每次显式清空，使用独立字段名和`new-password`语义，关闭按钮增加可访问名称；浏览器回归确认用户名/密码为空。
+- `V5-IM-08`：客服三收件箱增加`tablist/tab/tabpanel`、`aria-selected`、roving tabindex和左右方向键切换；实际AX树可识别页签，方向键可切至通知消息。
+- `V5-BASE-08/V5-OPS-05`：工作流画布使用受控高度、独立滚动和overscroll containment；页面底部收口，不再滚入巨大空白。
+- `V5-PRD-03/V5-ORD-03`：新增统一SKU就绪服务。主档声明数、已验证子项数不一致，或0/0没有完整快照证据时，配置保存与自动发货执行均阻断；开启总开关前还必须完成全部SKU配置。前端显示声明/验证差异并禁用保存和开启，不再用前端子项数覆盖主档声明数。
+
+### 变更文件与迁移
+
+- 需求：V5审查、V5 PRD、V5长期计划。
+- 后端：`GoodsSkuReadinessService.java`、`AutoDeliveryConfigServiceImpl.java`、`AutoDeliveryServiceImpl.java`、`ItemServiceImpl.java`。
+- 前端：团队权限、集成客服、工作流、自动发货及商品类型定义；最终生产静态资源由本批源码重新生成。
+- 运行：`scripts/native-qa.sh`。
+- 测试：`GoodsSkuReadinessServiceTest.java`、`ItemServiceAutoDeliveryGateTest.java`。
+- 迁移：无；数据库仍为V46，兼容MySQL 5.7。
+
+### 测试与设计QA
+
+- `npm run type-check`：通过。
+- `npm run build-only`：通过，Vite 352模块；静态资源由最终源码生成。
+- SKU/商品/发货定向回归：30项通过；新增SKU就绪与总开关门禁：8项通过。
+- 完整后端回归：195项通过，0失败、0错误、0跳过。
+- `zsh -n scripts/native-qa.sh`、`git diff --check`：通过。
+- 首次受限环境部署在Docker socket处失败，脚本按设计回滚旧不可变制品且3000保持健康；授权环境重跑后成功切换到版本化JAR，健康端点`UP`。
+- 浏览器开发侧QA：创建账号用户名/密码为空；客服AX树为标准tab结构且方向键可切换；工作流画布和页面主滚动分离，底部无巨大空白。
+
+### 残余范围与安全边界
+
+- 本轮内嵌浏览器仍无法产出真实1920×1080/3840×2160视口；独立测试需补1366、1080P、4K和200%证据。
+- 全站首帧0值、所有长弹窗固定底部、重复入口退场和统一事件中文化属于后续Wave 1，不在本批宣称完成。
+- 未执行生产发布、改价、上下架、发货、退款、删除、申诉、消息发送、成员保存或外部通知。

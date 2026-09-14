@@ -15,6 +15,7 @@ import com.xianyusmart.service.BuyerMessageService;
 import com.xianyusmart.service.DeliveryTaskService;
 import com.xianyusmart.service.EmailNotifyService;
 import com.xianyusmart.service.GoodsSkuService;
+import com.xianyusmart.service.GoodsSkuReadinessService;
 import com.xianyusmart.service.NotificationCenterService;
 import com.xianyusmart.service.KamiConfigService;
 import com.xianyusmart.service.OrderService;
@@ -108,6 +109,9 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
     @Autowired
     private GoodsSkuService goodsSkuService;
+
+    @Autowired
+    private GoodsSkuReadinessService goodsSkuReadinessService;
 
     @Autowired
     @Qualifier("taskExecutor")
@@ -638,7 +642,8 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
     }
 
     XianyuGoodsAutoDeliveryConfig resolveDeliveryConfig(Long accountId, String xyGoodsId, String orderSkuId) {
-        if (goodsSkuService.countByXyGoodsId(xyGoodsId, accountId) == 0) {
+        GoodsSkuReadinessService.Readiness readiness = goodsSkuReadinessService.requireComplete(accountId, xyGoodsId);
+        if (!readiness.hasSkuChildren()) {
             return autoDeliveryConfigMapper.findByAccountIdAndGoodsIdNoSku(accountId, xyGoodsId);
         }
         if (orderSkuId == null || orderSkuId.isBlank()) {

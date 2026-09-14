@@ -40,6 +40,9 @@ public class ItemServiceImpl implements ItemService {
     private com.xianyusmart.service.GoodsSkuService goodsSkuService;
 
     @Autowired
+    private com.xianyusmart.service.GoodsSkuReadinessService goodsSkuReadinessService;
+
+    @Autowired
     private com.xianyusmart.service.GoodsSkuPropertyService goodsSkuPropertyService;
     
     @Autowired
@@ -918,6 +921,26 @@ public class ItemServiceImpl implements ItemService {
             log.info("更新商品自动发货状态: xianyuAccountId={}, xyGoodsId={}, status={}", 
                     reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId(), reqDTO.getXianyuAutoDeliveryOn());
             
+            if (Integer.valueOf(1).equals(reqDTO.getXianyuAutoDeliveryOn())) {
+                var readiness = goodsSkuReadinessService.requireComplete(
+                        reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId());
+                var deliveryConfigs = autoDeliveryConfigMapper.findByAccountIdAndGoodsId(
+                        reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId());
+                if (readiness.hasSkuChildren()) {
+                    long configuredSkuCount = deliveryConfigs.stream()
+                            .map(com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig::getSkuId)
+                            .filter(id -> id != null && !id.isBlank())
+                            .distinct()
+                            .count();
+                    if (configuredSkuCount != readiness.verifiedCount()) {
+                        throw new IllegalStateException("SKU 配置仅完成 " + configuredSkuCount + "/"
+                                + readiness.verifiedCount() + "；请配置全部规格后再开启自动发货");
+                    }
+                } else if (deliveryConfigs.stream().noneMatch(config -> config.getSkuId() == null)) {
+                    throw new IllegalStateException("请先保存当前商品的发货配置，再开启自动发货");
+                }
+            }
+
             // 1. 获取商品配置
             com.xianyusmart.entity.XianyuGoodsConfig goodsConfig = 
                     autoDeliveryService.getGoodsConfig(reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId());

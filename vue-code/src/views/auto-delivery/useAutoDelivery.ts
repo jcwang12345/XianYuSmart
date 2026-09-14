@@ -142,8 +142,15 @@ export function useAutoDelivery() {
   })
 
   const hasSku = computed(() => skuList.value.length > 0)
+  const declaredSkuCount = computed(() => Number(selectedGoods.value?.item.skuCount ?? 0))
+  const skuCoverageIncomplete = computed(() => {
+    const declared = declaredSkuCount.value
+    return declared > 0 ? skuList.value.length !== declared : skuList.value.length > 0
+  })
   const configuredSkuCount = computed(() => skuList.value
     .filter(sku => sku.skuId && skuConfigs.value.has(sku.skuId)).length)
+  const skuConfigurationComplete = computed(() => !skuCoverageIncomplete.value
+    && (!hasSku.value || configuredSkuCount.value === skuList.value.length))
   const hasFixedDelivery = computed(() => configForm.value.deliveryMode === 1)
   const hasCardDelivery = computed(() => configForm.value.deliveryMode === 2)
   const selectedFixedTemplate = computed(() =>
@@ -548,9 +555,6 @@ export function useAutoDelivery() {
       await retrySkuLoad()
       if (!isCurrentGoods(accountId, goodsId)) return
       if (skuList.value.length > 0) {
-        selectedGoods.value.item.skuCount = skuList.value.length
-        const goods = goodsList.value.find(item => item.item.xyGoodId === goodsId)
-        if (goods) goods.item.skuCount = skuList.value.length
         showSuccess(`已同步 ${skuList.value.length} 个商品规格`)
       } else {
         showInfo('平台暂未返回规格；单规格商品可直接配置，多规格商品请稍后重试')
@@ -684,8 +688,8 @@ export function useAutoDelivery() {
       showInfo('请先选择商品规格')
       return
     }
-    if (selectedGoods.value.item.skuCount > 1 && !hasSku.value) {
-      showInfo('该商品存在多个规格，请先同步规格后再保存')
+    if (skuCoverageIncomplete.value) {
+      showInfo(`SKU 同步不完整：主档 ${declaredSkuCount.value} 个，已验证 ${skuList.value.length} 个，请重新同步后再保存`)
       return
     }
 
@@ -774,8 +778,10 @@ export function useAutoDelivery() {
       showInfo('请先选择商品')
       return
     }
-    if (value && selectedGoods.value.item.skuCount > 1 && !hasSku.value) {
-      showInfo('该商品存在多个规格，请先同步规格并逐个配置')
+    if (value && !skuConfigurationComplete.value) {
+      showInfo(skuCoverageIncomplete.value
+        ? `SKU 同步不完整：主档 ${declaredSkuCount.value} 个，已验证 ${skuList.value.length} 个`
+        : `请先完成全部 ${skuList.value.length} 个规格的发货配置`)
       return
     }
 
@@ -1056,6 +1062,9 @@ export function useAutoDelivery() {
     configLoading,
     configLoadError,
     hasSku,
+    declaredSkuCount,
+    skuCoverageIncomplete,
+    skuConfigurationComplete,
     configuredSkuCount,
     hasUnsavedChanges,
     hasFixedDelivery,

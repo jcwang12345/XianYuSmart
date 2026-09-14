@@ -44,6 +44,9 @@ const {
   configLoading,
   configLoadError,
   hasSku,
+  declaredSkuCount,
+  skuCoverageIncomplete,
+  skuConfigurationComplete,
   configuredSkuCount,
   hasUnsavedChanges,
   hasFixedDelivery,
@@ -363,6 +366,7 @@ onMounted(() => {
                   <input
                     type="checkbox"
                     :checked="selectedGoods.xianyuAutoDeliveryOn === 1"
+                    :disabled="selectedGoods.xianyuAutoDeliveryOn !== 1 && !skuConfigurationComplete"
                     @change="toggleAutoDelivery(($event.target as HTMLInputElement).checked)"
                   />
                   <span class="ad__switch-track"></span>
@@ -389,6 +393,10 @@ onMounted(() => {
             <div v-else-if="skuLoadError || configLoadError" class="ad__sku-state ad__sku-state--error">
               <span>{{ skuLoadError || configLoadError }}</span>
               <button type="button" @click="retrySkuLoad">重新加载</button>
+            </div>
+            <div v-else-if="skuCoverageIncomplete" class="ad__sku-state ad__sku-state--error" role="alert">
+              <span>SKU 同步不完整：主档 {{ declaredSkuCount }} 个，已验证 {{ skuList.length }} 个。为避免错发，配置保存和自动发货已停用。</span>
+              <button type="button" @click="syncCurrentGoodsSku">重新同步规格</button>
             </div>
             <div v-else-if="!hasSku" class="ad__sku-state">
               <span>未检测到商品规格；多规格商品需要先同步，单规格商品可直接配置。</span>
@@ -583,7 +591,7 @@ onMounted(() => {
             </label>
 
             <div class="ad__save-row">
-              <button class="btn btn--primary" :class="{ 'btn--loading': saving }" :disabled="saving || skuLoading || configLoading || !!skuLoadError || !!configLoadError || (hasSku && !selectedSkuId)" @click="saveConfig">
+              <button class="btn btn--primary" :class="{ 'btn--loading': saving }" :disabled="saving || skuLoading || configLoading || !!skuLoadError || !!configLoadError || skuCoverageIncomplete || (hasSku && !selectedSkuId)" @click="saveConfig">
                 <IconCheck />
                 {{ saving ? '保存中' : '保存全部配置' }}
               </button>

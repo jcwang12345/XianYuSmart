@@ -11,6 +11,7 @@ COMPOSE_FILE="$PROJECT_ROOT/deploy/native-qa/compose.mysql.yaml"
 RUNTIME_DIR="$PROJECT_ROOT/.tools/native-qa"
 LOG_FILE="$RUNTIME_DIR/app.log"
 JAR_LINK="$RUNTIME_DIR/app.jar"
+RELEASE_DIR="$RUNTIME_DIR/releases"
 LAUNCH_LABEL="com.xianyusmart.native-qa"
 APP_ENV_CONTAINER="${NATIVE_QA_APP_ENV_CONTAINER:-xianyusmart-matrix-handoff-app}"
 MYSQL_PORT="${NATIVE_QA_MYSQL_PORT:-13306}"
@@ -21,7 +22,27 @@ if [[ ! -x "$DOCKER_BIN" ]]; then
 fi
 [[ -x "$DOCKER_BIN" ]] || { echo "Docker CLI not found; set NATIVE_QA_DOCKER_BIN." >&2; exit 1; }
 
-mkdir -p "$RUNTIME_DIR/data" "$RUNTIME_DIR/logs"
+mkdir -p "$RUNTIME_DIR/data" "$RUNTIME_DIR/logs" "$RELEASE_DIR"
+
+atomic_link() {
+  local target="$1"
+  local pending_link="$RUNTIME_DIR/.app.jar.$$.next"
+  ln -s "$target" "$pending_link"
+  mv -f "$pending_link" "$JAR_LINK"
+}
+
+snapshot_current_release() {
+  local snapshot_name="$1"
+  [[ -f "$JAR_LINK" ]] || return 0
+  local current_path="${JAR_LINK:A}"
+  if [[ "$current_path" == "$RELEASE_DIR"/* ]]; then
+    echo "$current_path"
+    return 0
+  fi
+  local snapshot_path="$RELEASE_DIR/${snapshot_name}.jar"
+  cp -p "$current_path" "$snapshot_path"
+  echo "$snapshot_path"
+}
 
 container_env() {
   local key="$1"
@@ -127,15 +148,34 @@ start_app() {
 }
 
 deploy_app() {
+  # Maven replaces target/*.jar in-place. Snapshot a legacy/current artifact
+  # before packaging so a running JVM never depends on the file being rebuilt.
+  local deployed_at="$(date -u +%Y%m%dT%H%M%SZ)"
+  local previous_release="$(snapshot_current_release "predeploy-${deployed_at}" || true)"
   "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run type-check
   "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run build-only
   "$TOOLCHAIN" "$PROJECT_ROOT/mvnw" -DskipTests package
   local version="$(awk '/<artifactId>xianyusmart<\/artifactId>/{project=1;next} project && /<version>/{line=$0;sub(/^.*<version>/,"",line);sub(/<\/version>.*$/,"",line);print line;exit}' "$PROJECT_ROOT/pom.xml")"
   local jar="$PROJECT_ROOT/target/xianyusmart-${version}.jar"
   [[ -f "$jar" ]] || { echo "Packaged jar not found: $jar" >&2; return 1; }
-  ln -sfn "$jar" "$JAR_LINK"
+  local checksum="$(shasum -a 256 "$jar" | awk '{print substr($1, 1, 12)}')"
+  local release="$RELEASE_DIR/xianyusmart-${version}-${deployed_at}-${checksum}.jar"
+  local pending_release="${release}.tmp.$$"
+  cp -p "$jar" "$pending_release"
+  mv "$pending_release" "$release"
   stop_app
-  start_app
+  atomic_link "$release"
+  if start_app; then
+    echo "deployed artifact: $release"
+    return 0
+  fi
+  if [[ -n "$previous_release" && -f "$previous_release" ]]; then
+    echo "New release failed health check; rolling back to $previous_release" >&2
+    stop_app || true
+    atomic_link "$previous_release"
+    start_app
+  fi
+  return 1
 }
 
 status() {

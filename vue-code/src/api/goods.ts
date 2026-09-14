@@ -13,6 +13,9 @@ export interface GoodsItem {
   detailUrl: string;
   soldPrice: string;
   skuCount: number;
+  coverageStatus?: string;
+  syncStatus?: string;
+  lastSyncedTime?: string;
   status: number;
   createdTime: string;
   updatedTime: string;

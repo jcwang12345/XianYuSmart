@@ -242,12 +242,12 @@ onMounted(load)
               <span class="eyebrow">{{ isCreating ? 'CREATE ACCOUNT' : 'ACCESS POLICY' }}</span>
               <h3>{{ isCreating ? '创建平台账号' : `设置 ${editing?.username}` }}</h3>
             </div>
-            <button class="icon-button" @click="closeEditor">×</button>
+            <button class="icon-button" type="button" aria-label="关闭账号编辑弹窗" @click="closeEditor">×</button>
           </header>
 
           <div class="base-form">
-            <label v-if="isCreating">用户名<input v-model="form.username" maxlength="20" placeholder="3-20位中英文、数字或下划线" /></label>
-            <label v-if="isCreating">初始密码<input v-model="form.password" type="password" maxlength="72" placeholder="至少8位" /></label>
+            <label v-if="isCreating">用户名<input v-model="form.username" name="new-team-username" maxlength="20" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="3-20位中英文、数字或下划线" /></label>
+            <label v-if="isCreating">初始密码<input v-model="form.password" name="new-team-password" type="password" maxlength="72" autocomplete="new-password" placeholder="至少8位" /></label>
             <label v-if="isPlatformAdmin">平台角色
               <select v-model="form.role">
                 <option value="USER">普通用户 · 按所选权限使用</option>

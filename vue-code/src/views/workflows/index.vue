@@ -340,7 +340,8 @@ onMounted(load)
 </template>
 
 <style scoped>
-.workflow__layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 270px; gap: 12px; min-height: 610px; }
+.workflow { min-height: 0; padding-bottom: 24px; }
+.workflow__layout { display: grid; grid-template-columns: 220px minmax(0, 1fr) 270px; gap: 12px; min-height: 0; }
 .workflow__list, .workflow__config { display: flex; min-height: 0; flex-direction: column; gap: 10px; }
 .workflow__saved { display: flex; min-height: 0; overflow-y: auto; flex: 1; flex-direction: column; gap: 8px; }
 .workflow__list-item { display: flex; align-items: flex-start; flex-direction: column; gap: 4px; padding: 11px; border: 1px solid #eaecf0; border-radius: 7px; color: #344054; background: #fff; text-align: left; cursor: pointer; }
@@ -350,7 +351,7 @@ onMounted(load)
 .workflow__palette { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 9px; }
 .workflow__palette > span:first-child { margin-right: 4px; color: #667085; font-size: 12px; }
 .workflow__connecting { color: #9a6200; font-size: 12px; }
-.workflow__canvas { position: relative; min-height: 540px; overflow: auto; padding: 0; cursor: default; touch-action: none; background-color: #fbfcfe; background-image: linear-gradient(#eaecf0 1px, transparent 1px), linear-gradient(90deg, #eaecf0 1px, transparent 1px); background-size: 20px 20px; }
+.workflow__canvas { position: relative; height: clamp(420px, 58vh, 620px); min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 0; cursor: default; touch-action: pan-x pan-y; background-color: #fbfcfe; background-image: linear-gradient(#eaecf0 1px, transparent 1px), linear-gradient(90deg, #eaecf0 1px, transparent 1px); background-size: 20px 20px; }
 .workflow__surface { position: relative; width: 1200px; height: 620px; }
 .workflow__surface svg { position: absolute; width: 1200px; height: 620px; pointer-events: none; }
 .workflow__surface line { stroke: #efc852; stroke-width: 2; }
@@ -378,5 +379,5 @@ onMounted(load)
 .workflow__task small { overflow: hidden; color: #667085; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 1280px) { .workflow__layout { grid-template-columns: 200px minmax(0, 1fr); } .workflow__config { grid-column: 1 / -1; } }
 @media (max-width: 900px) { .workflow__results { grid-template-columns: 1fr; } }
-@media (max-width: 767px) { .workflow__layout { display: flex; flex-direction: column; } .workflow__list { max-height: 340px; } .workflow__canvas { min-height: 480px; } .workflow__palette { align-items: stretch; } .workflow__palette .workbench__btn { flex: 1 0 42%; } .workflow__node-results { grid-template-columns: 1fr 1fr; } .workflow__task { grid-template-columns: 45px 1fr auto; } .workflow__task small { grid-column: 1 / -1; } }
+@media (max-width: 767px) { .workflow__layout { display: flex; flex-direction: column; } .workflow__list { max-height: 340px; } .workflow__canvas { height: min(480px, 62vh); } .workflow__palette { align-items: stretch; } .workflow__palette .workbench__btn { flex: 1 0 42%; } .workflow__node-results { grid-template-columns: 1fr 1fr; } .workflow__task { grid-template-columns: 45px 1fr auto; } .workflow__task small { grid-column: 1 / -1; } }
 </style>

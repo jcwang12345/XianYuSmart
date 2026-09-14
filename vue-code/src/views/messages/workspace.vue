@@ -480,6 +480,17 @@ const switchInbox = async (mode: 'conversations' | 'notifications' | 'handoffs')
   if (mode === 'handoffs') await loadHandoffs()
 }
 
+const inboxTabs: Array<'conversations' | 'notifications' | 'handoffs'> = ['conversations', 'notifications', 'handoffs']
+const moveInboxFocus = async (event: KeyboardEvent, current: 'conversations' | 'notifications' | 'handoffs') => {
+  const direction = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
+  if (!direction) return
+  event.preventDefault()
+  const nextIndex = (inboxTabs.indexOf(current) + direction + inboxTabs.length) % inboxTabs.length
+  const nextMode = inboxTabs[nextIndex]!
+  await switchInbox(nextMode)
+  document.getElementById(`support-tab-${nextMode}`)?.focus()
+}
+
 const claimSelectedHandoff = async () => {
   if (!selectedHandoff.value) return
   handoffActionBusy.value = true
@@ -634,19 +645,19 @@ onBeforeUnmount(() => {
       <router-link class="workbench__btn" to="/dashboard">返回经营总览</router-link>
     </div>
 
-    <nav class="chat__inbox-tabs" aria-label="客服消息类型">
-      <button :class="{ 'chat__inbox-tab--active': inboxMode === 'conversations' }" @click="switchInbox('conversations')">
+    <nav class="chat__inbox-tabs" role="tablist" aria-label="客服消息类型">
+      <button id="support-tab-conversations" role="tab" aria-controls="support-panel-conversations" :aria-selected="inboxMode === 'conversations'" :tabindex="inboxMode === 'conversations' ? 0 : -1" :class="{ 'chat__inbox-tab--active': inboxMode === 'conversations' }" @keydown="moveInboxFocus($event, 'conversations')" @click="switchInbox('conversations')">
         买家会话 <span>{{ conversations.length }}</span>
       </button>
-      <button :class="{ 'chat__inbox-tab--active': inboxMode === 'notifications' }" @click="switchInbox('notifications')">
+      <button id="support-tab-notifications" role="tab" aria-controls="support-panel-notifications" :aria-selected="inboxMode === 'notifications'" :tabindex="inboxMode === 'notifications' ? 0 : -1" :class="{ 'chat__inbox-tab--active': inboxMode === 'notifications' }" @keydown="moveInboxFocus($event, 'notifications')" @click="switchInbox('notifications')">
         通知消息 <span :class="{ 'chat__tab-count--alert': pendingNotificationCount > 0 }">{{ pendingNotificationCount }}</span>
       </button>
-      <button :class="{ 'chat__inbox-tab--active': inboxMode === 'handoffs' }" @click="switchInbox('handoffs')">
+      <button id="support-tab-handoffs" role="tab" aria-controls="support-panel-handoffs" :aria-selected="inboxMode === 'handoffs'" :tabindex="inboxMode === 'handoffs' ? 0 : -1" :class="{ 'chat__inbox-tab--active': inboxMode === 'handoffs' }" @keydown="moveInboxFocus($event, 'handoffs')" @click="switchInbox('handoffs')">
         AI 待接管 <span :class="{ 'chat__tab-count--alert': handoffPendingCount > 0 }">{{ handoffPendingCount }}</span>
       </button>
     </nav>
 
-    <div v-if="inboxMode === 'conversations'" class="chat__layout">
+    <div v-if="inboxMode === 'conversations'" id="support-panel-conversations" class="chat__layout" role="tabpanel" aria-labelledby="support-tab-conversations">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
           <strong>在线消息 <span>{{ conversations.length }}</span></strong>
@@ -773,7 +784,7 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
-    <div v-else-if="inboxMode === 'notifications'" class="chat__layout chat__layout--notifications">
+    <div v-else-if="inboxMode === 'notifications'" id="support-panel-notifications" class="chat__layout chat__layout--notifications" role="tabpanel" aria-labelledby="support-tab-notifications">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
           <strong>通知消息 <span>{{ supportNotifications.length }}</span></strong>
@@ -844,7 +855,7 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <div v-else class="chat__layout chat__layout--handoffs">
+    <div v-else id="support-panel-handoffs" class="chat__layout chat__layout--handoffs" role="tabpanel" aria-labelledby="support-tab-handoffs">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
           <strong>AI 待接管 <span>{{ handoffs.length }}</span></strong>
