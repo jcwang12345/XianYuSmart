@@ -172,6 +172,29 @@ class AccessControlInterceptorTest {
     }
 
     @Test
+    void qaMessageFixturesAndHandoffActionsUseSeparateWritePermissions() throws Exception {
+        SysUser user = user("CUSTOMER_SERVICE");
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_MESSAGES));
+        MockHttpServletResponse fixtureDenied = new MockHttpServletResponse();
+        assertFalse(interceptor.preHandle(request("POST", "/api/qa/message-workspace/fixtures", user),
+                fixtureDenied, new Object()));
+        assertEquals(403, fixtureDenied.getStatus());
+
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_MESSAGES, PermissionCatalog.ACTION_SYSTEM_WRITE));
+        assertTrue(interceptor.preHandle(request("POST", "/api/qa/message-workspace/fixtures", user),
+                new MockHttpServletResponse(), new Object()));
+
+        MockHttpServletResponse handoffDenied = new MockHttpServletResponse();
+        assertFalse(interceptor.preHandle(request("POST", "/api/message-workspace/handoffs/2/claim", user),
+                handoffDenied, new Object()));
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_MESSAGES, PermissionCatalog.ACTION_MESSAGE_SEND));
+        assertTrue(interceptor.preHandle(request("POST", "/api/message-workspace/handoffs/2/claim", user),
+                new MockHttpServletResponse(), new Object()));
+    }
+
+    @Test
     void qaAfterSalesFixtureRequiresOrderWritePermission() throws Exception {
         SysUser support = user("SUPPORT");
         when(permissionService.getPermissionCodeSet(support)).thenReturn(Set.of(PermissionCatalog.MENU_ORDERS));

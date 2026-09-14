@@ -9,6 +9,7 @@ import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.service.AIService;
 import com.xianyusmart.service.AccountService;
 import com.xianyusmart.service.bo.RAGReplyResult;
+import com.xianyusmart.config.rag.DynamicAIChatClientManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -31,6 +32,7 @@ class AIReplyStrategyTest {
     private XianyuGoodsConfigMapper configMapper;
     private XianyuGoodsInfoMapper goodsMapper;
     private AIReplyStrategy strategy;
+    private DynamicAIChatClientManager chatClientManager;
 
     @BeforeEach
     void setUp() {
@@ -39,6 +41,11 @@ class AIReplyStrategyTest {
         goodsMapper = mock(XianyuGoodsInfoMapper.class);
         XianyuChatMessageMapper messageMapper = mock(XianyuChatMessageMapper.class);
         AccountService accountService = mock(AccountService.class);
+        chatClientManager = mock(DynamicAIChatClientManager.class);
+        DynamicAIChatClientManager.AIStatusInfo status = new DynamicAIChatClientManager.AIStatusInfo();
+        status.setModel("qa-model");
+        when(chatClientManager.getStatusInfo()).thenReturn(status);
+        when(chatClientManager.isAvailable()).thenReturn(true);
 
         strategy = new AIReplyStrategy();
         ReflectionTestUtils.setField(strategy, "aiService", aiService);
@@ -47,6 +54,7 @@ class AIReplyStrategyTest {
         ReflectionTestUtils.setField(strategy, "preparationService",
                 new AIReplyPreparationService(messageMapper, accountService));
         ReflectionTestUtils.setField(strategy, "safetyGuard", new AIReplySafetyGuard());
+        ReflectionTestUtils.setField(strategy, "chatClientManager", chatClientManager);
     }
 
     @Test
@@ -90,6 +98,8 @@ class AIReplyStrategyTest {
         ReplyStrategy.ReplyResult result = strategy.execute(List.of(message("你好")));
 
         assertFalse(result.isSuccess());
+        assertEquals("AI_NO_SAFE_ANSWER", result.getHandoffReasonCode());
+        assertEquals("qa-model", result.getModelName());
     }
 
     private static ChatMessageData message(String content) {

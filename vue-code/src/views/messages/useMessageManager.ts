@@ -74,9 +74,8 @@ export function useMessageManager() {
 
   // 格式化消息时间
   const formatMessageTime = (timestamp: string | number) => {
-    const ts = Number(timestamp)
-    if (!ts || isNaN(ts)) return '-'
-    const date = new Date(ts)
+    const numeric = typeof timestamp === 'number' ? timestamp : Number(timestamp)
+    const date = Number.isFinite(numeric) && numeric > 0 ? new Date(numeric) : new Date(timestamp)
     if (isNaN(date.getTime())) return '-'
     const now = new Date()
     const diff = now.getTime() - date.getTime()
@@ -218,12 +217,11 @@ export function useMessageManager() {
   }
 
   // 账号变更
-  const handleAccountChange = () => {
+  const handleAccountChange = async () => {
     currentPage.value = 1
     goodsCurrentPage.value = 1
     goodsIdFilter.value = ''
-    loadMessages()
-    loadGoodsList()
+    await Promise.all([loadMessages(), loadGoodsList()])
   }
 
   // 选择商品筛选

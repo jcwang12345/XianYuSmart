@@ -22,6 +22,11 @@ public interface ReplyStrategy {
         private Integer bargainRound;
         private String contextMessages;
         private List<RAGReplyResult.RAGHitDetail> ragHitDetails = new ArrayList<>();
+        private Double confidenceScore;
+        private String modelName;
+        private Long processingDurationMs;
+        private String handoffReasonCode;
+        private String handoffReasonDetail;
 
         @lombok.Data
         public static class ReplyItem {
@@ -62,6 +67,13 @@ public interface ReplyStrategy {
         public static ReplyResult fail() {
             ReplyResult r = new ReplyResult();
             r.setSuccess(false);
+            return r;
+        }
+
+        public static ReplyResult handoff(String reasonCode, String reasonDetail) {
+            ReplyResult r = fail();
+            r.setHandoffReasonCode(reasonCode);
+            r.setHandoffReasonDetail(reasonDetail);
             return r;
         }
     }

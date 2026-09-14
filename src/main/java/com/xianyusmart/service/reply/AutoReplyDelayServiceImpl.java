@@ -60,6 +60,9 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
     private HumanTakeoverManager takeoverManager;
 
     @Autowired
+    private com.xianyusmart.service.AiHandoffService aiHandoffService;
+
+    @Autowired
     private BuyerProfileService buyerProfileService;
 
     @Autowired
@@ -296,7 +299,7 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
                 return;
             }
             TenantContext.set(account.getTenantId());
-            if (takeoverManager.isTakenOver(accountId, sId)) {
+            if (takeoverManager.isTakenOver(accountId, sId) || aiHandoffService.hasPending(accountId, sId)) {
                 autoReplyRecordMapper.cancelById(recordId);
                 return;
             }

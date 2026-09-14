@@ -84,6 +84,19 @@ public class XianyuGoodsAutoReplyRecord {
      */
     private Integer state;
 
+    /** PENDING/AUTO_READY/AUTO_SENT/HUMAN_REQUIRED/PAUSED_MANUAL/SKIPPED。 */
+    private String decisionState;
+
+    /** AI/RAG 最高可信度；规则回复允许为空。 */
+    private Double confidenceScore;
+
+    /** 实际配置的模型标识，无法取得时保持空值。 */
+    private String modelName;
+
+    private Long processingDurationMs;
+
+    private String handoffReasonCode;
+
     private LocalDateTime scheduledTime;
 
     private Integer attemptCount;

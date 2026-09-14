@@ -47,6 +47,7 @@ public class MybatisPlusConfig {
             "xianyu_goods_batch_job", "xianyu_goods_batch_item",
             "xianyu_order_event", "xianyu_refund_case", "xianyu_refund_action", "xianyu_return_shipment",
             "xianyu_message_send_attempt", "xianyu_notification_event",
+            "xianyu_ai_handoff_task",
             "xianyu_account_group", "xianyu_account_group_member", "xianyu_shop_metric_daily",
             "sys_user_account_group_scope", "xianyu_saved_filter"
     );

@@ -29,6 +29,7 @@ class MessageWorkspaceServiceTest {
     private JdbcTemplate jdbcTemplate;
     private WebSocketService webSocketService;
     private SentMessageSaveService sentMessageSaveService;
+    private AiHandoffService aiHandoffService;
     private MessageWorkspaceService service;
 
     @BeforeEach
@@ -36,13 +37,17 @@ class MessageWorkspaceServiceTest {
         jdbcTemplate = mock(JdbcTemplate.class);
         webSocketService = mock(WebSocketService.class);
         sentMessageSaveService = mock(SentMessageSaveService.class);
+        aiHandoffService = mock(AiHandoffService.class);
         service = new MessageWorkspaceService(jdbcTemplate, mock(AccountAccessService.class),
                 mock(ConversationAssignmentService.class), webSocketService, sentMessageSaveService,
-                mock(HumanTakeoverManager.class), mock(OperationLogService.class), new ObjectMapper());
+                mock(HumanTakeoverManager.class), mock(OperationLogService.class),
+                aiHandoffService, new ObjectMapper());
         TenantContext.set(6L);
         UserContext.set(4L, "message-tester", 6L);
         when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class))).thenReturn(1L);
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of());
+        when(jdbcTemplate.update(org.mockito.ArgumentMatchers.contains("INSERT IGNORE INTO xianyu_message_send_attempt"),
+                any(Object[].class))).thenReturn(1);
     }
 
     @AfterEach
@@ -62,6 +67,7 @@ class MessageWorkspaceServiceTest {
         assertEquals("UNKNOWN", result.get("outcomeState"));
         assertTrue(String.valueOf(result.get("recoveryHint")).contains("不要重复发送"));
         verify(sentMessageSaveService, never()).saveManualReply(any(), anyString(), anyString(), anyString(), any());
+        verify(aiHandoffService).open(any(AiHandoffService.OpenCommand.class));
         verify(jdbcTemplate).update(org.mockito.ArgumentMatchers.contains("outcome_state=?"),
                 eq("UNKNOWN"), any(), any(), eq(6L), eq("request-1"));
     }
@@ -78,6 +84,22 @@ class MessageWorkspaceServiceTest {
 
         assertEquals(true, result.get("idempotentReplay"));
         assertEquals("UNKNOWN", result.get("outcomeState"));
+        verify(webSocketService, never()).sendMessageWithResult(any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void concurrentDuplicateInsertReadsWinnerWithoutSecondPlatformSend() {
+        Map<String, Object> replay = new LinkedHashMap<>();
+        replay.put("outcomeState", "SENT");
+        when(jdbcTemplate.queryForList(org.mockito.ArgumentMatchers.contains("xianyu_message_send_attempt"),
+                any(Object[].class))).thenReturn(List.of(), List.of(replay));
+        when(jdbcTemplate.update(org.mockito.ArgumentMatchers.contains("INSERT IGNORE INTO xianyu_message_send_attempt"),
+                any(Object[].class))).thenReturn(0);
+
+        Map<String, Object> result = service.sendText(command("request-concurrent"));
+
+        assertEquals(true, result.get("idempotentReplay"));
+        assertEquals("SENT", result.get("outcomeState"));
         verify(webSocketService, never()).sendMessageWithResult(any(), anyString(), anyString(), anyString());
     }
 

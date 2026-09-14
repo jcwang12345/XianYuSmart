@@ -11,6 +11,8 @@ import com.xianyusmart.service.reply.HumanTakeoverManager;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -25,6 +27,8 @@ import java.util.Set;
 @Service
 public class MessageWorkspaceService {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(MessageWorkspaceService.class);
+
     private final JdbcTemplate jdbcTemplate;
     private final AccountAccessService accountAccessService;
     private final ConversationAssignmentService assignmentService;
@@ -32,6 +36,7 @@ public class MessageWorkspaceService {
     private final SentMessageSaveService sentMessageSaveService;
     private final HumanTakeoverManager takeoverManager;
     private final OperationLogService operationLogService;
+    private final AiHandoffService aiHandoffService;
     private final ObjectMapper objectMapper;
 
     public MessageWorkspaceService(JdbcTemplate jdbcTemplate,
@@ -41,6 +46,7 @@ public class MessageWorkspaceService {
                                    SentMessageSaveService sentMessageSaveService,
                                    HumanTakeoverManager takeoverManager,
                                    OperationLogService operationLogService,
+                                   AiHandoffService aiHandoffService,
                                    ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
         this.accountAccessService = accountAccessService;
@@ -49,6 +55,7 @@ public class MessageWorkspaceService {
         this.sentMessageSaveService = sentMessageSaveService;
         this.takeoverManager = takeoverManager;
         this.operationLogService = operationLogService;
+        this.aiHandoffService = aiHandoffService;
         this.objectMapper = objectMapper;
     }
 
@@ -98,6 +105,10 @@ public class MessageWorkspaceService {
                        assignment.manual_takeover_state manualTakeoverState,
                        assignment.manual_takeover_until manualTakeoverUntil,
                        assignment.auto_reply_state autoReplyState,
+                       assignment.handoff_status handoffStatus,
+                       assignment.handoff_reason_code handoffReasonCode,
+                       assignment.handoff_task_id handoffTaskId,
+                       assignment.handoff_created_time handoffCreatedTime,
                        assignment.history_sync_status historySyncStatus,
                        assignment.history_coverage_status historyCoverageStatus,
                        assignment.history_last_synced_time historyLastSyncedTime,
@@ -157,8 +168,9 @@ public class MessageWorkspaceService {
                   FROM xianyu_message_send_attempt
                  WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? ORDER BY created_time DESC LIMIT 100
                 """, tenant(), accountId, sessionId);
+        List<Map<String, Object>> decisions = aiHandoffService.decisions(accountId, sessionId, 50);
         return Map.of("accountId", accountId, "sessionId", sessionId, "messages", messages,
-                "relatedOrders", orders, "sendAttempts", sends,
+                "relatedOrders", orders, "sendAttempts", sends, "replyDecisions", decisions,
                 "historyPage", Map.of("limit", safeLimit, "offset", safeOffset));
     }
 
@@ -256,19 +268,22 @@ public class MessageWorkspaceService {
                 SELECT outcome_state outcomeState,error_message errorMessage,updated_time updatedTime
                   FROM xianyu_message_send_attempt WHERE tenant_id=? AND request_id=?
                 """, tenant(), requestId);
-        if (!replay.isEmpty()) {
-            Map<String, Object> result = new LinkedHashMap<>(replay.getFirst());
-            result.put("requestId", requestId);
-            result.put("idempotentReplay", true);
-            return result;
-        }
-        jdbcTemplate.update("""
-                INSERT INTO xianyu_message_send_attempt
+        if (!replay.isEmpty()) return replayAttempt(replay.getFirst(), requestId);
+        int inserted = jdbcTemplate.update("""
+                INSERT IGNORE INTO xianyu_message_send_attempt
                 (tenant_id,xianyu_account_id,session_id,recipient_user_id,xy_goods_id,content_type,
                  content_sha256,content_excerpt,request_id,idempotency_key,operator_user_id,operator_username)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                 """, tenant(), accountId, sessionId, recipient, trim(command.goodsId()), type,
                 sha256(content), excerpt(content), requestId, requestId, UserContext.getUserId(), UserContext.getUsername());
+        if (inserted == 0) {
+            List<Map<String, Object>> concurrentReplay = jdbcTemplate.queryForList("""
+                    SELECT outcome_state outcomeState,error_message errorMessage,updated_time updatedTime
+                      FROM xianyu_message_send_attempt WHERE tenant_id=? AND request_id=?
+                    """, tenant(), requestId);
+            if (concurrentReplay.isEmpty()) throw new BusinessException(409, "相同请求正在处理中，请使用原 requestId 查询结果");
+            return replayAttempt(concurrentReplay.getFirst(), requestId);
+        }
         if (!webSocketService.isConnected(accountId)) {
             return finishAttempt(accountId, requestId, "FAILED", "账号实时连接未建立", command, false);
         }
@@ -323,6 +338,19 @@ public class MessageWorkspaceService {
         }
         log.setErrorMessage(limit(error, 500));
         operationLogService.log(log);
+        if ("UNKNOWN".equals(outcome) && request instanceof SendCommand command) {
+            try {
+                aiHandoffService.open(new AiHandoffService.OpenCommand(
+                        command.accountId(), command.sessionId(), command.goodsId(), command.recipientUserId(),
+                        null, "MESSAGE_OUTCOME_UNKNOWN", "人工发送已开始但平台回执未知，确认前禁止重复发送",
+                        null, null, null, "MESSAGE_SEND:" + tenant() + ":" + requestId,
+                        "message-handoff-" + requestId));
+            } catch (Exception handoffError) {
+                // 发送结果事实优先返回；接管队列失败由日志和健康检查单独处理，不能把 UNKNOWN 误报成 FAILED。
+                LOGGER.error("发送结果未知，但建立人工接管任务失败: accountId={}, requestId={}",
+                        accountId, requestId, handoffError);
+            }
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("requestId", requestId);
         result.put("outcomeState", outcome);
@@ -330,6 +358,13 @@ public class MessageWorkspaceService {
         result.put("error", error);
         result.put("recoveryHint", "UNKNOWN".equals(outcome)
                 ? "请先查看当前会话是否已出现该消息，确认前不要重复发送" : null);
+        return result;
+    }
+
+    private Map<String, Object> replayAttempt(Map<String, Object> persisted, String requestId) {
+        Map<String, Object> result = new LinkedHashMap<>(persisted);
+        result.put("requestId", requestId);
+        result.put("idempotentReplay", true);
         return result;
     }
 

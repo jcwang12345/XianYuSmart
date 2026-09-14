@@ -2,6 +2,7 @@ package com.xianyusmart.controller;
 
 import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.service.MessageWorkspaceService;
+import com.xianyusmart.service.AiHandoffService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -15,8 +16,12 @@ import java.util.Map;
 @RequestMapping("/api/message-workspace")
 public class MessageWorkspaceController {
     private final MessageWorkspaceService service;
+    private final AiHandoffService handoffService;
 
-    public MessageWorkspaceController(MessageWorkspaceService service) { this.service = service; }
+    public MessageWorkspaceController(MessageWorkspaceService service, AiHandoffService handoffService) {
+        this.service = service;
+        this.handoffService = handoffService;
+    }
 
     @GetMapping("/conversations")
     public ResultObject<Map<String, Object>> conversations(
@@ -64,6 +69,29 @@ public class MessageWorkspaceController {
     @PostMapping("/send/image")
     public ResultObject<Map<String, Object>> sendImage(@RequestBody MessageWorkspaceService.SendCommand command) {
         return ResultObject.success(service.sendImage(command));
+    }
+
+    @GetMapping("/handoffs")
+    public ResultObject<Map<String, Object>> handoffs(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) Long accountId,
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) Integer limit) {
+        return ResultObject.success(handoffService.list(status, accountId, search, limit));
+    }
+
+    @PostMapping("/handoffs/{id}/claim")
+    public ResultObject<Map<String, Object>> claimHandoff(
+            @org.springframework.web.bind.annotation.PathVariable Long id,
+            @RequestBody AiHandoffService.ActionCommand command) {
+        return ResultObject.success(handoffService.claim(id, command));
+    }
+
+    @PostMapping("/handoffs/{id}/resolve")
+    public ResultObject<Map<String, Object>> resolveHandoff(
+            @org.springframework.web.bind.annotation.PathVariable Long id,
+            @RequestBody AiHandoffService.ActionCommand command) {
+        return ResultObject.success(handoffService.resolve(id, command));
     }
 
     public record ConversationCommand(Long accountId, String sessionId, String goodsId, Integer minutes) {}

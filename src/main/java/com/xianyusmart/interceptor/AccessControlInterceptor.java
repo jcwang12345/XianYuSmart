@@ -99,6 +99,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveMenuPermission(String uri) {
+        if (uri.startsWith("/api/qa/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
         if (uri.startsWith("/api/qa/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/account-groups")) return PermissionCatalog.MENU_ACCOUNTS;
@@ -178,6 +179,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (uri.startsWith("/api/qa/message-workspace") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
         if (uri.startsWith("/api/qa/business-analytics") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
@@ -188,7 +192,10 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             return PermissionCatalog.ACTION_ACCOUNT_WRITE;
         }
         if (uri.startsWith("/api/message-workspace/send/")
-                || uri.equals("/api/message-workspace/conversation/takeover")) return PermissionCatalog.ACTION_MESSAGE_SEND;
+                || uri.equals("/api/message-workspace/conversation/takeover")
+                || (uri.startsWith("/api/message-workspace/handoffs/") && !"GET".equalsIgnoreCase(method))) {
+            return PermissionCatalog.ACTION_MESSAGE_SEND;
+        }
         if (uri.equals("/api/message-workspace/conversation/update")) return PermissionCatalog.ACTION_BUYER_WRITE;
         if (uri.startsWith("/api/qa/order-after-sales") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_ORDER_WRITE;

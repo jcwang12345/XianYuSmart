@@ -8,6 +8,7 @@ import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsInfoMapper;
 import com.xianyusmart.service.AIService;
 import com.xianyusmart.service.bo.RAGReplyResult;
+import com.xianyusmart.config.rag.DynamicAIChatClientManager;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,8 +38,12 @@ public class AIReplyStrategy implements ReplyStrategy {
     @Autowired
     private AIReplySafetyGuard safetyGuard;
 
+    @Autowired
+    private DynamicAIChatClientManager chatClientManager;
+
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
+        long startedAt = System.nanoTime();
         ChatMessageData lastMessage = messageList.get(messageList.size() - 1);
         Long accountId = lastMessage.getXianyuAccountId();
         String xyGoodsId = lastMessage.getXyGoodsId();
@@ -61,6 +66,11 @@ public class AIReplyStrategy implements ReplyStrategy {
                     prepared.buyerMessage(), xyGoodsId, prepared.contextMessages(), guardedMaterial, goodsDetail);
 
             String safeReply = result == null ? null : safetyGuard.safeOrNull(result.getReplyContent());
+            Double confidence = result == null || result.getHitDetails() == null ? null
+                    : result.getHitDetails().stream().map(RAGReplyResult.RAGHitDetail::getScore)
+                    .filter(java.util.Objects::nonNull).max(Double::compareTo).orElse(null);
+            String model = null;
+            try { model = chatClientManager.getStatusInfo().getModel(); } catch (Exception ignored) { }
             if (safeReply != null) {
                 ReplyResult replyResult = ReplyResult.of(Collections.singletonList(
                         ReplyResult.ReplyItem.text(safeReply, REPLY_TYPE_AI)));
@@ -68,12 +78,23 @@ public class AIReplyStrategy implements ReplyStrategy {
                 replyResult.setBargainRound(prepared.bargainRound());
                 replyResult.setContextMessages(prepared.contextMessages());
                 replyResult.setRagHitDetails(result.getHitDetails());
+                replyResult.setConfidenceScore(confidence);
+                replyResult.setModelName(model);
+                replyResult.setProcessingDurationMs((System.nanoTime() - startedAt) / 1_000_000L);
                 return replyResult;
             }
-            return ReplyResult.fail();
+            ReplyResult handoff = ReplyResult.handoff(
+                    chatClientManager.isAvailable() ? "AI_NO_SAFE_ANSWER" : "AI_UNAVAILABLE",
+                    chatClientManager.isAvailable() ? "AI 返回为空或被安全门禁拦截" : "AI 服务未启用或配置不可用");
+            handoff.setConfidenceScore(confidence);
+            handoff.setModelName(model);
+            handoff.setProcessingDurationMs((System.nanoTime() - startedAt) / 1_000_000L);
+            return handoff;
         } catch (Exception e) {
             log.error("【账号{}】AI回复策略执行失败: xyGoodsId={}", accountId, xyGoodsId, e);
-            return ReplyResult.fail();
+            ReplyResult handoff = ReplyResult.handoff("AI_UNAVAILABLE", "AI 调用失败或超时");
+            handoff.setProcessingDurationMs((System.nanoTime() - startedAt) / 1_000_000L);
+            return handoff;
         }
     }
 

@@ -4,15 +4,20 @@ import { useMessageManager } from './useMessageManager'
 import {
   getContextMessages,
   getConversationProfiles,
+  getAiHandoffs,
   getWorkspaceConversations,
+  claimAiHandoff,
   markWorkspaceConversationRead,
+  resolveAiHandoff,
   sendWorkspaceImage,
   sendWorkspaceText,
   takeoverWorkspaceConversation,
   updateWorkspaceConversation,
   syncContextMessages,
+  type AiHandoffTask,
   type ChatMessage,
-  type ConversationProfile
+  type ConversationProfile,
+  type WorkspaceConversation
 } from '@/api/message'
 import { newRequestId } from '@/api/matrix'
 import { getKeywordReplyRules } from '@/api/keywordReply'
@@ -55,17 +60,34 @@ const sending = ref(false)
 const refreshing = ref(false)
 const quickReplies = ref<string[]>([])
 const messagesRef = ref<HTMLElement>()
-const inboxMode = ref<'conversations' | 'notifications'>('conversations')
+const inboxMode = ref<'conversations' | 'notifications' | 'handoffs'>('conversations')
 const notificationSearch = ref('')
 const notificationFilter = ref<'all' | 'pending' | 'delivery'>('all')
 const notificationLogs = ref<NotificationLog[]>([])
 const operationExceptions = ref<OperationException[]>([])
 const notificationLoading = ref(false)
+const notificationError = ref('')
 const selectedNotificationId = ref('')
 const acknowledgingNotification = ref('')
 const workspaceRecord = ref<any>(null)
 const workspaceSaving = ref(false)
+const workspaceError = ref('')
+const contextExpanded = ref(false)
 const workspaceForm = reactive({ pinned: false, keywordFlag: 'NONE', customerNote: '', blacklisted: false })
+const workspaceInboxRecords = ref<WorkspaceConversation[]>([])
+const workspaceInboxLoaded = ref(false)
+const workspaceInboxLoading = ref(false)
+const workspaceInboxError = ref('')
+const conversationFilters = reactive({ unreadOnly: false, pinnedOnly: false, keywordFlag: 'ALL' })
+const handoffs = ref<AiHandoffTask[]>([])
+const handoffLoading = ref(false)
+const handoffError = ref('')
+const handoffStatus = ref<'OPEN' | 'CLAIMED' | 'RESOLVED' | 'IGNORED' | 'ALL'>('OPEN')
+const handoffSearch = ref('')
+const selectedHandoffId = ref<number | null>(null)
+const handoffResolutionNote = ref('')
+const handoffActionBusy = ref(false)
+const handoffPendingCount = ref(0)
 
 type SupportNotification = {
   id: string
@@ -145,6 +167,16 @@ const selectedNotification = computed(() =>
 const pendingNotificationCount = computed(() => operationExceptions.value.filter(item =>
   !selectedAccountId.value || !item.accountId || item.accountId === selectedAccountId.value
 ).length)
+const selectedHandoff = computed(() =>
+  handoffs.value.find(item => item.id === selectedHandoffId.value) || handoffs.value[0]
+)
+
+const handoffPriorityLabel: Record<AiHandoffTask['priority'], string> = {
+  URGENT: '紧急', HIGH: '高', NORMAL: '普通', LOW: '低'
+}
+const handoffStatusLabel: Record<AiHandoffTask['status'], string> = {
+  OPEN: '待认领', CLAIMED: '处理中', RESOLVED: '已解决', IGNORED: '已忽略'
+}
 
 const normalizeImageUrl = (value?: string) => {
   if (!value) return ''
@@ -159,6 +191,7 @@ const markImageError = (url?: string) => {
 const imageAvailable = (url?: string) => Boolean(url && !failedImages.value.has(url))
 const isImageMessage = (message: ChatMessage) => [2, 887, 997].includes(message.contentType)
 const isSystemMessage = (message: ChatMessage) => ![1, 2, 887, 888, 997, 999].includes(message.contentType)
+const workspaceInboxBySid = computed(() => new Map(workspaceInboxRecords.value.map(item => [item.sessionId, item])))
 
 const conversations = computed(() => {
   const groups = new Map<string, ChatMessage[]>()
@@ -173,6 +206,7 @@ const conversations = computed(() => {
     const buyer = ordered.find(message => message.senderUserId !== currentUserId) || latest
     const goods = goodsList.value.find(item => item.item.xyGoodId === latest.xyGoodsId)
     const profile = profiles.value[sid]
+    const workspace = workspaceInboxBySid.value.get(sid)
     return {
       sid,
       messages: ordered,
@@ -182,27 +216,58 @@ const conversations = computed(() => {
       latest,
       goods,
       goodsTitle: goods?.item.title || latest.xyGoodsId || '未关联商品',
-      goodsCover: normalizeImageUrl(goods?.item.coverPic || '')
+      goodsCover: normalizeImageUrl(goods?.item.coverPic || ''),
+      workspace
     }
   }).filter(item => {
-    const keyword = searchText.value.trim().toLowerCase()
-    return !keyword || `${item.buyerName} ${item.goodsTitle} ${item.latest.msgContent}`.toLowerCase().includes(keyword)
+    return !workspaceInboxLoaded.value || workspaceInboxBySid.value.has(item.sid)
   }).sort((a, b) => Number(b.latest.messageTime) - Number(a.latest.messageTime))
 })
 
 const selected = computed(() => conversations.value.find(item => item.sid === selectedSid.value) || conversations.value[0])
 const orderedContext = computed(() => [...contextMessages.value].reverse())
-const incomingCount = computed(() => messageList.value.filter(message => message.senderUserId !== getCurrentAccountUnb.value).length)
+const incomingCount = computed(() => conversations.value.reduce((count, item) => count
+  + item.messages.filter(message => message.senderUserId !== getCurrentAccountUnb.value).length, 0))
 
 const scrollToBottom = () => nextTick(() => {
   if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight
 })
 
+const loadWorkspaceInbox = async (silent = false) => {
+  if (!selectedAccountId.value) {
+    workspaceInboxRecords.value = []
+    workspaceInboxLoaded.value = true
+    return
+  }
+  if (!silent) workspaceInboxLoading.value = true
+  workspaceInboxError.value = ''
+  try {
+    const response = await getWorkspaceConversations({
+      status: 'ALL',
+      accountId: selectedAccountId.value,
+      search: searchText.value.trim() || undefined,
+      unreadOnly: conversationFilters.unreadOnly || undefined,
+      pinnedOnly: conversationFilters.pinnedOnly || undefined,
+      keywordFlag: conversationFilters.keywordFlag === 'ALL' ? undefined : conversationFilters.keywordFlag,
+      limit: 500
+    })
+    workspaceInboxRecords.value = response.data?.records || []
+    workspaceInboxLoaded.value = true
+  } catch (error: any) {
+    workspaceInboxError.value = error?.message || '会话范围读取失败'
+    if (!workspaceInboxRecords.value.length) workspaceInboxLoaded.value = false
+    if (!silent && !error?.messageShown) showError(workspaceInboxError.value)
+  } finally {
+    workspaceInboxLoading.value = false
+  }
+}
+
 const loadWorkspaceRecord = async () => {
   workspaceRecord.value = null
+  workspaceError.value = ''
   if (!selectedAccountId.value || !selected.value) return
   try {
-    const response = await getWorkspaceConversations({ accountId: selectedAccountId.value, search: selected.value.sid, limit: 50 })
+    const response = await getWorkspaceConversations({ status: 'ALL', accountId: selectedAccountId.value, search: selected.value.sid, limit: 50 })
     const record = (response.data?.records || []).find(item => item.sessionId === selected.value?.sid)
     workspaceRecord.value = record || null
     workspaceForm.pinned = Boolean(record?.pinned)
@@ -210,8 +275,9 @@ const loadWorkspaceRecord = async () => {
     workspaceForm.customerNote = record?.customerNote || ''
     workspaceForm.blacklisted = Boolean(record?.customerBlacklisted)
     if (record?.unreadCount) await markWorkspaceConversationRead(selectedAccountId.value, selected.value.sid)
-  } catch {
+  } catch (error: any) {
     workspaceRecord.value = null
+    workspaceError.value = error?.message || '会话运营信息读取失败'
   }
 }
 
@@ -299,6 +365,7 @@ const sendCurrentMessage = async () => {
   sending.value = true
   try {
     const toId = selected.value.buyerId.replace('@goofish', '')
+    let outcomeUnknown = false
     for (const imageUrl of images) {
       const response = await sendWorkspaceImage({
         accountId: selectedAccountId.value,
@@ -310,7 +377,11 @@ const sendCurrentMessage = async () => {
         goodsId: selected.value.latest.xyGoodsId,
         requestId: newRequestId('message-image')
       })
-      if (response.data?.outcomeState === 'UNKNOWN') showWarning(response.data.recoveryHint || '图片发送结果未知，请勿重复发送，先刷新会话核对')
+      if (response.data?.outcomeState === 'FAILED') throw new Error(response.data.recoveryHint || '图片发送失败')
+      if (response.data?.outcomeState === 'UNKNOWN') {
+        outcomeUnknown = true
+        showWarning(response.data.recoveryHint || '图片发送结果未知，请勿重复发送，先刷新会话核对')
+      }
     }
     if (text) {
       const response = await sendWorkspaceText({
@@ -321,13 +392,17 @@ const sendCurrentMessage = async () => {
         goodsId: selected.value.latest.xyGoodsId,
         requestId: newRequestId('message-text')
       })
-      if (response.data?.outcomeState === 'UNKNOWN') showWarning(response.data.recoveryHint || '消息发送结果未知，请勿重复发送，先刷新会话核对')
+      if (response.data?.outcomeState === 'FAILED') throw new Error(response.data.recoveryHint || '消息发送失败')
+      if (response.data?.outcomeState === 'UNKNOWN') {
+        outcomeUnknown = true
+        showWarning(response.data.recoveryHint || '消息发送结果未知，请勿重复发送，先刷新会话核对')
+      }
     }
     messageText.value = ''
     imageUrls.value = ''
     showImageUploader.value = false
     await loadConversationContext(false, false)
-    showSuccess('消息已取得平台确认或进入结果核对')
+    if (!outcomeUnknown) showSuccess('平台已确认消息发送成功')
   } catch (error: any) {
     showError(error?.message || '消息发送失败')
   } finally {
@@ -340,7 +415,7 @@ const refresh = async () => {
   refreshing.value = true
   try {
     const previousMessageId = selected.value?.latest.id
-    await loadMessages(true)
+    await Promise.all([loadMessages(true), loadWorkspaceInbox(true)])
     if (selected.value && selected.value.latest.id !== previousMessageId) {
       // 仅在会话出现新消息时更新正文，避免轮询造成滚动位置跳动。
       await loadConversationContext(false, false)
@@ -352,6 +427,7 @@ const refresh = async () => {
 
 const loadSupportNotifications = async (silent = false) => {
   if (!silent) notificationLoading.value = true
+  notificationError.value = ''
   try {
     const [exceptionsResult, logsResult] = await Promise.allSettled([
       getOperationExceptions(),
@@ -359,17 +435,90 @@ const loadSupportNotifications = async (silent = false) => {
     ])
     if (exceptionsResult.status === 'fulfilled') operationExceptions.value = exceptionsResult.value.data || []
     if (logsResult.status === 'fulfilled') notificationLogs.value = logsResult.value.data || []
-    if (exceptionsResult.status === 'rejected' && logsResult.status === 'rejected' && !silent) {
-      showWarning('通知消息暂时无法读取')
+    if (exceptionsResult.status === 'rejected' || logsResult.status === 'rejected') {
+      notificationError.value = exceptionsResult.status === 'rejected' && logsResult.status === 'rejected'
+        ? '通知消息暂时无法读取，已保留上次成功数据'
+        : '部分通知来源暂时无法读取，当前结果可能不完整'
+      if (!silent) showWarning(notificationError.value)
     }
   } finally {
     notificationLoading.value = false
   }
 }
 
-const switchInbox = async (mode: 'conversations' | 'notifications') => {
+const loadHandoffs = async (silent = false) => {
+  if (!silent) handoffLoading.value = true
+  handoffError.value = ''
+  try {
+    const response = await getAiHandoffs({
+      status: handoffStatus.value,
+      accountId: selectedAccountId.value || undefined,
+      search: handoffSearch.value.trim() || undefined,
+      limit: 300
+    })
+    handoffs.value = response.data?.records || []
+    try {
+      const countResponse = handoffStatus.value === 'ALL'
+        ? response
+        : await getAiHandoffs({ status: 'ALL', accountId: selectedAccountId.value || undefined, limit: 500 })
+      handoffPendingCount.value = (countResponse.data?.records || [])
+        .filter(item => ['OPEN', 'CLAIMED'].includes(item.status)).length
+    } catch {
+      // 主列表读取成功时保留上次计数，避免一次辅助计数失败把有效任务清空。
+    }
+  } catch (error: any) {
+    handoffError.value = error?.message || 'AI 待接管任务读取失败'
+    if (!silent && !error?.messageShown) showError(handoffError.value)
+  } finally {
+    handoffLoading.value = false
+  }
+}
+
+const switchInbox = async (mode: 'conversations' | 'notifications' | 'handoffs') => {
   inboxMode.value = mode
   if (mode === 'notifications') await loadSupportNotifications()
+  if (mode === 'handoffs') await loadHandoffs()
+}
+
+const claimSelectedHandoff = async () => {
+  if (!selectedHandoff.value) return
+  handoffActionBusy.value = true
+  try {
+    await claimAiHandoff(selectedHandoff.value.id, newRequestId('handoff-claim'))
+    showSuccess('任务已认领，自动回复保持暂停')
+    await loadHandoffs(true)
+  } catch (error: any) {
+    if (!error?.messageShown) showError(error?.message || '认领失败')
+  } finally { handoffActionBusy.value = false }
+}
+
+const resolveSelectedHandoff = async (status: 'RESOLVED' | 'IGNORED') => {
+  if (!selectedHandoff.value) return
+  const note = handoffResolutionNote.value.trim()
+  if (status === 'IGNORED' && !note) return showWarning('忽略任务必须填写处理说明')
+  handoffActionBusy.value = true
+  try {
+    await resolveAiHandoff(selectedHandoff.value.id, status, note, newRequestId(`handoff-${status.toLowerCase()}`))
+    showSuccess(status === 'RESOLVED' ? '任务已解决' : '任务已忽略并记录原因')
+    handoffResolutionNote.value = ''
+    await loadHandoffs(true)
+  } catch (error: any) {
+    if (!error?.messageShown) showError(error?.message || '任务处理失败')
+  } finally { handoffActionBusy.value = false }
+}
+
+const openHandoffConversation = async () => {
+  const task = selectedHandoff.value
+  if (!task) return
+  if (selectedAccountId.value !== task.accountId) {
+    selectedAccountId.value = task.accountId
+    await changeAccount()
+  } else {
+    await Promise.all([loadMessages(), loadWorkspaceInbox()])
+  }
+  inboxMode.value = 'conversations'
+  await nextTick()
+  selectedSid.value = task.sessionId
 }
 
 const acknowledgeSelectedNotification = async () => {
@@ -387,6 +536,18 @@ const acknowledgeSelectedNotification = async () => {
   }
 }
 
+const refreshCurrentInbox = async () => {
+  if (inboxMode.value === 'notifications') return loadSupportNotifications()
+  if (inboxMode.value === 'handoffs') return loadHandoffs()
+  return refresh()
+}
+
+const changeAccount = async () => {
+  workspaceInboxLoaded.value = false
+  await handleAccountChange()
+  await Promise.all([loadWorkspaceInbox(), loadSupportNotifications(true), loadHandoffs(true)])
+}
+
 watch(conversations, value => {
   if (!value.length) selectedSid.value = ''
   else if (!value.some(item => item.sid === selectedSid.value)) selectedSid.value = value[0]!.sid
@@ -396,6 +557,15 @@ watch(supportNotifications, value => {
   if (!value.length) selectedNotificationId.value = ''
   else if (!value.some(item => item.id === selectedNotificationId.value)) selectedNotificationId.value = value[0]!.id
 }, { immediate: true })
+
+watch(handoffs, value => {
+  if (!value.length) selectedHandoffId.value = null
+  else if (!value.some(item => item.id === selectedHandoffId.value)) selectedHandoffId.value = value[0]!.id
+}, { immediate: true })
+
+watch([handoffStatus, selectedAccountId], () => {
+  if (inboxMode.value === 'handoffs') loadHandoffs(true)
+})
 
 watch(selectedAccountId, () => {
   profiles.value = {}
@@ -430,10 +600,11 @@ watch([selectedAccountId, () => selected.value?.sid], async ([accountId, sid]) =
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(async () => {
   await loadAccounts()
-  await loadSupportNotifications(true)
+  await Promise.all([loadWorkspaceInbox(true), loadSupportNotifications(true), loadHandoffs(true)])
   timer = setInterval(() => {
     if (inboxMode.value === 'notifications') loadSupportNotifications(true)
-    else Promise.all([refresh(), loadSupportNotifications(true)])
+    else if (inboxMode.value === 'handoffs') loadHandoffs(true)
+    else Promise.all([refresh(), loadSupportNotifications(true), loadHandoffs(true)])
   }, 10000)
 })
 
@@ -447,15 +618,21 @@ onBeforeUnmount(() => {
     <header class="workbench__header">
       <div><h1>集成客服</h1><p>统一处理买家会话、订单与账号通知，重要事件不再散落。</p></div>
       <div class="workbench__actions">
-        <select v-model="selectedAccountId" class="workbench__select chat__account" @change="handleAccountChange">
+        <select v-model="selectedAccountId" class="workbench__select chat__account" @change="changeAccount">
           <option v-if="!accounts.length" :value="null" disabled>暂无可用账号</option>
           <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
         </select>
-        <button class="workbench__btn" :disabled="loading || platformSyncing || notificationLoading" @click="inboxMode === 'notifications' ? loadSupportNotifications() : refresh()">
-          {{ loading || platformSyncing || notificationLoading ? '同步中' : '刷新' }}
+        <button class="workbench__btn" :disabled="loading || platformSyncing || notificationLoading || handoffLoading" @click="refreshCurrentInbox">
+          {{ loading || platformSyncing || notificationLoading || handoffLoading ? '同步中' : '刷新' }}
         </button>
       </div>
     </header>
+
+    <div v-if="!loading && !accounts.length" class="chat__permission-state" role="alert">
+      <strong>当前账号没有可管理的闲鱼店铺</strong>
+      <span>请联系经营主体管理员分配店铺范围和“集成客服”权限；系统不会展示未授权店铺的会话与计数。</span>
+      <router-link class="workbench__btn" to="/dashboard">返回经营总览</router-link>
+    </div>
 
     <nav class="chat__inbox-tabs" aria-label="客服消息类型">
       <button :class="{ 'chat__inbox-tab--active': inboxMode === 'conversations' }" @click="switchInbox('conversations')">
@@ -464,6 +641,9 @@ onBeforeUnmount(() => {
       <button :class="{ 'chat__inbox-tab--active': inboxMode === 'notifications' }" @click="switchInbox('notifications')">
         通知消息 <span :class="{ 'chat__tab-count--alert': pendingNotificationCount > 0 }">{{ pendingNotificationCount }}</span>
       </button>
+      <button :class="{ 'chat__inbox-tab--active': inboxMode === 'handoffs' }" @click="switchInbox('handoffs')">
+        AI 待接管 <span :class="{ 'chat__tab-count--alert': handoffPendingCount > 0 }">{{ handoffPendingCount }}</span>
+      </button>
     </nav>
 
     <div v-if="inboxMode === 'conversations'" class="chat__layout">
@@ -471,7 +651,16 @@ onBeforeUnmount(() => {
         <div class="chat__summary">
           <strong>在线消息 <span>{{ conversations.length }}</span></strong>
           <div><span>全部 {{ conversations.length }}</span><span>买家消息 {{ incomingCount }}</span></div>
-          <input v-model="searchText" class="workbench__input" placeholder="搜索联系人、商品或关键词">
+          <input v-model="searchText" class="workbench__input" placeholder="搜索联系人、商品、订单或消息" @keydown.enter.prevent="loadWorkspaceInbox()">
+          <div class="chat__conversation-filters">
+            <label><input v-model="conversationFilters.unreadOnly" type="checkbox"> 未读</label>
+            <label><input v-model="conversationFilters.pinnedOnly" type="checkbox"> 置顶</label>
+            <select v-model="conversationFilters.keywordFlag" class="workbench__select" aria-label="会话标记筛选">
+              <option value="ALL">全部标记</option><option value="INTENT">高意向</option><option value="AFTERSALE">售后</option><option value="RISK">风险</option><option value="NONE">无标记</option>
+            </select>
+            <button class="workbench__btn" :disabled="workspaceInboxLoading" @click="loadWorkspaceInbox()">{{ workspaceInboxLoading ? '筛选中' : '应用' }}</button>
+          </div>
+          <p v-if="workspaceInboxError" class="chat__inline-error" role="alert">{{ workspaceInboxError }} <button @click="loadWorkspaceInbox()">重试</button></p>
         </div>
         <button
           v-for="conversation in conversations"
@@ -486,6 +675,9 @@ onBeforeUnmount(() => {
             <strong>{{ conversation.buyerName }}</strong>
             <span>{{ conversation.goodsTitle }}</span>
             <p>{{ isImageMessage(conversation.latest) ? '[图片]' : conversation.latest.msgContent }}</p>
+            <small v-if="conversation.workspace?.pinned || conversation.workspace?.unreadCount || (conversation.workspace?.keywordFlag && conversation.workspace.keywordFlag !== 'NONE')">
+              {{ conversation.workspace?.pinned ? '置顶 · ' : '' }}{{ conversation.workspace?.unreadCount ? `未读 ${conversation.workspace.unreadCount} · ` : '' }}{{ conversation.workspace?.keywordFlag && conversation.workspace.keywordFlag !== 'NONE' ? conversation.workspace.keywordFlag : '' }}
+            </small>
           </div>
           <time>{{ formatMessageTime(conversation.latest.messageTime) }}</time>
         </button>
@@ -502,6 +694,9 @@ onBeforeUnmount(() => {
             <button class="workbench__btn" :disabled="workspaceSaving" @click="takeoverCurrent">人工接管 15 分钟</button>
             <button class="workbench__btn" :disabled="platformSyncing" @click="loadConversationContext(true)">
               {{ platformSyncing ? '同步历史中' : '同步完整历史' }}
+            </button>
+            <button class="workbench__btn chat__context-toggle" :aria-expanded="contextExpanded" aria-controls="conversation-context" @click="contextExpanded = !contextExpanded">
+              {{ contextExpanded ? '收起资料' : '会话资料' }}
             </button>
           </header>
 
@@ -534,7 +729,7 @@ onBeforeUnmount(() => {
         <div v-else class="workbench__empty">选择会话后查看内容</div>
       </main>
 
-      <aside class="workbench__card chat__context">
+      <aside id="conversation-context" class="workbench__card chat__context" :class="{ 'chat__context--open': contextExpanded }">
         <template v-if="selected">
           <section>
             <h2>相关商品</h2>
@@ -555,6 +750,7 @@ onBeforeUnmount(() => {
           </section>
           <section>
             <h2>会话运营</h2>
+            <p v-if="workspaceError" class="chat__inline-error" role="alert">{{ workspaceError }} <button @click="loadWorkspaceRecord">重试</button></p>
             <label class="chat__check"><input v-model="workspaceForm.pinned" type="checkbox"><span>置顶会话</span></label>
             <label>关键词标记<select v-model="workspaceForm.keywordFlag" class="workbench__select"><option value="NONE">无标记</option><option value="INTENT">高意向</option><option value="AFTERSALE">售后</option><option value="RISK">风险</option></select></label>
             <label>客户备注<textarea v-model="workspaceForm.customerNote" class="workbench__textarea" maxlength="500"></textarea></label>
@@ -577,7 +773,7 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
-    <div v-else class="chat__layout chat__layout--notifications">
+    <div v-else-if="inboxMode === 'notifications'" class="chat__layout chat__layout--notifications">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
           <strong>通知消息 <span>{{ supportNotifications.length }}</span></strong>
@@ -587,6 +783,7 @@ onBeforeUnmount(() => {
             <button :class="{ active: notificationFilter === 'delivery' }" @click="notificationFilter = 'delivery'">发送记录</button>
           </div>
           <input v-model="notificationSearch" class="workbench__input" placeholder="搜索通知标题或内容">
+          <p v-if="notificationError" class="chat__inline-error" role="alert">{{ notificationError }} <button @click="loadSupportNotifications()">重试</button></p>
         </div>
         <button
           v-for="item in supportNotifications"
@@ -646,11 +843,102 @@ onBeforeUnmount(() => {
         </div>
       </main>
     </div>
+
+    <div v-else class="chat__layout chat__layout--handoffs">
+      <aside class="workbench__card chat__conversations">
+        <div class="chat__summary">
+          <strong>AI 待接管 <span>{{ handoffs.length }}</span></strong>
+          <div class="chat__handoff-filters">
+            <select v-model="handoffStatus" class="workbench__select" aria-label="接管任务状态">
+              <option value="OPEN">待认领</option>
+              <option value="CLAIMED">处理中</option>
+              <option value="RESOLVED">已解决</option>
+              <option value="IGNORED">已忽略</option>
+              <option value="ALL">全部状态</option>
+            </select>
+            <button class="workbench__btn" :disabled="handoffLoading" @click="loadHandoffs()">查询</button>
+          </div>
+          <input v-model="handoffSearch" class="workbench__input" placeholder="搜索会话、商品、买家或原因" @keydown.enter.prevent="loadHandoffs()">
+          <p v-if="handoffError && handoffs.length" class="chat__inline-error" role="alert">{{ handoffError }} <button @click="loadHandoffs()">重试</button></p>
+        </div>
+        <button
+          v-for="task in handoffs"
+          :key="task.id"
+          class="chat__handoff"
+          :class="{ 'chat__handoff--active': selectedHandoff?.id === task.id }"
+          @click="selectedHandoffId = task.id"
+        >
+          <span class="chat__handoff-priority" :class="`chat__handoff-priority--${task.priority.toLowerCase()}`">{{ handoffPriorityLabel[task.priority] }}</span>
+          <div>
+            <strong>{{ task.reasonLabel || task.reasonCode }}</strong>
+            <p>{{ task.reasonDetail || '没有附加说明，请查看会话上下文后处理。' }}</p>
+            <small>{{ task.accountName || `账号 ${task.accountId}` }} · {{ task.goodsId ? `商品 ${task.goodsId}` : '未关联商品' }}</small>
+          </div>
+          <time>{{ formatMessageTime(task.createdTime) }}</time>
+        </button>
+        <div v-if="handoffLoading && !handoffs.length" class="workbench__empty" aria-live="polite">正在读取接管任务…</div>
+        <div v-else-if="handoffError && !handoffs.length" class="workbench__empty chat__error-state" role="alert">
+          <strong>接管任务读取失败</strong><span>{{ handoffError }}</span><button class="workbench__btn" @click="loadHandoffs()">重试</button>
+        </div>
+        <div v-else-if="!handoffs.length" class="workbench__empty">当前筛选范围暂无接管任务</div>
+      </aside>
+
+      <main class="workbench__card chat__handoff-detail">
+        <template v-if="selectedHandoff">
+          <header>
+            <div>
+              <span class="chat__handoff-priority" :class="`chat__handoff-priority--${selectedHandoff.priority.toLowerCase()}`">{{ handoffPriorityLabel[selectedHandoff.priority] }}优先级</span>
+              <h2>{{ selectedHandoff.reasonLabel || selectedHandoff.reasonCode }}</h2>
+              <p>{{ selectedHandoff.reasonDetail || '没有附加说明，请先核对完整会话上下文。' }}</p>
+            </div>
+            <span class="chat__handoff-status" :class="`chat__handoff-status--${selectedHandoff.status.toLowerCase()}`">{{ handoffStatusLabel[selectedHandoff.status] }}</span>
+          </header>
+
+          <section class="chat__handoff-guidance" :class="{ 'chat__handoff-guidance--danger': selectedHandoff.reasonCode === 'MESSAGE_OUTCOME_UNKNOWN' }">
+            <strong>{{ selectedHandoff.reasonCode === 'MESSAGE_OUTCOME_UNKNOWN' ? '先核对是否已经发出，禁止盲目重发' : '处理建议' }}</strong>
+            <span>{{ selectedHandoff.reasonCode === 'MESSAGE_OUTCOME_UNKNOWN' ? '平台回执不可靠。请打开会话并刷新历史，确认买家侧是否已收到后再决定处理。' : '查看买家原始问题和关联商品资料；需要回复时进入会话，由人工确认内容后发送。' }}</span>
+          </section>
+
+          <dl>
+            <dt>所属店铺</dt><dd>{{ selectedHandoff.accountName || `账号 ${selectedHandoff.accountId}` }}（ID {{ selectedHandoff.accountId }}）</dd>
+            <dt>会话 ID</dt><dd>{{ selectedHandoff.sessionId }}</dd>
+            <dt>买家 ID</dt><dd>{{ selectedHandoff.buyerUserId || '未记录' }}</dd>
+            <dt>商品 ID</dt><dd>{{ selectedHandoff.goodsId || '未关联' }}</dd>
+            <dt>AI 置信度</dt><dd>{{ selectedHandoff.confidenceScore == null ? '未记录' : `${(Number(selectedHandoff.confidenceScore) * 100).toFixed(1)}%` }}</dd>
+            <dt>模型</dt><dd>{{ selectedHandoff.modelName || '未记录' }}</dd>
+            <dt>创建时间</dt><dd>{{ new Date(selectedHandoff.createdTime).toLocaleString('zh-CN') }}</dd>
+            <dt>认领信息</dt><dd>{{ selectedHandoff.claimedUsername ? `${selectedHandoff.claimedUsername} · ${new Date(selectedHandoff.claimedTime || '').toLocaleString('zh-CN')}` : '尚未认领' }}</dd>
+            <dt>处理结果</dt><dd>{{ selectedHandoff.resolutionNote || '尚未填写' }}</dd>
+            <dt>请求 ID</dt><dd>{{ selectedHandoff.requestId }}</dd>
+          </dl>
+
+          <section v-if="['OPEN', 'CLAIMED'].includes(selectedHandoff.status)" class="chat__handoff-resolution">
+            <label for="handoff-resolution-note">处理说明</label>
+            <textarea id="handoff-resolution-note" v-model="handoffResolutionNote" class="workbench__textarea" maxlength="1000" placeholder="记录核对结果、处理动作或忽略原因"></textarea>
+          </section>
+
+          <footer>
+            <button class="workbench__btn" @click="openHandoffConversation">打开对应会话</button>
+            <button v-if="selectedHandoff.status === 'OPEN'" class="workbench__btn workbench__btn--primary" :disabled="handoffActionBusy" @click="claimSelectedHandoff">认领并暂停自动回复</button>
+            <template v-if="['OPEN', 'CLAIMED'].includes(selectedHandoff.status)">
+              <button class="workbench__btn" :disabled="handoffActionBusy" @click="resolveSelectedHandoff('IGNORED')">忽略</button>
+              <button class="workbench__btn workbench__btn--primary" :disabled="handoffActionBusy" @click="resolveSelectedHandoff('RESOLVED')">标记已解决</button>
+            </template>
+          </footer>
+        </template>
+        <div v-else class="workbench__empty">
+          <strong>暂无需要人工处理的任务</strong>
+          <span>未命中、低置信、敏感问题、AI 不可用和发送结果未知会进入这里。</span>
+        </div>
+      </main>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .chat { height: 100%; overflow: hidden; }
+.chat__permission-state { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 12px 14px; border: 1px solid #fedf89; border-radius: 10px; color: #7a2e0e; background: #fffaeb; }
+.chat__permission-state span { flex: 1; color: #854a0e; font-size: 13px; }
 .chat__account { width: 180px; }
 .chat__inbox-tabs { display: flex; height: 44px; gap: 24px; padding: 0 4px; border-bottom: 1px solid #eaecf0; }
 .chat__inbox-tabs button { position: relative; display: flex; align-items: center; gap: 7px; padding: 0 6px; border: 0; color: #667085; background: transparent; font-weight: 650; cursor: pointer; }
@@ -661,16 +949,21 @@ onBeforeUnmount(() => {
 .chat__inbox-tabs span.chat__tab-count--alert { background: #fee4e2; color: #b42318; }
 .chat__layout { display: grid; height: calc(100% - 112px); min-height: 520px; grid-template-columns: 300px minmax(420px, 1fr) 280px; gap: 12px; padding-top: 12px; }
 .chat__layout--notifications { grid-template-columns: minmax(320px, 38%) minmax(420px, 1fr); }
+.chat__layout--handoffs { grid-template-columns: minmax(340px, 40%) minmax(440px, 1fr); }
 .chat__conversations, .chat__main, .chat__context { min-height: 0; overflow: hidden; padding: 0; }
 .chat__conversations { overflow-y: auto; }
 .chat__summary { position: sticky; top: 0; z-index: 2; padding: 14px; border-bottom: 1px solid #eaecf0; background: #fff; }
 .chat__summary > strong { display: flex; justify-content: space-between; margin-bottom: 8px; }
 .chat__summary > div { display: flex; gap: 12px; margin-bottom: 10px; color: #667085; font-size: 12px; }
+.chat__conversation-filters { display: grid !important; grid-template-columns: auto auto minmax(105px, 1fr) auto; align-items: center; gap: 8px !important; margin: 9px 0 0 !important; }
+.chat__conversation-filters label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.chat__conversation-filters .workbench__select, .chat__conversation-filters .workbench__btn { min-height: 34px; }
 .chat__conversation { display: grid; width: 100%; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 12px; border: 0; border-bottom: 1px solid #f2f4f7; color: #344054; background: #fff; text-align: left; cursor: pointer; }
 .chat__conversation--active { background: #f0f5ff; }
 .chat__conversation-copy { min-width: 0; }
 .chat__conversation-copy strong, .chat__conversation-copy span, .chat__conversation-copy p { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat__conversation-copy span, .chat__conversation-copy p, .chat__conversation time { color: #667085; font-size: 11px; }
+.chat__conversation-copy small { display: block; overflow: hidden; margin-top: 4px; color: #b54708; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .chat__conversation-copy p { margin: 5px 0 0; }
 .chat__avatar { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; border-radius: 50%; color: #9a6200; background: #eaf0ff; font-weight: 700; }
 .chat__avatar--image { display: block; object-fit: cover; }
@@ -679,6 +972,7 @@ onBeforeUnmount(() => {
 .chat__main-header > div:nth-child(2) { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .chat__main-header span { overflow: hidden; color: #667085; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat__main-header .chat__sla { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: #b42318; background: #fee4e2; font-size: 11px; }
+.chat__context-toggle { display: none; }
 .chat__messages { display: flex; flex: 1; overflow-y: auto; flex-direction: column; gap: 10px; padding: 18px; }
 .chat__loading, .chat__system { align-self: center; padding: 5px 10px; border-radius: 12px; color: #667085; background: #f2f4f7; font-size: 11px; }
 .chat__message { max-width: 72%; align-self: flex-start; }
@@ -707,6 +1001,8 @@ onBeforeUnmount(() => {
 .chat__context dl { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; margin: 0; font-size: 12px; }
 .chat__context dt { color: #667085; }
 .chat__context dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat__inline-error { margin: 0; padding: 8px; border-radius: 6px; color: #b42318; background: #fee4e2; font-size: 12px; }
+.chat__inline-error button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; }
 .chat__notification-filters { display: flex !important; gap: 6px !important; }
 .chat__notification-filters button { padding: 4px 8px; border: 1px solid #eaecf0; border-radius: 12px; color: #667085; background: #fff; font-size: 11px; cursor: pointer; }
 .chat__notification-filters button.active { border-color: #f5d061; color: #7a5200; background: #fff8dd; }
@@ -735,14 +1031,60 @@ onBeforeUnmount(() => {
 .chat__notification-detail footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: auto; padding: 16px 24px; border-top: 1px solid #eaecf0; }
 .chat__notification-detail > .workbench__empty { display: flex; flex: 1; flex-direction: column; gap: 8px; align-items: center; justify-content: center; }
 .chat__notification-detail > .workbench__empty span { color: #667085; }
-@media (max-width: 1180px) { .chat__layout { grid-template-columns: 280px minmax(0, 1fr); } .chat__context { display: none; } }
+.chat__handoff-filters { display: grid !important; grid-template-columns: minmax(0, 1fr) auto; gap: 8px !important; }
+.chat__handoff { display: grid; width: 100%; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 9px; padding: 13px 12px; border: 0; border-bottom: 1px solid #f2f4f7; color: #344054; background: #fff; text-align: left; cursor: pointer; }
+.chat__handoff--active { background: #fff8dd; }
+.chat__handoff > div { min-width: 0; }
+.chat__handoff strong, .chat__handoff p, .chat__handoff small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat__handoff p { margin: 5px 0; color: #667085; font-size: 12px; }
+.chat__handoff small, .chat__handoff time { color: #98a2b3; font-size: 11px; }
+.chat__handoff-priority { display: inline-flex; flex: 0 0 auto; padding: 3px 7px; border-radius: 12px; color: #475467; background: #f2f4f7; font-size: 11px; }
+.chat__handoff-priority--urgent { color: #b42318; background: #fee4e2; }
+.chat__handoff-priority--high { color: #b54708; background: #fef0c7; }
+.chat__handoff-detail { display: flex; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; flex-direction: column; padding: 0; }
+.chat__handoff-detail > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 22px 24px; border-bottom: 1px solid #eaecf0; }
+.chat__handoff-detail > header > div { min-width: 0; }
+.chat__handoff-detail h2 { margin: 10px 0 6px; font-size: 20px; }
+.chat__handoff-detail header p { max-width: 660px; margin: 0; overflow-wrap: anywhere; color: #667085; line-height: 1.6; }
+.chat__handoff-status { flex: 0 0 auto; padding: 4px 9px; border-radius: 14px; color: #344054; background: #f2f4f7; font-size: 12px; }
+.chat__handoff-status--open { color: #b42318; background: #fee4e2; }
+.chat__handoff-status--claimed { color: #175cd3; background: #eaf0ff; }
+.chat__handoff-status--resolved { color: #067647; background: #dcfae6; }
+.chat__handoff-guidance { display: flex; flex-direction: column; gap: 5px; margin: 20px 24px 0; padding: 14px 16px; border: 1px solid #a6f4c5; border-radius: 9px; color: #05603a; background: #ecfdf3; }
+.chat__handoff-guidance span { font-size: 12px; line-height: 1.6; }
+.chat__handoff-guidance--danger { border-color: #fda29b; color: #912018; background: #fef3f2; }
+.chat__handoff-detail dl { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; margin: 22px 24px; font-size: 13px; }
+.chat__handoff-detail dt { color: #667085; }
+.chat__handoff-detail dd { margin: 0; overflow-wrap: anywhere; }
+.chat__handoff-resolution { display: grid; gap: 7px; margin: 0 24px 20px; color: #475467; font-size: 13px; }
+.chat__handoff-detail footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 9px; margin-top: auto; padding: 16px 24px; border-top: 1px solid #eaecf0; }
+.chat__handoff-detail > .workbench__empty, .chat__error-state { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
+.chat__error-state span { color: #b42318; }
+@media (max-width: 1180px) {
+  .chat__layout { grid-template-columns: 280px minmax(0, 1fr); }
+  .chat__layout:has(.chat__context--open) { grid-template-rows: minmax(520px, 1fr) auto; }
+  .chat__context { display: none; grid-column: 1 / -1; max-height: 52vh; }
+  .chat__context--open { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .chat__context--open section { border-right: 1px solid #eaecf0; border-bottom: 0; }
+  .chat__context-toggle { display: inline-flex; }
+  .chat__layout--notifications, .chat__layout--handoffs { grid-template-columns: minmax(300px, 38%) minmax(0, 1fr); }
+}
 @media (max-width: 767px) {
   .chat { height: auto; overflow: visible; }
   .chat__layout { display: block; height: auto; min-height: 0; }
   .chat__conversations { max-height: 42vh; }
   .chat__main { min-height: 58vh; margin-top: 10px; margin-bottom: max(12px, env(safe-area-inset-bottom)); }
   .chat__layout--notifications { display: block; }
+  .chat__layout--handoffs { display: block; }
   .chat__notification-detail { min-height: 48vh; margin-top: 10px; }
+  .chat__handoff-detail { min-height: 54vh; margin-top: 10px; }
+  .chat__context--open { display: block; max-height: none; margin: 0 0 max(12px, env(safe-area-inset-bottom)); }
+  .chat__context--open section { border-right: 0; border-bottom: 1px solid #eaecf0; }
+  .chat__permission-state { align-items: flex-start; flex-direction: column; }
+  .chat__inbox-tabs { overflow-x: auto; gap: 12px; }
+  .chat__inbox-tabs button { flex: 0 0 auto; }
+  .chat__main-header { flex-wrap: wrap; }
+  .chat__main-header > div:nth-child(2) { min-width: calc(100% - 52px); }
   .chat__message { max-width: 88%; }
   .chat__main-header .workbench__btn { padding: 6px 8px; font-size: 11px; }
 }

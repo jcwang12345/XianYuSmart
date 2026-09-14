@@ -126,6 +126,11 @@ export interface WorkspaceConversation {
   customerBlacklisted?: boolean
   manualTakeoverState?: string
   manualTakeoverUntil?: string
+  autoReplyState?: string
+  handoffStatus?: string
+  handoffReasonCode?: string
+  handoffTaskId?: number
+  handoffCreatedTime?: string
   historyCoverageStatus?: string
   lastMessage?: string
   relatedOrderId?: string
@@ -170,9 +175,53 @@ export interface WorkspaceSendCommand {
 }
 
 export function sendWorkspaceText(data: WorkspaceSendCommand) {
-  return request<{ requestId: string; outcomeState: 'ACKNOWLEDGED' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/text', method: 'POST', data })
+  return request<{ requestId: string; outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/text', method: 'POST', data })
 }
 
 export function sendWorkspaceImage(data: WorkspaceSendCommand) {
-  return request<{ requestId: string; outcomeState: 'ACKNOWLEDGED' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/image', method: 'POST', data })
+  return request<{ requestId: string; outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/image', method: 'POST', data })
+}
+
+export interface AiHandoffTask {
+  id: number
+  accountId: number
+  accountName?: string
+  sessionId: string
+  goodsId?: string
+  buyerUserId?: string
+  sourceReplyRecordId?: number
+  reasonCode: string
+  reasonLabel: string
+  reasonDetail?: string
+  priority: 'URGENT' | 'HIGH' | 'NORMAL' | 'LOW'
+  status: 'OPEN' | 'CLAIMED' | 'RESOLVED' | 'IGNORED'
+  confidenceScore?: number
+  modelName?: string
+  requestId: string
+  claimedBy?: number
+  claimedUsername?: string
+  claimedTime?: string
+  resolvedUsername?: string
+  resolvedTime?: string
+  resolutionNote?: string
+  createdTime: string
+  updatedTime: string
+}
+
+export function getAiHandoffs(params: { status?: string; accountId?: number; search?: string; limit?: number } = {}) {
+  return request<{ records: AiHandoffTask[]; returnedCount: number; dataNotice: string }>({
+    url: '/message-workspace/handoffs', method: 'GET', params
+  })
+}
+
+export function claimAiHandoff(id: number, requestId: string) {
+  return request<AiHandoffTask>({
+    url: `/message-workspace/handoffs/${id}/claim`, method: 'POST', data: { requestId }
+  })
+}
+
+export function resolveAiHandoff(id: number, status: 'RESOLVED' | 'IGNORED', note: string, requestId: string) {
+  return request<AiHandoffTask>({
+    url: `/message-workspace/handoffs/${id}/resolve`, method: 'POST', data: { status, note, requestId }
+  })
 }

@@ -40,6 +40,23 @@ public interface XianyuGoodsAutoReplyRecordMapper {
             "last_error_code='REPLY_UNCERTAIN',last_error_message=#{reason},exception_revision=exception_revision+1 WHERE id=#{id} AND state=2")
     int markUncertain(@Param("id") Long id,@Param("reason") String reason);
 
+    @Update("UPDATE xianyu_goods_auto_reply_record SET decision_state=#{decisionState}," +
+            "confidence_score=#{confidenceScore},model_name=#{modelName},processing_duration_ms=#{durationMs}," +
+            "handoff_reason_code=#{handoffReasonCode} WHERE id=#{id}")
+    int updateDecisionEvidence(@Param("id") Long id,
+                               @Param("decisionState") String decisionState,
+                               @Param("confidenceScore") Double confidenceScore,
+                               @Param("modelName") String modelName,
+                               @Param("durationMs") Long durationMs,
+                               @Param("handoffReasonCode") String handoffReasonCode);
+
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=IF(external_attempt_started=1,3,-2)," +
+            "lease_owner=NULL,lease_expire_time=NULL,next_retry_time=NULL,last_error_code=#{reasonCode}," +
+            "last_error_message=#{reasonDetail} WHERE id=#{id} AND state<>1")
+    int markHumanRequired(@Param("id") Long id,
+                          @Param("reasonCode") String reasonCode,
+                          @Param("reasonDetail") String reasonDetail);
+
     @Select("SELECT COUNT(*) FROM xianyu_goods_auto_reply_record WHERE xianyu_account_id=#{account} AND pnm_id=#{pnm}")
     int existsMessage(@Param("account") Long account,@Param("pnm") String pnm);
     
