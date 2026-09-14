@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.AccountScopeContext;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.context.UserContext;
+import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,6 +28,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -138,6 +140,10 @@ public class ProductMatrixService {
                 requireTenant(), accountId, goodsId, expected);
         if (updated != 1) throw new BusinessException(409, "商品资料版本冲突，请刷新后重试");
         Map<String, Object> after = findProduct(accountId, goodsId);
+        Map<String, Object> beforeSnapshot = localDetailsSnapshot(before);
+        Map<String, Object> afterSnapshot = localDetailsSnapshot(after);
+        Map<String, Object> fieldDiff = fieldDiff("LOCAL_ONLY", beforeSnapshot, afterSnapshot,
+                Map.of("title", "商品标题", "supportPolicy", "支持政策", "location", "所在地"));
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_event
                 (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
@@ -145,8 +151,9 @@ public class ProductMatrixService {
                 VALUES (?,?,?,'LOCAL_DETAILS_EDIT','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE id=id
                 """, requireTenant(), accountId, goodsId, UserContext.getUserId(), UserContext.getUsername(),
-                requestId, requestId, json(before), json(after), json(Map.of("mode", "LOCAL_ONLY")));
-        audit(accountId, "PRODUCT_LOCAL_EDIT", "编辑本地商品资料", requestId, "LOCAL_SUCCESS", command, after);
+                requestId, requestId, json(beforeSnapshot), json(afterSnapshot), json(fieldDiff));
+        auditChange(accountId, goodsId, "PRODUCT_LOCAL_EDIT", "编辑本地商品资料", requestId,
+                "LOCAL_SUCCESS", command, beforeSnapshot, afterSnapshot, fieldDiff);
         Map<String, Object> result = detail(accountId, goodsId);
         result.put("capabilityMode", "LOCAL_ONLY");
         return result;
@@ -157,27 +164,35 @@ public class ProductMatrixService {
         requireProductAccess(accountId, goodsId);
         if (command == null) throw new BusinessException(400, "自动化配置不能为空");
         String requestId = requireText(command.requestId(), "requestId", 80);
+        Map<String, Object> before = marketing(accountId, goodsId);
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_config
                 (tenant_id,xianyu_account_id,xy_goods_id,xianyu_auto_delivery_on,xianyu_auto_reply_on,
-                 xianyu_auto_rate_on,xianyu_auto_polish_on,human_intervention_on)
-                VALUES (?,?,?,?,?,?,?,?)
+                 xianyu_auto_rate_on,xianyu_auto_rate_content,xianyu_auto_polish_on,human_intervention_on)
+                VALUES (?,?,?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE xianyu_auto_delivery_on=VALUES(xianyu_auto_delivery_on),
                  xianyu_auto_reply_on=VALUES(xianyu_auto_reply_on),xianyu_auto_rate_on=VALUES(xianyu_auto_rate_on),
                  xianyu_auto_polish_on=VALUES(xianyu_auto_polish_on),human_intervention_on=VALUES(human_intervention_on)
                 """, requireTenant(), accountId, goodsId, bool(command.autoDelivery()), bool(command.autoReply()),
-                bool(command.autoRate()), bool(command.autoPolish()), bool(command.humanTakeover()));
+                bool(command.autoRate()), XianyuGoodsConfig.DEFAULT_AUTO_RATE_CONTENT,
+                bool(command.autoPolish()), bool(command.humanTakeover()));
         Map<String, Object> current = marketing(accountId, goodsId);
+        Map<String, Object> beforeSnapshot = automationSnapshot(before);
+        Map<String, Object> afterSnapshot = automationSnapshot(current);
+        Map<String, Object> fieldDiff = fieldDiff("LOCAL_ONLY", beforeSnapshot, afterSnapshot, Map.of(
+                "autoDeliveryEnabled", "自动发货", "autoReplyEnabled", "自动回复",
+                "autoRateEnabled", "自动评价", "autoPolishEnabled", "自动擦亮",
+                "humanTakeoverEnabled", "人工接管"));
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_event
                 (tenant_id,xianyu_account_id,xy_goods_id,event_type,event_origin,outcome_state,data_source,
-                 operator_user_id,operator_username,request_id,idempotency_key,after_json)
-                VALUES (?,?,?,'AUTOMATION_CONFIG_CHANGED','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?)
+                 operator_user_id,operator_username,request_id,idempotency_key,before_json,after_json,field_diff_json)
+                VALUES (?,?,?,'AUTOMATION_CONFIG_CHANGED','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE id=id
                 """, requireTenant(), accountId, goodsId, UserContext.getUserId(), UserContext.getUsername(),
-                requestId, requestId, json(current));
-        audit(accountId, "PRODUCT_AUTOMATION_UPDATE", "更新商品自动化配置", requestId,
-                "LOCAL_SUCCESS", command, current);
+                requestId, requestId, json(beforeSnapshot), json(afterSnapshot), json(fieldDiff));
+        auditChange(accountId, goodsId, "PRODUCT_AUTOMATION_UPDATE", "更新商品自动化配置", requestId,
+                "LOCAL_SUCCESS", command, beforeSnapshot, afterSnapshot, fieldDiff);
         return current;
     }
 
@@ -1026,7 +1041,8 @@ public class ProductMatrixService {
     private Map<String, Object> findProduct(Long accountId, String goodsId) {
         requireProductAccess(accountId, goodsId);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT goods.title, goods.status, goods.product_source, goods.publish_channel,
+                SELECT goods.title, goods.support_policy, goods.location_text, goods.status,
+                       goods.product_source, goods.publish_channel,
                        goods.sync_status, goods.coverage_status, goods.row_version, goods.sold_price, goods.stock,
                        account.status account_status,
                        CASE WHEN cookie.cookie_status=1 AND cookie.cookie_text IS NOT NULL AND cookie.cookie_text<>'' THEN 1 ELSE 0 END credential_ready
@@ -1142,6 +1158,73 @@ public class ProductMatrixService {
         log.setRequestParams(json(request));
         log.setResponseResult(json(result));
         operationLogService.log(log);
+    }
+
+    private void auditChange(Long accountId, String goodsId, String type, String description, String requestId,
+                             String outcome, Object command, Map<String, Object> before,
+                             Map<String, Object> after, Map<String, Object> fieldDiff) {
+        XianyuOperationLog log = new XianyuOperationLog();
+        log.setXianyuAccountId(accountId);
+        log.setOperationType(type);
+        log.setOperationModule("商品管理");
+        log.setOperationDesc(description);
+        log.setOperationStatus(1);
+        log.setTargetType("PRODUCT");
+        log.setTargetId(goodsId);
+        log.setRequestId(requestId);
+        log.setIdempotencyKey(requestId);
+        log.setOutcomeState(outcome);
+        log.setDataSource("LOCAL");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("goodsId", goodsId);
+        request.put("requestedChanges", command);
+        request.put("before", before);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("after", after);
+        result.put("fieldDiff", fieldDiff);
+        log.setRequestParams(json(request));
+        log.setResponseResult(json(result));
+        log.setFieldDiffJson(json(fieldDiff));
+        operationLogService.log(log);
+    }
+
+    private static Map<String, Object> localDetailsSnapshot(Map<String, Object> product) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("title", product.get("title"));
+        snapshot.put("supportPolicy", product.get("support_policy"));
+        snapshot.put("location", product.get("location_text"));
+        return snapshot;
+    }
+
+    private static Map<String, Object> automationSnapshot(Map<String, Object> marketing) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        for (String field : List.of("autoDeliveryEnabled", "autoReplyEnabled", "autoRateEnabled",
+                "autoPolishEnabled", "humanTakeoverEnabled")) snapshot.put(field, marketing.get(field));
+        return snapshot;
+    }
+
+    static Map<String, Object> fieldDiff(String mode, Map<String, Object> before, Map<String, Object> after,
+                                         Map<String, String> labels) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        LinkedHashSet<String> names = new LinkedHashSet<>();
+        names.addAll(before.keySet());
+        names.addAll(after.keySet());
+        for (String name : names) {
+            Object oldValue = before.get(name);
+            Object newValue = after.get(name);
+            if (Objects.equals(oldValue, newValue)) continue;
+            Map<String, Object> change = new LinkedHashMap<>();
+            change.put("label", labels.getOrDefault(name, name));
+            change.put("before", oldValue);
+            change.put("after", newValue);
+            fields.put(name, change);
+        }
+        Map<String, Object> diff = new LinkedHashMap<>();
+        diff.put("mode", mode);
+        diff.put("changedFieldCount", fields.size());
+        diff.put("changedFields", new ArrayList<>(fields.keySet()));
+        diff.put("fields", fields);
+        return diff;
     }
 
     private String operationLabel(String operation) {

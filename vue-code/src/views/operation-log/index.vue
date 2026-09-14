@@ -13,6 +13,20 @@ import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconEmpty from '@/components/icons/IconEmpty.vue'
 import IconInfo from '@/components/icons/IconInfo.vue'
 
+type DiffChange = { field: string; label?: string; before?: unknown; after?: unknown }
+const parseDiff = (value?: string) => {
+  if (!value) return null
+  try { return JSON.parse(value) as { changedFieldCount?: number; fields?: Record<string, Omit<DiffChange, 'field'>> } }
+  catch { return null }
+}
+const detailChanges = (value?: string): DiffChange[] => {
+  const fields = parseDiff(value)?.fields || {}
+  return Object.entries(fields).map(([field, change]) => ({ field, ...change }))
+}
+const diffValue = (value: unknown) => value === null || value === undefined || value === ''
+  ? '（空）' : typeof value === 'boolean' ? (value ? '开启' : '关闭')
+    : typeof value === 'object' ? JSON.stringify(value) : String(value)
+
 const {
   loading,
   accounts,
@@ -396,6 +410,28 @@ onMounted(() => {
             <div v-if="detailLog.durationMs" class="ol__detail-row">
               <span class="ol__detail-label">耗时</span>
               <span class="ol__detail-value" style="font-family:'SF Mono','Menlo',monospace;">{{ formatDuration(detailLog.durationMs) }}</span>
+            </div>
+            <div v-if="detailLog.requestId" class="ol__detail-row">
+              <span class="ol__detail-label">请求 ID</span>
+              <span class="ol__detail-value ol__detail-mono">{{ detailLog.requestId }}</span>
+            </div>
+            <div v-if="detailLog.outcomeState || detailLog.dataSource" class="ol__detail-row">
+              <span class="ol__detail-label">结果 / 来源</span>
+              <span class="ol__detail-value">{{ detailLog.outcomeState || '—' }} · {{ detailLog.dataSource || '—' }}</span>
+            </div>
+            <div v-if="detailChanges(detailLog.fieldDiffJson).length" class="ol__detail-row ol__detail-row--stack">
+              <span class="ol__detail-label">字段变更</span>
+              <div class="ol__diff-list">
+                <div v-for="change in detailChanges(detailLog.fieldDiffJson)" :key="change.field" class="ol__diff-item">
+                  <strong>{{ change.label || change.field }}</strong>
+                  <span class="ol__diff-before">{{ diffValue(change.before) }}</span>
+                  <b aria-hidden="true">→</b>
+                  <span class="ol__diff-after">{{ diffValue(change.after) }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="parseDiff(detailLog.fieldDiffJson)?.changedFieldCount === 0" class="ol__detail-row">
+              <span class="ol__detail-label">字段变更</span><span class="ol__detail-value">本次保存未产生字段变化</span>
             </div>
             <div class="ol__detail-row">
               <span class="ol__detail-label">时间</span>

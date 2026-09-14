@@ -2,6 +2,7 @@ package com.xianyusmart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.UserContext;
+import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.exception.BusinessException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -103,6 +104,57 @@ class ProductMatrixServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void fieldDiffContainsReadableBeforeAndAfterForChangedFieldsOnly() {
+        Map<String, Object> diff = ProductMatrixService.fieldDiff("LOCAL_ONLY",
+                mapWithNulls("title", "旧标题", "supportPolicy", null, "location", "上海"),
+                mapWithNulls("title", "新标题", "supportPolicy", "七天售后", "location", "上海"),
+                Map.of("title", "商品标题", "supportPolicy", "支持政策", "location", "所在地"));
+
+        assertEquals(2, diff.get("changedFieldCount"));
+        assertEquals(List.of("title", "supportPolicy"), diff.get("changedFields"));
+        Map<String, Object> fields = (Map<String, Object>) diff.get("fields");
+        assertEquals(Map.of("label", "商品标题", "before", "旧标题", "after", "新标题"), fields.get("title"));
+        Map<String, Object> support = (Map<String, Object>) fields.get("supportPolicy");
+        assertNull(support.get("before"));
+        assertEquals("七天售后", support.get("after"));
+        assertEquals(false, fields.containsKey("location"));
+    }
+
+    @Test
+    void fieldDiffMakesNoopExplicitWithoutInventingAChange() {
+        Map<String, Object> before = Map.of("autoReplyEnabled", true);
+        Map<String, Object> diff = ProductMatrixService.fieldDiff("LOCAL_ONLY", before, before,
+                Map.of("autoReplyEnabled", "自动回复"));
+
+        assertEquals(0, diff.get("changedFieldCount"));
+        assertEquals(List.of(), diff.get("changedFields"));
+        assertEquals(Map.of(), diff.get("fields"));
+    }
+
+    @Test
+    void automationFirstSaveSuppliesRequiredRatingContent() {
+        ProductMatrixService.AutomationUpdate command = new ProductMatrixService.AutomationUpdate(
+                true, true, false, true, false, "req-automation-first-save");
+
+        service.updateAutomation(2L, "goods-1", command);
+
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<Object[]> args = org.mockito.ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate, atLeast(1)).update(sql.capture(), args.capture());
+        boolean found = false;
+        for (int index = 0; index < sql.getAllValues().size(); index++) {
+            if (sql.getAllValues().get(index).contains("INSERT INTO xianyu_goods_config")) {
+                assertTrue(sql.getAllValues().get(index).contains("xianyu_auto_rate_content"));
+                assertEquals(9, args.getAllValues().get(index).length);
+                assertEquals(XianyuGoodsConfig.DEFAULT_AUTO_RATE_CONTENT, args.getAllValues().get(index)[6]);
+                found = true;
+            }
+        }
+        assertTrue(found);
+    }
+
+    @Test
     void batchPreviewShowsExactAccountProductAndConflictScope() {
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(product(0, "PLATFORM_LIST_SYNC")));
         ProductMatrixService.BatchRequest request = request("CHANGE_PRICE", Map.of("price", "19.90"), null);
@@ -197,6 +249,14 @@ class ProductMatrixServiceTest {
         product.put("sold_price", "10.00");
         product.put("stock", 2);
         return product;
+    }
+
+    private Map<String, Object> mapWithNulls(Object... values) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (int index = 0; index < values.length; index += 2) {
+            result.put(String.valueOf(values[index]), values[index + 1]);
+        }
+        return result;
     }
 
     private Map<String, Object> batch(Long id) {

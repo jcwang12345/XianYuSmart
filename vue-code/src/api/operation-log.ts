@@ -18,6 +18,12 @@ export interface OperationLog {
   ipAddress?: string;
   userAgent?: string;
   durationMs?: number;
+  requestId?: string;
+  idempotencyKey?: string;
+  outcomeState?: string;
+  dataSource?: string;
+  platformResponseCode?: string;
+  fieldDiffJson?: string;
   createTime: string | number;
 }
 
@@ -27,6 +33,12 @@ export interface QueryLogsRequest {
   operationType?: string;
   operationModule?: string;
   operationStatus?: number;
+  outcomeState?: string;
+  operatorUsername?: string;
+  requestId?: string;
+  startTime?: number;
+  endTime?: number;
+  keyword?: string;
   page?: number;
   pageSize?: number;
 }
