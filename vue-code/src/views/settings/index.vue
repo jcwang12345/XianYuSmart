@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, markRaw, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { getCurrentUser, changePassword } from '@/api/system'
 import { logout } from '@/api/auth'
 import { getSetting, saveSetting, testEmail } from '@/api/setting'
@@ -38,6 +38,7 @@ import IconInfo from '@/components/icons/IconInfo.vue'
 import IconTooling from '@/components/icons/IconTooling.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 // 当前选中的菜单
 const activeMenu = ref('account')
@@ -231,6 +232,26 @@ const menuItems = [
   { key: 'backup', label: '备份与恢复', icon: markRaw(IconBackup) },
   { key: 'about', label: '关于', icon: markRaw(IconInfo) }
 ]
+
+type SettingsMenu = typeof menuItems[number]['key']
+const normalizeSettingsMenu = (value: unknown): SettingsMenu =>
+  menuItems.some(item => item.key === String(value)) ? String(value) : 'account'
+activeMenu.value = normalizeSettingsMenu(route.query.panel)
+
+const selectMenu = (key: SettingsMenu) => {
+  activeMenu.value = key
+  if (key === 'backup') void handleBackupMenuEnter()
+  const query: Record<string, any> = { ...route.query, panel: key }
+  if (key !== 'backup') delete query.jobId
+  void router.push({ query })
+}
+
+watch(() => route.query.panel, value => {
+  const key = normalizeSettingsMenu(value)
+  if (key === activeMenu.value) return
+  activeMenu.value = key
+  if (key === 'backup') void handleBackupMenuEnter()
+})
 
 onMounted(async () => {
   loading.value = true
@@ -1294,16 +1315,18 @@ async function saveMenuLayout() {
     <div class="settings__sidebar">
       <div class="settings__sidebar-title">设置</div>
       <div class="settings__menu">
-        <div
+        <button
           v-for="item in menuItems"
           :key="item.key"
+          type="button"
           class="settings__menu-item"
           :class="{ 'settings__menu-item--active': activeMenu === item.key }"
-          @click="activeMenu = item.key; item.key === 'backup' && handleBackupMenuEnter()"
+          :aria-current="activeMenu === item.key ? 'page' : undefined"
+          @click="selectMenu(item.key)"
         >
           <span class="settings__menu-icon"><component :is="item.icon" /></span>
           <span class="settings__menu-label">{{ item.label }}</span>
-        </div>
+        </button>
       </div>
     </div>
 
@@ -2292,14 +2315,19 @@ async function saveMenuLayout() {
 }
 
 .settings__menu-item {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
+  border: 0;
   border-radius: 8px;
+  background: transparent;
   cursor: pointer;
   transition: all 0.2s;
   color: rgba(28,28,30,.55);
+  font: inherit;
+  text-align: left;
 }
 
 .settings__menu-item:hover {
@@ -3370,31 +3398,40 @@ async function saveMenuLayout() {
 @media (max-width: 768px) {
   .settings {
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
+    padding: 12px;
   }
 
   .settings__sidebar {
     width: 100%;
-    flex-direction: row;
-    flex-wrap: wrap;
+    min-height: 0;
+    padding: 10px 12px;
   }
 
   .settings__sidebar-title {
-    width: 100%;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
+    padding: 0 4px;
+    font-size: 13px;
   }
 
   .settings__menu {
     flex-direction: row;
-    flex-wrap: wrap;
-    gap: 8px;
+    flex-wrap: nowrap;
+    gap: 4px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
   }
 
   .settings__menu-item {
-    padding: 8px 12px;
+    flex: 0 0 auto;
+    width: auto;
+    padding: 8px 10px;
+    white-space: nowrap;
   }
 
   .settings__content {
+    min-height: 0;
     padding: 16px;
   }
 

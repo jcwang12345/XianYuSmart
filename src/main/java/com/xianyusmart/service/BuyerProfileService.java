@@ -11,20 +11,28 @@ import com.xianyusmart.controller.dto.BuyerProfileRespDTO;
 import com.xianyusmart.controller.dto.BuyerProfileSaveReqDTO;
 import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.entity.XianyuBuyerProfile;
+import com.xianyusmart.entity.XianyuBuyerProfileRequest;
+import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuBuyerProfileMapper;
+import com.xianyusmart.mapper.XianyuBuyerProfileRequestMapper;
 import com.xianyusmart.mapper.XianyuChatMessageMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.service.buyer.BuyerProfilePolicy;
+import com.xianyusmart.exception.BusinessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 买家关系与自动化拦截服务
@@ -37,17 +45,23 @@ public class BuyerProfileService {
     private final ObjectMapper objectMapper;
     private final XianyuGoodsOrderMapper orderMapper;
     private final XianyuChatMessageMapper messageMapper;
+    private final XianyuBuyerProfileRequestMapper requestMapper;
+    private final OperationLogService operationLogService;
 
     public BuyerProfileService(XianyuBuyerProfileMapper profileMapper,
                                XianyuAccountMapper accountMapper,
                                ObjectMapper objectMapper,
                                XianyuGoodsOrderMapper orderMapper,
-                               XianyuChatMessageMapper messageMapper) {
+                               XianyuChatMessageMapper messageMapper,
+                               XianyuBuyerProfileRequestMapper requestMapper,
+                               OperationLogService operationLogService) {
         this.profileMapper = profileMapper;
         this.accountMapper = accountMapper;
         this.objectMapper = objectMapper;
         this.orderMapper = orderMapper;
         this.messageMapper = messageMapper;
+        this.requestMapper = requestMapper;
+        this.operationLogService = operationLogService;
     }
 
     public Map<String, Object> list(BuyerProfileQueryReqDTO request) {
@@ -71,11 +85,26 @@ public class BuyerProfileService {
     @Transactional
     public BuyerProfileRespDTO save(BuyerProfileSaveReqDTO request) {
         validateOwnedAccount(request.getXianyuAccountId(), true);
+        Long tenantId = requireTenantId();
         String buyerUserId = request.getBuyerUserId().trim();
+        String requestId = request.getRequestId().trim();
+        String idempotencyKey = trimToNull(request.getIdempotencyKey());
+        if (idempotencyKey == null) {
+            idempotencyKey = requestId;
+        }
+        List<String> normalizedTags = BuyerProfilePolicy.normalizeTags(request.getTags());
+        String fingerprint = requestFingerprint(request, buyerUserId, normalizedTags);
+        int reserved = requestMapper.reserve(tenantId, request.getXianyuAccountId(), buyerUserId,
+                requestId, idempotencyKey, fingerprint);
+        if (reserved == 0) {
+            return replayExistingRequest(tenantId, requestId, fingerprint);
+        }
+
         XianyuBuyerProfile profile = profileMapper.findByBuyer(request.getXianyuAccountId(), buyerUserId);
+        Map<String, Object> before = profileSnapshot(profile);
         if (profile == null) {
             profile = new XianyuBuyerProfile();
-            profile.setTenantId(requireTenantId());
+            profile.setTenantId(tenantId);
             profile.setXianyuAccountId(request.getXianyuAccountId());
             profile.setBuyerUserId(buyerUserId);
         }
@@ -89,7 +118,7 @@ public class BuyerProfileService {
             throw new IllegalArgumentException("拦截原因不能超过200个字符");
         }
         profile.setBuyerUserName(buyerUserName);
-        profile.setTagsJson(writeTags(BuyerProfilePolicy.normalizeTags(request.getTags())));
+        profile.setTagsJson(writeTags(normalizedTags));
         profile.setNote(note);
         boolean blacklisted = request.getBlacklisted() == null
                 ? Integer.valueOf(1).equals(profile.getBlacklisted())
@@ -101,7 +130,7 @@ public class BuyerProfileService {
                 && (blockedReason.startsWith("[买家]") || blockedReason.startsWith("[会话]"))) {
             blockedReason = null;
         }
-        boolean blacklistChanged = !java.util.Objects.equals(
+        boolean blacklistChanged = !Objects.equals(
                 Integer.valueOf(blacklisted ? 1 : 0), profile.getBlacklisted());
         profile.setAutomationBlocked(automationBlocked ? 1 : 0);
         profile.setBlockedReason(blockedReason);
@@ -115,19 +144,139 @@ public class BuyerProfileService {
         } else {
             profileMapper.updateById(profile);
         }
-        Long tenantId = requireTenantId();
         profileMapper.updateAutomationAndBlacklist(tenantId, profile.getXianyuAccountId(),
                 profile.getBuyerUserId(), profile.getAutomationBlocked(), profile.getBlockedReason(),
                 profile.getBlacklisted(), profile.getBlacklistSource(), profile.getBlacklistUpdatedTime());
         profileMapper.updateConversationBlacklist(tenantId, profile.getXianyuAccountId(),
                 profile.getBuyerUserId(), blacklisted ? 1 : 0);
-        BuyerProfileQueryReqDTO query = new BuyerProfileQueryReqDTO();
-        query.setXianyuAccountId(profile.getXianyuAccountId());
-        query.setKeyword(profile.getBuyerUserId());
-        query.setPageSize(1);
-        @SuppressWarnings("unchecked")
-        List<BuyerProfileRespDTO> records = (List<BuyerProfileRespDTO>) list(query).get("records");
-        return records.isEmpty() ? null : records.getFirst();
+        BuyerProfileRespDTO response = profileMapper.selectDetail(profile.getXianyuAccountId(), profile.getBuyerUserId());
+        if (response != null) {
+            readTags(response);
+        }
+        Map<String, Object> after = profileSnapshot(profile);
+        Map<String, Object> fieldDiff = fieldDiff(before, after);
+        writeRequiredAudit(request, requestId, idempotencyKey, buyerUserId, before, after, fieldDiff);
+        if (requestMapper.complete(tenantId, requestId, writeJson(response)) != 1) {
+            throw new IllegalStateException("买家资料请求结果保存失败");
+        }
+        return response;
+    }
+
+    private BuyerProfileRespDTO replayExistingRequest(Long tenantId, String requestId, String fingerprint) {
+        XianyuBuyerProfileRequest existing = requestMapper.findByRequestId(tenantId, requestId);
+        if (existing == null || !Objects.equals(existing.getRequestFingerprint(), fingerprint)) {
+            throw new BusinessException(409, "requestId已用于其他买家资料变更");
+        }
+        if (existing.getResponseJson() == null) {
+            throw new BusinessException(409, "该买家资料请求正在处理中，请稍后按原请求重试");
+        }
+        try {
+            return objectMapper.readValue(existing.getResponseJson(), BuyerProfileRespDTO.class);
+        } catch (Exception e) {
+            throw new IllegalStateException("买家资料幂等结果读取失败", e);
+        }
+    }
+
+    private void writeRequiredAudit(BuyerProfileSaveReqDTO request,
+                                    String requestId,
+                                    String idempotencyKey,
+                                    String buyerUserId,
+                                    Map<String, Object> before,
+                                    Map<String, Object> after,
+                                    Map<String, Object> fieldDiff) {
+        Map<String, Object> requestParams = new LinkedHashMap<>();
+        requestParams.put("accountId", request.getXianyuAccountId());
+        requestParams.put("buyerUserId", buyerUserId);
+        requestParams.put("before", before);
+        requestParams.put("requestedChanges", fieldDiff);
+        Map<String, Object> responseResult = new LinkedHashMap<>();
+        responseResult.put("after", after);
+        responseResult.put("fieldDiff", fieldDiff);
+        responseResult.put("replayed", false);
+
+        XianyuOperationLog audit = new XianyuOperationLog();
+        audit.setXianyuAccountId(request.getXianyuAccountId());
+        audit.setOperationType("BUYER_PROFILE_UPDATE");
+        audit.setOperationModule("买家管理");
+        audit.setOperationDesc(fieldDiff.isEmpty() ? "买家资料未发生变化" : "更新买家360资料与自动化范围");
+        audit.setOperationStatus(1);
+        audit.setTargetType("BUYER");
+        audit.setTargetId(buyerUserId);
+        audit.setRequestParams(writeJson(requestParams));
+        audit.setResponseResult(writeJson(responseResult));
+        audit.setRequestId(requestId);
+        audit.setIdempotencyKey(idempotencyKey);
+        audit.setOutcomeState("LOCAL_SUCCESS");
+        audit.setDataSource("LOCAL");
+        audit.setFieldDiffJson(writeJson(fieldDiff));
+        operationLogService.logRequired(audit);
+    }
+
+    private String requestFingerprint(BuyerProfileSaveReqDTO request,
+                                      String buyerUserId,
+                                      List<String> normalizedTags) {
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("accountId", request.getXianyuAccountId());
+        normalized.put("buyerUserId", buyerUserId);
+        normalized.put("buyerUserName", trimToNull(request.getBuyerUserName()));
+        normalized.put("tags", normalizedTags);
+        normalized.put("note", trimToNull(request.getNote()));
+        normalized.put("automationBlocked", request.getAutomationBlocked());
+        normalized.put("blockedReason", trimToNull(request.getBlockedReason()));
+        normalized.put("blacklisted", request.getBlacklisted());
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(writeJson(normalized).getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            throw new IllegalStateException("买家资料请求摘要生成失败", e);
+        }
+    }
+
+    private Map<String, Object> profileSnapshot(XianyuBuyerProfile profile) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("buyerUserName", profile == null ? null : profile.getBuyerUserName());
+        snapshot.put("tags", profile == null ? List.of() : readTagsJson(profile.getTagsJson()));
+        snapshot.put("note", profile == null ? null : profile.getNote());
+        snapshot.put("automationBlocked", profile == null ? null : Integer.valueOf(1).equals(profile.getAutomationBlocked()));
+        snapshot.put("blockedReason", profile == null ? null : profile.getBlockedReason());
+        snapshot.put("blacklisted", profile == null ? null : Integer.valueOf(1).equals(profile.getBlacklisted()));
+        snapshot.put("blacklistSource", profile == null ? null : profile.getBlacklistSource());
+        snapshot.put("blacklistUpdatedTime", profile == null || profile.getBlacklistUpdatedTime() == null
+                ? null : profile.getBlacklistUpdatedTime().toString());
+        return snapshot;
+    }
+
+    private Map<String, Object> fieldDiff(Map<String, Object> before, Map<String, Object> after) {
+        Map<String, Object> diff = new LinkedHashMap<>();
+        after.forEach((field, afterValue) -> {
+            Object beforeValue = before.get(field);
+            if (!Objects.equals(beforeValue, afterValue)) {
+                Map<String, Object> change = new LinkedHashMap<>();
+                change.put("before", beforeValue);
+                change.put("after", afterValue);
+                diff.put(field, change);
+            }
+        });
+        return diff;
+    }
+
+    private List<String> readTagsJson(String tagsJson) {
+        if (tagsJson == null || tagsJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(tagsJson, new TypeReference<>() { });
+        } catch (Exception ignored) {
+            return List.of();
+        }
+    }
+
+    private String writeJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            throw new IllegalStateException("买家资料审计序列化失败", e);
+        }
     }
 
     public void touch(Long accountId, String buyerUserId, String buyerUserName, Long messageTime) {

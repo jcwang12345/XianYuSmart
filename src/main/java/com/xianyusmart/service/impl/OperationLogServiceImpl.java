@@ -45,6 +45,17 @@ public class OperationLogServiceImpl implements OperationLogService {
             log.error("记录操作日志失败", e);
         }
     }
+
+    @Override
+    public void logRequired(XianyuOperationLog operationLog) {
+        populateOperator(operationLog);
+        if (operationLog.getCreateTime() == null) {
+            operationLog.setCreateTime(System.currentTimeMillis());
+        }
+        operationLogMapper.insert(operationLog);
+        log.debug("关键操作审计已记录: accountId={}, type={}, requestId={}",
+                operationLog.getXianyuAccountId(), operationLog.getOperationType(), operationLog.getRequestId());
+    }
     
     @Override
     public void log(Long accountId, String operationType, String operationDesc, Integer status) {

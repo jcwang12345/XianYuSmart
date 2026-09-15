@@ -2,6 +2,7 @@ package com.xianyusmart.controller.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.util.List;
@@ -11,6 +12,13 @@ import java.util.List;
  */
 @Data
 public class BuyerProfileSaveReqDTO {
+
+    @NotBlank(message = "保存买家资料需要requestId")
+    @Size(max = 80, message = "requestId不能超过80个字符")
+    private String requestId;
+
+    @Size(max = 80, message = "idempotencyKey不能超过80个字符")
+    private String idempotencyKey;
 
     private Long id;
 

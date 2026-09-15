@@ -100,11 +100,13 @@ const getRiskText = (info?: ConnectionInfo) => {
       <span class="loading-state__spinner" aria-hidden="true"></span>
       <div><strong>正在读取账号</strong><small>连接状态会在账号显示后继续更新</small></div>
     </div>
-    <div
+    <button
       v-for="account in accounts"
       :key="account.id"
+      type="button"
       class="conn-card"
       :class="{ 'conn-card--active': selectedId === Number(account.id) }"
+      :aria-pressed="selectedId === Number(account.id)"
       @click="emit('select', account)"
     >
       <div class="conn-card__header">
@@ -169,7 +171,7 @@ const getRiskText = (info?: ConnectionInfo) => {
           <IconArrowRight />
         </div>
       </div>
-    </div>
+    </button>
 
     <!-- Empty State -->
     <div v-if="!loading && accounts.length === 0" class="empty-state">
@@ -184,11 +186,13 @@ const getRiskText = (info?: ConnectionInfo) => {
       <span class="loading-state__spinner" aria-hidden="true"></span>
       <div><strong>正在读取账号</strong><small>连接状态会在账号显示后继续更新</small></div>
     </div>
-    <div
+    <button
       v-for="account in accounts"
       :key="account.id"
+      type="button"
       class="grid-card"
       :class="{ 'grid-card--active': selectedId === Number(account.id) }"
+      :aria-pressed="selectedId === Number(account.id)"
       @click="emit('select', account)"
     >
       <div class="grid-card__top">
@@ -229,7 +233,7 @@ const getRiskText = (info?: ConnectionInfo) => {
           {{ getRiskText(connections.get(Number(account.id))) }}
         </span>
       </div>
-    </div>
+    </button>
 
     <!-- Empty State -->
     <div v-if="!loading && accounts.length === 0" class="empty-state">
@@ -301,6 +305,7 @@ const getRiskText = (info?: ConnectionInfo) => {
 }
 
 .conn-card {
+  width: 100%;
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(28px) saturate(1.8);
   -webkit-backdrop-filter: blur(28px) saturate(1.8);
@@ -311,6 +316,9 @@ const getRiskText = (info?: ConnectionInfo) => {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .conn-card--active {
@@ -480,6 +488,7 @@ const getRiskText = (info?: ConnectionInfo) => {
 }
 
 .grid-card {
+  width: 100%;
   background: var(--c-surface);
   backdrop-filter: blur(28px) saturate(1.8);
   -webkit-backdrop-filter: blur(28px) saturate(1.8);
@@ -492,6 +501,9 @@ const getRiskText = (info?: ConnectionInfo) => {
   position: relative;
   overflow: hidden;
   -webkit-tap-highlight-color: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .grid-card__tags {

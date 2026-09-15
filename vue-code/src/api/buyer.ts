@@ -99,6 +99,8 @@ export function getBuyerProfiles(data: {
 }
 
 export function saveBuyerProfile(data: {
+  requestId: string
+  idempotencyKey?: string
   xianyuAccountId: number
   buyerUserId: string
   buyerUserName?: string

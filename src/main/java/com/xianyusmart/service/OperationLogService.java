@@ -14,6 +14,11 @@ public interface OperationLogService {
      * 记录操作日志
      */
     void log(XianyuOperationLog operationLog);
+
+    /**
+     * 在业务事务内写入不可丢失的审计；失败必须向上抛出并触发业务回滚。
+     */
+    void logRequired(XianyuOperationLog operationLog);
     
     /**
      * 记录操作日志（简化版）

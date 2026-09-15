@@ -12,6 +12,7 @@ import {
   type BuyerProfileDetail
 } from '@/api/buyer'
 import { queryOrderRateDetails, type OrderRateDetail } from '@/api/order'
+import { newRequestId } from '@/api/matrix'
 import type { Account } from '@/types'
 import { hasPermission } from '@/utils/permission'
 import { toast } from '@/utils/toast'
@@ -123,7 +124,10 @@ const save = async () => {
     return
   }
   const target = editing.value
+  const requestId = newRequestId('buyer-profile')
   await saveBuyerProfile({
+    requestId,
+    idempotencyKey: requestId,
     xianyuAccountId: target.xianyuAccountId,
     buyerUserId: target.buyerUserId,
     buyerUserName: form.value.buyerUserName,

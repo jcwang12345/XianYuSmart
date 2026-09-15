@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.HashMap;
@@ -34,6 +35,19 @@ public class GlobalExceptionHandler {
         Map<String, Object> result = new HashMap<>();
         result.put("code", 400);
         result.put("message", e.getMessage());
+        return result;
+    }
+
+    /** Bean Validation 失败属于请求输入错误，返回首个可执行的字段提示。 */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public Map<String, Object> handleMethodArgumentNotValidException(MethodArgumentNotValidException e) {
+        Map<String, Object> result = new HashMap<>();
+        String message = e.getBindingResult().getFieldErrors().stream()
+                .findFirst()
+                .map(error -> error.getDefaultMessage() == null ? "请求参数校验失败" : error.getDefaultMessage())
+                .orElse("请求参数校验失败");
+        result.put("code", 400);
+        result.put("message", message);
         return result;
     }
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { getAccountList } from '@/api/account'
 import {
   batchPublish, cancelTask, compensateResource, convertSupplyToMaterial, deleteResource, executeResource, getDistributions,
@@ -10,6 +11,12 @@ import { getKamiConfigsByAccountId, type KamiConfig } from '@/api/kami-config'
 import MediaUploader from '@/components/MediaUploader.vue'
 import type { Account } from '@/types'
 import { showConfirm, showError, showSuccess } from '@/utils'
+import { useAsyncResourceState } from '@/composables/useAsyncResourceState'
+
+type OperationsView = 'overview' | 'resources' | 'tasks' | 'distributions'
+
+const route = useRoute()
+const router = useRouter()
 
 const resourceTypes: Array<{ value: ResourceType; label: string; group: string; description: string; guide: string }> = [
   { value: 'MATERIAL', label: '素材库', group: '商品运营', description: '保存待发布商品的标题、价格、库存、图片与详情。', guide: '先关联账号并完善图片、详情和地址，再单条执行或勾选后批量发布。' },
@@ -24,9 +31,29 @@ const resourceTypes: Array<{ value: ResourceType; label: string; group: string; 
   { value: 'RISK_EVENT', label: '风控记录', group: '服务管理', description: '查看或补录平台验证、异常流量等风险事件。', guide: '自动化任务触发验证时会自动写入；人工记录可补充处理结论。' }
 ]
 
-const activeView = ref<'overview' | 'resources' | 'tasks' | 'distributions'>('overview')
-const activeType = ref<ResourceType>('MATERIAL')
-const loading = ref(false)
+const normalizeView = (value: unknown): OperationsView =>
+  ['overview', 'resources', 'tasks', 'distributions'].includes(String(value))
+    ? String(value) as OperationsView
+    : 'overview'
+const normalizeType = (value: unknown): ResourceType =>
+  resourceTypes.some(item => item.value === String(value)) ? String(value) as ResourceType : 'MATERIAL'
+const activeView = ref<OperationsView>(normalizeView(route.query.view))
+const activeType = ref<ResourceType>(normalizeType(route.query.type))
+const viewStates: Record<OperationsView, ReturnType<typeof useAsyncResourceState>> = {
+  overview: useAsyncResourceState(),
+  resources: useAsyncResourceState(),
+  tasks: useAsyncResourceState(),
+  distributions: useAsyncResourceState()
+}
+const supportingLoading = ref(false)
+const currentState = computed(() => viewStates[activeView.value])
+const loading = computed(() => supportingLoading.value || currentState.value.busy.value)
+const firstLoading = computed(() => supportingLoading.value || currentState.value.firstLoading.value)
+const blockingFailure = computed(() => currentState.value.blockingFailure.value)
+const hasSuccessfulData = computed(() => currentState.value.hasSuccessfulData.value)
+const refreshing = computed(() => currentState.value.refreshing.value)
+const loadError = computed(() => currentState.value.errorMessage.value)
+const forbidden = computed(() => currentState.value.phase.value === 'forbidden')
 const accounts = ref<Account[]>([])
 const addresses = ref<MerchantResource[]>([])
 const materials = ref<MerchantResource[]>([])
@@ -80,10 +107,10 @@ const applyOverview = (overview?: MerchantOverview) => {
 }
 
 const loadOverview = async () => {
-  loading.value = true
-  try {
-    applyOverview((await getMerchantOverview()).data)
-  } finally { loading.value = false }
+  const result = await viewStates.overview.execute(() => getMerchantOverview(), {
+    errorMessage: '运营概览读取失败，请重试。'
+  })
+  if (result.applied && result.value) applyOverview(result.value.data)
 }
 
 const runWithAction = async (key: string, action: () => Promise<void>) => {
@@ -115,24 +142,29 @@ const loadKamiConfigs = async () => {
 }
 
 const loadResources = async () => {
-  loading.value = true
-  try {
-    const response = await getResources(activeType.value)
+  const type = activeType.value
+  const result = await viewStates.resources.execute(() => getResources(type), {
+    isEmpty: response => !(response.data || []).length,
+    errorMessage: `${currentType.value.label}读取失败，请重试。`
+  })
+  if (result.applied && result.value && type === activeType.value) {
+    const response = result.value
     resources.value = response.data || []
     selectedIds.value = []
-  } finally { loading.value = false }
+  }
 }
 
 const loadTasks = async () => {
-  loading.value = true
-  try {
-    tasks.value = (await getTasks({
+  const result = await viewStates.tasks.execute(() => getTasks({
       taskId: taskFilters.taskId ? Number(taskFilters.taskId) : undefined,
       requestId: taskFilters.requestId.trim() || undefined,
       accountId: taskFilters.accountId ? Number(taskFilters.accountId) : undefined,
       limit: 1000
-    })).data || []
-  } finally { loading.value = false }
+    }), {
+      isEmpty: response => !(response.data || []).length,
+      errorMessage: '运营任务读取失败，请重试。'
+    })
+  if (result.applied && result.value) tasks.value = result.value.data || []
 }
 
 const clearTaskFilters = async () => {
@@ -141,21 +173,35 @@ const clearTaskFilters = async () => {
 }
 
 const loadDistributions = async () => {
-  loading.value = true
-  try { distributions.value = (await getDistributions({ limit: 200 })).data || [] } finally { loading.value = false }
+  const result = await viewStates.distributions.execute(() => getDistributions({ limit: 200 }), {
+    isEmpty: response => !(response.data || []).length,
+    errorMessage: '分销结算记录读取失败，请重试。'
+  })
+  if (result.applied && result.value) distributions.value = result.value.data || []
 }
 
-const switchView = async (view: 'overview' | 'resources' | 'tasks' | 'distributions') => {
+const loadCurrentView = async () => {
+  if (activeView.value === 'overview') await loadOverview()
+  if (activeView.value === 'resources') await loadResources()
+  if (activeView.value === 'tasks') await loadTasks()
+  if (activeView.value === 'distributions') await loadDistributions()
+}
+
+const updateRoute = (view: OperationsView, type = activeType.value) => {
+  void router.push({ query: { ...route.query, view, ...(view === 'resources' ? { type } : {}) } })
+}
+
+const switchView = async (view: OperationsView) => {
   activeView.value = view
-  if (view === 'overview') await loadOverview()
-  if (view === 'resources') await loadResources()
-  if (view === 'tasks') await loadTasks()
-  if (view === 'distributions') await loadDistributions()
+  updateRoute(view)
+  await loadCurrentView()
 }
 
 const switchType = async (type: ResourceType) => {
   activeType.value = type
-  await switchView('resources')
+  activeView.value = 'resources'
+  updateRoute('resources', type)
+  await loadResources()
 }
 
 const openCreate = () => {
@@ -338,19 +384,31 @@ const settle = async (distribution: MerchantDistribution) => {
   })
 }
 
+let initialized = false
+watch([() => route.query.view, () => route.query.type], async ([viewValue, typeValue]) => {
+  const view = normalizeView(viewValue)
+  const type = normalizeType(typeValue)
+  const changed = view !== activeView.value || (view === 'resources' && type !== activeType.value)
+  if (!changed) return
+  activeView.value = view
+  if (view === 'resources') activeType.value = type
+  if (initialized) await loadCurrentView()
+})
+
 onMounted(async () => {
-  loading.value = true
+  supportingLoading.value = true
   try {
-    const [accountResult, addressResult, materialResult, overviewResult] = await Promise.all([
-      getAccountList(), getResources('ADDRESS'), getResources('MATERIAL'), getMerchantOverview()
+    const [accountResult, addressResult, materialResult] = await Promise.all([
+      getAccountList(), getResources('ADDRESS'), getResources('MATERIAL')
     ])
     accounts.value = accountResult.data?.accounts || []
     addresses.value = addressResult.data || []
     materials.value = materialResult.data || []
-    applyOverview(overviewResult.data)
   } finally {
-    loading.value = false
+    supportingLoading.value = false
   }
+  initialized = true
+  await loadCurrentView()
 })
 </script>
 
@@ -361,15 +419,18 @@ onMounted(async () => {
       <button v-if="activeView === 'resources'" class="primary-btn" :disabled="loading || saving" @click="openCreate">新建{{ currentType.label }}</button>
     </header>
 
-    <div class="view-tabs">
-      <button :class="{ active: activeView === 'overview' }" :disabled="loading" @click="switchView('overview')">使用向导</button>
-      <button :class="{ active: activeView === 'resources' }" :disabled="loading" @click="switchView('resources')">资源与规则</button>
-      <button :class="{ active: activeView === 'tasks' }" :disabled="loading" @click="switchView('tasks')">任务记录</button>
-      <button :class="{ active: activeView === 'distributions' }" :disabled="loading" @click="switchView('distributions')">分销结算</button>
+    <div class="view-tabs" role="tablist" aria-label="运营中心栏目">
+      <button role="tab" :class="{ active: activeView === 'overview' }" :aria-selected="activeView === 'overview'" @click="switchView('overview')">使用向导</button>
+      <button role="tab" :class="{ active: activeView === 'resources' }" :aria-selected="activeView === 'resources'" @click="switchView('resources')">资源与规则</button>
+      <button role="tab" :class="{ active: activeView === 'tasks' }" :aria-selected="activeView === 'tasks'" @click="switchView('tasks')">任务记录</button>
+      <button role="tab" :class="{ active: activeView === 'distributions' }" :aria-selected="activeView === 'distributions'" @click="switchView('distributions')">分销结算</button>
     </div>
-    <div v-if="loading" class="loading-bar"><span></span>正在加载数据</div>
+    <div v-if="refreshing" class="loading-bar" role="status"><span></span>正在刷新，已保留上次成功结果</div>
+    <section v-if="firstLoading" class="content-card resource-state" role="status"><span class="resource-spinner"></span><strong>正在读取当前运营范围</strong><small>服务端确认后才会显示数量和空状态</small></section>
+    <section v-else-if="blockingFailure" class="content-card resource-state resource-state--error" role="alert"><strong>{{ forbidden ? '当前范围不可访问' : '暂时无法读取' }}</strong><small>{{ loadError }}</small><button class="secondary-btn" :disabled="loading" @click="loadCurrentView">重新读取</button></section>
+    <div v-else-if="loadError && hasSuccessfulData" class="refresh-warning" role="status"><span>{{ loadError }} 已保留上次成功结果。</span><button class="secondary-btn" :disabled="loading" @click="loadCurrentView">重试</button></div>
 
-    <section v-if="activeView === 'overview'" class="overview">
+    <section v-if="!firstLoading && !blockingFailure && activeView === 'overview'" class="overview">
       <div class="overview-intro"><div><h2>从素材到结算的完整流程</h2><p>按顺序完成准备、采集、发布和履约，每个步骤都可先手动执行验证，再开启定时规则。</p></div><button class="primary-btn" @click="switchType('MATERIAL')">从素材库开始</button></div>
       <div class="flow-grid">
         <button @click="switchType('ADDRESS')"><b>1</b><span><strong>准备资料</strong><small>地址库 → 素材库</small></span></button>
@@ -383,7 +444,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section v-else-if="activeView === 'resources'" class="workspace">
+    <section v-else-if="!firstLoading && !blockingFailure && activeView === 'resources'" class="workspace">
       <aside class="type-nav">
         <div v-for="group in groups" :key="group" class="type-group">
           <span>{{ group }}</span>
@@ -395,7 +456,7 @@ onMounted(async () => {
         <div class="card-toolbar">
           <div><strong>{{ currentType.label }}</strong><span>{{ resources.length }} 条</span></div>
           <div v-if="activeType === 'MATERIAL'" class="batch-actions">
-            <select v-model="publishAccountIds" multiple title="不选择时使用各素材关联账号"><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select>
+            <select v-model="publishAccountIds" class="batch-account-select" multiple :size="1" aria-label="批量发布账号，可多选" title="按 Command 或 Ctrl 多选；不选择时使用各素材关联账号"><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option></select>
             <button class="secondary-btn" :disabled="!selectedIds.length || !!pendingAction" @click="publishSelected">{{ isActioning('batch-publish') ? '创建中...' : '批量发布' }}</button>
           </div>
         </div>
@@ -424,7 +485,7 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section v-else-if="activeView === 'tasks'" class="content-card full-card">
+    <section v-else-if="!firstLoading && !blockingFailure && activeView === 'tasks'" class="content-card full-card">
       <div class="card-toolbar"><div><strong>任务记录</strong><span>{{ tasks.length }} 条</span></div><button class="secondary-btn" :disabled="loading" @click="loadTasks">{{ loading ? '刷新中...' : '刷新' }}</button></div>
       <form class="task-filters" aria-label="任务精确筛选" @submit.prevent="loadTasks">
         <label><span>任务 ID</span><input v-model.trim="taskFilters.taskId" inputmode="numeric" placeholder="例如 9"></label>
@@ -438,7 +499,7 @@ onMounted(async () => {
       </tbody></table></div>
     </section>
 
-    <section v-else class="content-card full-card">
+    <section v-else-if="!firstLoading && !blockingFailure && activeView === 'distributions'" class="content-card full-card">
       <div class="card-toolbar"><div><strong>分销与结算</strong><span>{{ distributions.length }} 条</span></div><button class="secondary-btn" :disabled="loading" @click="loadDistributions">{{ loading ? '刷新中...' : '刷新' }}</button></div>
       <div class="table-scroll"><table><thead><tr><th>货源</th><th>素材</th><th>账号</th><th>商品</th><th>佣金</th><th>发布状态</th><th>结算状态</th><th>操作</th></tr></thead><tbody>
         <tr v-for="item in distributions" :key="item.id"><td>#{{ item.supplyResourceId }}</td><td>{{ item.materialResourceId ? `#${item.materialResourceId}` : '-' }}</td><td>{{ accountName(item.xianyuAccountId) }}</td><td>{{ item.xyGoodsId || '-' }}</td><td>¥{{ Number(item.commissionAmount || 0).toFixed(2) }}</td><td>{{ item.status === 1 ? '已发布' : '待发布' }}</td><td><span class="status" :class="{ enabled: item.settlementStatus === 1 }">{{ item.settlementStatus === 1 ? '已结算' : '待结算' }}</span></td><td class="actions"><button v-if="item.settlementStatus !== 1" :disabled="!!pendingAction" @click="settle(item)">{{ isActioning(`settle:${item.id}`) ? '结算中...' : '确认结算' }}</button></td></tr>
@@ -479,8 +540,9 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.operations-page{padding:24px;color:#101828}.page-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px}.page-header h1{font-size:24px;margin:0 0 6px}.page-header p,.editor p{margin:0;color:#667085;font-size:14px}.view-tabs{display:flex;gap:4px;border-bottom:1px solid #e4e7ec;margin-bottom:16px}.view-tabs button{border:0;background:transparent;padding:10px 16px;color:#667085;cursor:pointer;border-bottom:2px solid transparent}.view-tabs button.active{color:#9a6200;border-bottom-color:#9a6200;font-weight:600}.workspace{display:grid;grid-template-columns:180px minmax(0,1fr);gap:16px}.type-nav,.content-card{background:#fff;border:1px solid #e4e7ec;border-radius:8px}.type-nav{padding:12px;height:max-content}.type-group{display:flex;flex-direction:column;margin-bottom:12px}.type-group>span{font-size:12px;color:#98a2b3;padding:7px 10px}.type-group button{border:0;background:transparent;text-align:left;padding:9px 10px;border-radius:6px;color:#475467;cursor:pointer}.type-group button.active{background:#fff8d9;color:#9a6200;font-weight:600}.card-toolbar{min-height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #e4e7ec}.card-toolbar strong{font-size:16px}.card-toolbar span{font-size:12px;color:#98a2b3;margin-left:8px}.batch-actions{display:flex;gap:8px}.batch-actions select{min-width:170px}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th{background:#f9fafb;color:#475467;text-align:left;font-weight:600;padding:11px 12px;white-space:nowrap}td{padding:12px;border-top:1px solid #eaecf0;color:#344054}td strong,td small{display:block}td small{color:#98a2b3;margin-top:3px}.check-col{width:32px}.action-col{width:190px}.actions{white-space:nowrap}.actions button{border:0;background:transparent;color:#9a6200;cursor:pointer;padding:4px 6px}.actions .danger{color:#d92d20}.status{display:inline-flex;padding:3px 8px;border-radius:10px;background:#f2f4f7;color:#667085}.status.enabled{background:#ecfdf3;color:#027a48}.status.failed{background:#fef3f2;color:#b42318}.result-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.empty{text-align:center!important;color:#98a2b3!important;padding:48px!important}.primary-btn,.secondary-btn{height:36px;padding:0 14px;border-radius:6px;cursor:pointer;font-weight:500}.primary-btn{border:1px solid #9a6200;background:#9a6200;color:#fff}.secondary-btn{border:1px solid #d0d5dd;background:#fff;color:#344054}.secondary-btn:disabled{opacity:.5}.dialog-mask{position:fixed;inset:0;background:rgba(16,24,40,.35);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px}.editor{width:min(720px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:10px}.editor header,.editor footer{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #eaecf0}.editor header h2{font-size:18px;margin:0 0 4px}.editor header button{border:0;background:transparent;font-size:24px;color:#667085;cursor:pointer}.editor footer{border-top:1px solid #eaecf0;border-bottom:0;justify-content:flex-end;gap:10px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:22px}.form-grid label{display:flex;flex-direction:column;gap:6px}.form-grid label.wide{grid-column:1/-1}.form-grid label>span{font-size:13px;font-weight:500;color:#344054}input,select,textarea{box-sizing:border-box;width:100%;border:1px solid #d0d5dd;border-radius:6px;background:#fff;padding:9px 10px;color:#101828;font:inherit}textarea{resize:vertical}input:focus,select:focus,textarea:focus{outline:0;border-color:#9a6200;box-shadow:0 0 0 3px #fff8d9}.overview{display:flex;flex-direction:column;gap:16px}.overview-intro{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px;background:#fff;border:1px solid #e4e7ec;border-radius:8px}.overview-intro h2{margin:0 0 6px;font-size:20px}.overview-intro p{margin:0;color:#667085;font-size:13px}.flow-grid,.capability-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.flow-grid button,.capability-grid button{display:flex;text-align:left;border:1px solid #e4e7ec;background:#fff;border-radius:8px;padding:15px;cursor:pointer}.flow-grid button{align-items:center;gap:12px}.flow-grid b{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#fff8d9;color:#9a6200}.flow-grid span,.capability-grid span{display:flex;flex-direction:column;gap:4px}.flow-grid small,.capability-grid small{color:#98a2b3}.overview-stats{display:flex;gap:12px}.overview-stats span{flex:1;padding:14px 16px;background:#fff;border:1px solid #e4e7ec;border-radius:8px;color:#667085}.overview-stats strong{float:right;color:#101828}.overview-stats .warn,.overview-stats .warn strong{color:#b42318}.capability-grid{grid-template-columns:repeat(2,1fr)}.capability-grid button{flex-direction:column;gap:8px}.capability-grid button>span{flex-direction:row;justify-content:space-between}.capability-grid p{margin:0;color:#667085;font-size:12px;line-height:1.5}.context-guide{display:flex;flex-direction:column;gap:5px;margin:14px 16px 0;padding:11px 13px;border-left:3px solid #9a6200;background:#f8faff}.context-guide strong{font-size:13px}.context-guide span,.form-help span{color:#667085;font-size:12px}.form-help{display:flex;flex-direction:column;gap:4px;margin:0 22px 18px;padding:11px 13px;background:#f9fafb;border-radius:7px}.form-help strong{font-size:12px}@media(max-width:900px){.operations-page{padding:16px}.workspace{grid-template-columns:1fr}.type-nav{display:flex;overflow:auto;gap:4px}.type-group{display:contents}.type-group>span{display:none}.type-group button{white-space:nowrap}.page-header p{display:none}.flow-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.form-grid label.wide{grid-column:auto}.card-toolbar{gap:8px;align-items:flex-start;flex-direction:column;padding:12px}.batch-actions{width:100%}.page-header h1{font-size:20px}.overview-intro{align-items:flex-start;flex-direction:column}.flow-grid,.capability-grid{grid-template-columns:1fr}.overview-stats{flex-direction:column}}
+.operations-page{padding:24px;color:#101828}.page-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px}.page-header h1{font-size:24px;margin:0 0 6px}.page-header p,.editor p{margin:0;color:#667085;font-size:14px}.view-tabs{display:flex;gap:4px;border-bottom:1px solid #e4e7ec;margin-bottom:16px}.view-tabs button{border:0;background:transparent;padding:10px 16px;color:#667085;cursor:pointer;border-bottom:2px solid transparent}.view-tabs button.active{color:#9a6200;border-bottom-color:#9a6200;font-weight:600}.workspace{display:grid;grid-template-columns:180px minmax(0,1fr);gap:16px}.type-nav,.content-card{background:#fff;border:1px solid #e4e7ec;border-radius:8px}.type-nav{padding:12px;height:max-content}.type-group{display:flex;flex-direction:column;margin-bottom:12px}.type-group>span{font-size:12px;color:#98a2b3;padding:7px 10px}.type-group button{border:0;background:transparent;text-align:left;padding:9px 10px;border-radius:6px;color:#475467;cursor:pointer}.type-group button.active{background:#fff8d9;color:#9a6200;font-weight:600}.card-toolbar{min-height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #e4e7ec}.card-toolbar strong{font-size:16px}.card-toolbar span{font-size:12px;color:#98a2b3;margin-left:8px}.batch-actions{display:flex;gap:8px}.batch-actions select{min-width:170px}.batch-account-select{height:36px;max-width:230px;overflow:hidden}.table-scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th{background:#f9fafb;color:#475467;text-align:left;font-weight:600;padding:11px 12px;white-space:nowrap}td{padding:12px;border-top:1px solid #eaecf0;color:#344054}td strong,td small{display:block}td small{color:#98a2b3;margin-top:3px}.check-col{width:32px}.action-col{width:190px}.actions{white-space:nowrap}.actions button{border:0;background:transparent;color:#9a6200;cursor:pointer;padding:4px 6px}.actions .danger{color:#d92d20}.status{display:inline-flex;padding:3px 8px;border-radius:10px;background:#f2f4f7;color:#667085}.status.enabled{background:#ecfdf3;color:#027a48}.status.failed{background:#fef3f2;color:#b42318}.result-cell{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.empty{text-align:center!important;color:#98a2b3!important;padding:48px!important}.primary-btn,.secondary-btn{height:36px;padding:0 14px;border-radius:6px;cursor:pointer;font-weight:500}.primary-btn{border:1px solid #9a6200;background:#9a6200;color:#fff}.secondary-btn{border:1px solid #d0d5dd;background:#fff;color:#344054}.secondary-btn:disabled{opacity:.5}.dialog-mask{position:fixed;inset:0;background:rgba(16,24,40,.35);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px}.editor{width:min(720px,100%);max-height:90vh;overflow:auto;background:#fff;border-radius:10px}.editor header,.editor footer{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid #eaecf0}.editor header h2{font-size:18px;margin:0 0 4px}.editor header button{border:0;background:transparent;font-size:24px;color:#667085;cursor:pointer}.editor footer{border-top:1px solid #eaecf0;border-bottom:0;justify-content:flex-end;gap:10px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:22px}.form-grid label{display:flex;flex-direction:column;gap:6px}.form-grid label.wide{grid-column:1/-1}.form-grid label>span{font-size:13px;font-weight:500;color:#344054}input,select,textarea{box-sizing:border-box;width:100%;border:1px solid #d0d5dd;border-radius:6px;background:#fff;padding:9px 10px;color:#101828;font:inherit}textarea{resize:vertical}input:focus,select:focus,textarea:focus{outline:0;border-color:#9a6200;box-shadow:0 0 0 3px #fff8d9}.overview{display:flex;flex-direction:column;gap:16px}.overview-intro{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px;background:#fff;border:1px solid #e4e7ec;border-radius:8px}.overview-intro h2{margin:0 0 6px;font-size:20px}.overview-intro p{margin:0;color:#667085;font-size:13px}.flow-grid,.capability-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.flow-grid button,.capability-grid button{display:flex;text-align:left;border:1px solid #e4e7ec;background:#fff;border-radius:8px;padding:15px;cursor:pointer}.flow-grid button{align-items:center;gap:12px}.flow-grid b{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#fff8d9;color:#9a6200}.flow-grid span,.capability-grid span{display:flex;flex-direction:column;gap:4px}.flow-grid small,.capability-grid small{color:#98a2b3}.overview-stats{display:flex;gap:12px}.overview-stats span{flex:1;padding:14px 16px;background:#fff;border:1px solid #e4e7ec;border-radius:8px;color:#667085}.overview-stats strong{float:right;color:#101828}.overview-stats .warn,.overview-stats .warn strong{color:#b42318}.capability-grid{grid-template-columns:repeat(2,1fr)}.capability-grid button{flex-direction:column;gap:8px}.capability-grid button>span{flex-direction:row;justify-content:space-between}.capability-grid p{margin:0;color:#667085;font-size:12px;line-height:1.5}.context-guide{display:flex;flex-direction:column;gap:5px;margin:14px 16px 0;padding:11px 13px;border-left:3px solid #9a6200;background:#f8faff}.context-guide strong{font-size:13px}.context-guide span,.form-help span{color:#667085;font-size:12px}.form-help{display:flex;flex-direction:column;gap:4px;margin:0 22px 18px;padding:11px 13px;background:#f9fafb;border-radius:7px}.form-help strong{font-size:12px}@media(max-width:900px){.operations-page{padding:16px}.workspace{grid-template-columns:1fr}.type-nav{display:flex;overflow:auto;gap:4px}.type-group{display:contents}.type-group>span{display:none}.type-group button{white-space:nowrap}.page-header p{display:none}.flow-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:640px){.form-grid{grid-template-columns:1fr}.form-grid label.wide{grid-column:auto}.card-toolbar{gap:8px;align-items:flex-start;flex-direction:column;padding:12px}.batch-actions{width:100%}.batch-account-select{min-width:0!important;max-width:none;flex:1}.page-header h1{font-size:20px}.overview-intro{align-items:flex-start;flex-direction:column}.flow-grid,.capability-grid{grid-template-columns:1fr}.overview-stats{flex-direction:column}}
 .loading-bar{display:flex;align-items:center;gap:8px;margin:-6px 0 14px;color:#667085;font-size:12px}.loading-bar span{width:14px;height:14px;border:2px solid #d0d5dd;border-top-color:#9a6200;border-radius:50%;animation:operations-spin .7s linear infinite}.view-tabs button:disabled,.actions button:disabled{cursor:not-allowed;opacity:.45}.flow-grid button,.capability-grid button,.type-group button{transition:background-color .15s ease,border-color .15s ease,color .15s ease}.flow-grid button:hover,.capability-grid button:hover{border-color:#efd77f;background:#f8faff}.primary-btn:hover:not(:disabled){background:#714a00;border-color:#714a00}.secondary-btn:hover:not(:disabled){background:#f9fafb;border-color:#98a2b3}.primary-btn:disabled,.editor header button:disabled{cursor:not-allowed;opacity:.55}.form-hint{color:#667085;font-size:12px;line-height:1.4}.editor{box-shadow:0 20px 48px rgba(16,24,40,.18)}@keyframes operations-spin{to{transform:rotate(360deg)}}
+.resource-state{display:grid;place-items:center;gap:8px;min-height:240px;padding:32px;color:#667085;text-align:center}.resource-state strong{color:#344054}.resource-state small{font-size:12px}.resource-spinner{width:22px;height:22px;border:2px solid #d0d5dd;border-top-color:#9a6200;border-radius:50%;animation:operations-spin .7s linear infinite}.resource-state--error{border-color:#f0b2aa;background:#fff8f7}.resource-state--error strong,.resource-state--error small{color:#912018}.refresh-warning{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;padding:10px 12px;border:1px solid #fedf89;border-radius:8px;color:#93370d;background:#fffaeb;font-size:12px}
 .task-filters{display:grid;grid-template-columns:minmax(120px,.7fr) minmax(240px,1.6fr) minmax(190px,1fr) auto;gap:12px;align-items:end;padding:14px 16px;border-bottom:1px solid #e4e7ec;background:#fcfcfd}.task-filters label{display:flex;flex-direction:column;gap:5px}.task-filters label span{font-size:12px;color:#475467;font-weight:600}.task-filters>div{display:flex;gap:8px}.task-filters input,.task-filters select{height:36px;padding:6px 9px}
 @media(max-width:900px){.task-filters{grid-template-columns:1fr 1fr}.task-filters>div{align-self:end}}@media(max-width:640px){.task-filters{grid-template-columns:1fr}.task-filters>div button{flex:1}}
 </style>

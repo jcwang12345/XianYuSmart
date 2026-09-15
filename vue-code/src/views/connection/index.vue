@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useConnectionManager } from './useConnectionManager'
 import ConnectionCard from './components/ConnectionCard.vue'
 import ConnectionDetail from './components/ConnectionDetail.vue'
@@ -8,6 +8,7 @@ import ConnectionDetail from './components/ConnectionDetail.vue'
 import IconLink from '@/components/icons/IconLink.vue'
 
 const router = useRouter()
+const route = useRoute()
 
 const {
   loading,
@@ -80,8 +81,21 @@ const handleSelectAccount = (account: any) => {
     router.push(`/connection/${id}`)
   } else {
     selectAccount(id)
+    void router.replace({ query: { ...route.query, accountId: String(id) } })
   }
 }
+
+watch([accounts, () => route.query.accountId], ([availableAccounts, queryAccountId]) => {
+  if (isMobile.value || availableAccounts.length === 0) return
+  const requestedId = Number(queryAccountId)
+  const target = availableAccounts.find(account => Number(account.id) === requestedId) || availableAccounts[0]
+  const targetId = Number(target?.id)
+  if (!targetId || selectedAccountId.value === targetId) return
+  selectAccount(targetId)
+  if (String(queryAccountId || '') !== String(targetId)) {
+    void router.replace({ query: { ...route.query, accountId: String(targetId) } })
+  }
+})
 
 onMounted(() => {
   checkScreenSize()
@@ -131,6 +145,7 @@ onUnmounted(() => {
           />
         </div>
         <div class="connection__detail">
+          <router-link v-if="selectedAccountId" class="connection__detail-link" :to="`/connection/${selectedAccountId}`">打开完整连接档案</router-link>
           <ConnectionDetail
             :account-id="selectedAccountId"
             :account-name="selectedAccountName"
@@ -188,10 +203,26 @@ onUnmounted(() => {
 }
 
 .connection__detail {
+  position: relative;
   flex: 1;
   min-width: 0;
   border-left: 1px solid rgba(60,60,67,.12);
   overflow: hidden;
+}
+
+.connection__detail-link {
+  position: absolute;
+  z-index: 4;
+  top: 14px;
+  right: 16px;
+  padding: 7px 10px;
+  border: 1px solid #efd77f;
+  border-radius: 7px;
+  color: #9a6200;
+  background: #fffdf2;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
 }
 
 .connection__count {

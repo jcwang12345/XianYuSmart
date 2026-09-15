@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   acknowledgeAllOperationExceptions,
   acknowledgeOperationException,
@@ -25,6 +26,12 @@ import { showConfirm } from '@/utils/confirm'
 import { getAccountList } from '@/api/account'
 import { getAccountGroups, newRequestId, type AccountGroup } from '@/api/matrix'
 import type { Account } from '@/types'
+import { useAsyncResourceState } from '@/composables/useAsyncResourceState'
+
+type HealthTab = 'health' | 'exceptions' | 'inbox' | 'channels' | 'logs'
+
+const route = useRoute()
+const router = useRouter()
 
 const tabs = [
   { key: 'health', label: '系统检查' },
@@ -90,8 +97,26 @@ const channelTypes: Array<{
   ] }
 ]
 const defaultMessageTemplate = '【{eventName}】{title}\n{content}\n账号：{accountId}'
-const activeTab = ref('health')
-const loading = ref(false)
+const normalizeTab = (value: unknown): HealthTab =>
+  ['health', 'exceptions', 'inbox', 'channels', 'logs'].includes(String(value))
+    ? String(value) as HealthTab
+    : 'health'
+const activeTab = ref<HealthTab>(normalizeTab(route.query.tab))
+const tabStates: Record<HealthTab, ReturnType<typeof useAsyncResourceState>> = {
+  health: useAsyncResourceState(),
+  exceptions: useAsyncResourceState(),
+  inbox: useAsyncResourceState(),
+  channels: useAsyncResourceState(),
+  logs: useAsyncResourceState()
+}
+const currentState = computed(() => tabStates[activeTab.value])
+const loading = computed(() => currentState.value.busy.value)
+const firstLoading = computed(() => currentState.value.firstLoading.value)
+const refreshing = computed(() => currentState.value.refreshing.value)
+const blockingFailure = computed(() => currentState.value.blockingFailure.value)
+const hasSuccessfulData = computed(() => currentState.value.hasSuccessfulData.value)
+const loadError = computed(() => currentState.value.errorMessage.value)
+const forbidden = computed(() => currentState.value.phase.value === 'forbidden')
 const overview = ref<HealthOverview>()
 const exceptions = ref<OperationException[]>([])
 const channels = ref<NotificationChannel[]>([])
@@ -129,18 +154,32 @@ const selectChannelType = (channelType: NotificationChannelType) => {
 }
 
 const load = async () => {
-  loading.value = true
-  try {
-    if (activeTab.value === 'health') overview.value = (await getHealthOverview()).data
-    if (activeTab.value === 'exceptions') exceptions.value = (await getOperationExceptions()).data || []
-    if (activeTab.value === 'inbox') {
-      const response = await getNotificationInbox({
+  const tab = activeTab.value
+  const state = tabStates[tab]
+  if (tab === 'health') {
+    const result = await state.execute(() => getHealthOverview(), { errorMessage: '系统检查读取失败，请重试。' })
+    if (result.applied && result.value) overview.value = result.value.data
+  }
+  if (tab === 'exceptions') {
+    const result = await state.execute(() => getOperationExceptions(), {
+      isEmpty: response => !(response.data || []).length,
+      errorMessage: '异常待办读取失败，请重试。'
+    })
+    if (result.applied && result.value) exceptions.value = result.value.data || []
+  }
+  if (tab === 'inbox') {
+    const result = await state.execute(() => getNotificationInbox({
         view: inboxFilters.value.view,
         accountId: inboxFilters.value.accountId || undefined,
         search: inboxFilters.value.search.trim() || undefined,
         page: inboxFilters.value.page,
         pageSize: inboxFilters.value.pageSize
+      }), {
+        isEmpty: response => !(response.data?.records || []).length,
+        errorMessage: '站内通知读取失败，请重试。'
       })
+    if (result.applied && result.value) {
+      const response = result.value
       inbox.value = response.data?.records || []
       inboxTotal.value = response.data?.total || 0
       inboxTotalPages.value = response.data?.totalPages || 0
@@ -149,16 +188,27 @@ const load = async () => {
         await load()
       }
     }
-    if (activeTab.value === 'channels') channels.value = (await getNotificationChannels()).data || []
-    if (activeTab.value === 'logs') logs.value = (await getNotificationLogs()).data || []
-  } finally {
-    loading.value = false
+  }
+  if (tab === 'channels') {
+    const result = await state.execute(() => getNotificationChannels(), {
+      isEmpty: response => !(response.data || []).length,
+      errorMessage: '通知渠道读取失败，请重试。'
+    })
+    if (result.applied && result.value) channels.value = result.value.data || []
+  }
+  if (tab === 'logs') {
+    const result = await state.execute(() => getNotificationLogs(), {
+      isEmpty: response => !(response.data || []).length,
+      errorMessage: '发送记录读取失败，请重试。'
+    })
+    if (result.applied && result.value) logs.value = result.value.data || []
   }
 }
 
 const changeTab = (key: string) => {
-  activeTab.value = key
-  load()
+  const tab = normalizeTab(key)
+  if (tab === activeTab.value) return void load()
+  void router.push({ query: { ...route.query, tab } })
 }
 
 const applyInboxFilters = () => {
@@ -291,10 +341,19 @@ const formatDateTime = (value?: string) => {
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
+let initialized = false
+watch(() => route.query.tab, value => {
+  const tab = normalizeTab(value)
+  if (tab === activeTab.value) return
+  activeTab.value = tab
+  if (initialized) void load()
+})
+
 onMounted(async () => {
   const [accountResult, groupResult] = await Promise.allSettled([getAccountList(), getAccountGroups()])
   if (accountResult.status === 'fulfilled') accounts.value = accountResult.value.data?.accounts || []
   if (groupResult.status === 'fulfilled') groups.value = groupResult.value.data || []
+  initialized = true
   await load()
 })
 </script>
@@ -311,18 +370,26 @@ onMounted(async () => {
         <button @click="load">刷新</button>
         <button v-if="exceptions.length > 0" class="primary" @click="acknowledgeAllExceptions">全部标记已处理</button>
       </div>
-      <button v-else @click="load">刷新</button>
+      <button v-else :disabled="loading" @click="load">{{ refreshing ? '刷新中…' : '刷新' }}</button>
     </section>
 
-    <nav class="tabs">
-      <button v-for="tab in tabs" :key="tab.key" :class="{ active: activeTab === tab.key }" @click="changeTab(tab.key)">
+    <nav class="tabs" role="tablist" aria-label="通知与诊断栏目">
+      <button v-for="tab in tabs" :key="tab.key" role="tab" :aria-selected="activeTab === tab.key" :class="{ active: activeTab === tab.key }" @click="changeTab(tab.key)">
         {{ tab.label }}
       </button>
     </nav>
 
-    <section v-if="loading" class="panel empty">加载中...</section>
+    <section v-if="firstLoading" class="panel empty" role="status">正在读取{{ tabs.find(tab => tab.key === activeTab)?.label }}…</section>
+    <section v-else-if="blockingFailure" class="panel resource-error" role="alert">
+      <strong>{{ forbidden ? '当前范围不可访问' : '暂时无法读取' }}</strong>
+      <span>{{ loadError }}</span>
+      <button :disabled="loading" @click="load">重新读取</button>
+    </section>
+    <div v-else-if="loadError && hasSuccessfulData" class="refresh-warning" role="status">
+      <span>{{ loadError }} 已保留上次成功结果。</span><button :disabled="loading" @click="load">重试</button>
+    </div>
 
-    <template v-else-if="activeTab === 'health'">
+    <template v-if="!firstLoading && !blockingFailure && activeTab === 'health'">
       <section v-if="overview" class="summary" :class="overview.overallStatus.toLowerCase()">
         <div>
           <span>当前状态</span>
@@ -344,7 +411,7 @@ onMounted(async () => {
       </section>
     </template>
 
-    <section v-else-if="activeTab === 'exceptions'" class="panel list">
+    <section v-else-if="!firstLoading && !blockingFailure && activeTab === 'exceptions'" class="panel list">
       <div v-if="exceptions.length === 0" class="empty">暂无异常待办。</div>
       <article v-for="item in exceptions" :key="exceptionKey(item)">
         <div class="item-main">
@@ -360,7 +427,7 @@ onMounted(async () => {
       </article>
     </section>
 
-    <section v-else-if="activeTab === 'inbox'" class="panel list inbox-panel">
+    <section v-else-if="!firstLoading && !blockingFailure && activeTab === 'inbox'" class="panel list inbox-panel">
       <form class="inbox-toolbar" @submit.prevent="applyInboxFilters">
         <label>通知范围
           <select v-model="inboxFilters.view">
@@ -397,7 +464,7 @@ onMounted(async () => {
       </footer>
     </section>
 
-    <section v-else-if="activeTab === 'channels'" class="panel list">
+    <section v-else-if="!firstLoading && !blockingFailure && activeTab === 'channels'" class="panel list">
       <div v-if="channels.length === 0" class="empty">尚未配置通知渠道。</div>
       <article v-for="channel in channels" :key="channel.id">
         <div class="item-main">
@@ -417,7 +484,7 @@ onMounted(async () => {
       </article>
     </section>
 
-    <section v-else class="panel list">
+    <section v-else-if="!firstLoading && !blockingFailure && activeTab === 'logs'" class="panel list">
       <div v-if="logs.length === 0" class="empty">暂无通知发送记录。</div>
       <article v-for="item in logs" :key="item.id">
         <div class="item-main">
@@ -493,6 +560,9 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .exception-actions { display: flex; align-items: center; gap: 12px; }
 .event-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; } .event-tags span { padding: 2px 6px; border-radius: 4px; color: #9a6200; background: #fff8d9; font-size: 12px; }
 .actions { display: flex; gap: 6px; } .empty { padding: 70px 20px; text-align: center; color: #98a2b3; }
+.resource-error { display: flex; align-items: center; gap: 12px; padding: 22px; color: #7a271a; background: #fff7f5; }
+.resource-error span { flex: 1; color: #912018; font-size: 13px; }
+.refresh-warning { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid #fedf89; border-radius: 8px; color: #93370d; background: #fffaeb; font-size: 12px; }
 .inbox-toolbar { display: grid; grid-template-columns: 180px 220px minmax(220px, 1fr) auto; align-items: end; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #eaecf0; background: #fcfcfd; }
 .inbox-toolbar label { display: grid; gap: 5px; color: #667085; font-size: 12px; }
 .inbox-toolbar input, .inbox-toolbar select { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; background: #fff; color: #344054; font: inherit; }

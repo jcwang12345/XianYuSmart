@@ -39,11 +39,7 @@ public class BuyerProfileController {
 
     @PostMapping("/save")
     public ResultObject<BuyerProfileRespDTO> save(@Valid @RequestBody BuyerProfileSaveReqDTO request) {
-        try {
-            return ResultObject.success(buyerProfileService.save(request));
-        } catch (Exception e) {
-            return ResultObject.failed(e.getMessage());
-        }
+        return ResultObject.success(buyerProfileService.save(request));
     }
 
     @PostMapping("/detail")
