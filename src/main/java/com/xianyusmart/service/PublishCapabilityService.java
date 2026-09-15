@@ -11,6 +11,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -24,13 +25,16 @@ public class PublishCapabilityService {
     private final AccountAccessService accountAccessService;
     private final ObjectMapper objectMapper;
     private final PublishQaMockService publishQaMockService;
+    private final PlatformWritePolicy platformWritePolicy;
 
     public PublishCapabilityService(JdbcTemplate jdbcTemplate, AccountAccessService accountAccessService,
-                                    ObjectMapper objectMapper, PublishQaMockService publishQaMockService) {
+                                    ObjectMapper objectMapper, PublishQaMockService publishQaMockService,
+                                    PlatformWritePolicy platformWritePolicy) {
         this.jdbcTemplate = jdbcTemplate;
         this.accountAccessService = accountAccessService;
         this.objectMapper = objectMapper;
         this.publishQaMockService = publishQaMockService;
+        this.platformWritePolicy = platformWritePolicy;
     }
 
     public Map<String, Object> capabilities(Long accountId) {
@@ -43,12 +47,25 @@ public class PublishCapabilityService {
                   FROM xianyu_account_access_channel
                  WHERE tenant_id=? AND xianyu_account_id=? ORDER BY id
                 """, (rs, rowNum) -> channel(rs), tenant(), accountId);
+        Map<String, Object> storedQrCookie = channels.stream()
+                .filter(channel -> "QR_COOKIE".equals(channel.get("channelCode")))
+                .findFirst().orElse(null);
+        Map<String, Object> runtimeQrCookie = runtimeQrCookieChannel(accountId, storedQrCookie);
+        if (runtimeQrCookie != null) {
+            List<Map<String, Object>> effective = new ArrayList<>();
+            effective.add(runtimeQrCookie);
+            channels.stream()
+                    .filter(channel -> !"QR_COOKIE".equals(channel.get("channelCode")))
+                    .forEach(effective::add);
+            channels = effective;
+        }
         boolean hasOfficial = channels.stream().anyMatch(channel -> "OFFICIAL_OAUTH".equals(channel.get("channelCode")));
         if (!hasOfficial) {
             Map<String, Object> reserved = new LinkedHashMap<>();
             reserved.put("channelCode", "OFFICIAL_OAUTH");
             reserved.put("channelName", "官方授权通道");
             reserved.put("available", false);
+            reserved.put("executionAvailable", false);
             reserved.put("connectionStatus", "UNKNOWN");
             reserved.put("authorizationStatus", "NOT_CONNECTED");
             reserved.put("coverageStatus", "UNSYNCED");
@@ -63,7 +80,10 @@ public class PublishCapabilityService {
         response.put("availableChannelCodes", channels.stream()
                 .filter(channel -> Boolean.TRUE.equals(channel.get("available")))
                 .map(channel -> String.valueOf(channel.get("channelCode"))).toList());
-        response.put("notice", "仅 available=true 的通道可发布；未知或未授权能力不会默认开启。");
+        response.put("executableChannelCodes", channels.stream()
+                .filter(channel -> Boolean.TRUE.equals(channel.get("executionAvailable")))
+                .map(channel -> String.valueOf(channel.get("channelCode"))).toList());
+        response.put("notice", "available=true 代表可执行真实只读预检；只有 executionAvailable=true 才可创建发布任务。未知或未授权能力不会默认开启。");
         return response;
     }
 
@@ -81,6 +101,19 @@ public class PublishCapabilityService {
         return channelCode;
     }
 
+    public String requireExecutableChannel(Long accountId, String requestedChannel) {
+        String channelCode = requireAvailableChannel(accountId, requestedChannel);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> channels = (List<Map<String, Object>>) capabilities(accountId).get("channels");
+        Map<String, Object> channel = channels.stream()
+                .filter(value -> channelCode.equals(value.get("channelCode"))).findFirst()
+                .orElseThrow(() -> new BusinessException(400, "发布通道不存在：" + channelCode));
+        if (!Boolean.TRUE.equals(channel.get("executionAvailable"))) {
+            throw new BusinessException(409, "发布通道当前只允许预检：" + channel.get("executionReason"));
+        }
+        return channelCode;
+    }
+
     private Map<String, Object> channel(ResultSet rs) throws SQLException {
         String code = rs.getString("channel_code");
         String connection = rs.getString("connection_status");
@@ -94,10 +127,13 @@ public class PublishCapabilityService {
             default -> "SUPPORTED".equals(discovered.get("publishing"));
         };
         boolean available = "CONNECTED".equals(connection) && authOkay && adapterAvailable;
+        boolean executionAvailable = available
+                && ("QA_LOCAL".equals(code) || platformWritePolicy.enabled());
         Map<String, Object> channel = new LinkedHashMap<>();
         channel.put("channelCode", code);
         channel.put("channelName", rs.getString("channel_name"));
         channel.put("available", available);
+        channel.put("executionAvailable", executionAvailable);
         channel.put("connectionStatus", connection);
         channel.put("authorizationStatus", authorization);
         channel.put("authorizationScope", rs.getString("authorization_scope"));
@@ -106,7 +142,66 @@ public class PublishCapabilityService {
         channel.put("coverageStatus", rs.getString("coverage_status"));
         channel.put("lastCheckedTime", instant(rs, "last_checked_time"));
         channel.put("reason", available ? null : reason(connection, authorization, rs.getString("last_error_message")));
+        channel.put("executionReason", executionAvailable ? null : available
+                ? "当前运行环境关闭真实平台写入，只允许平台预检"
+                : channel.get("reason"));
         channel.put("features", featureMatrix(code, available, discovered));
+        return channel;
+    }
+
+    private Map<String, Object> runtimeQrCookieChannel(Long accountId, Map<String, Object> storedChannel) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT account.status accountStatus,
+                       cookie.cookie_status cookieStatus,
+                       cookie.token_expire_time tokenExpireTime,
+                       cookie.expire_time credentialExpireTime,
+                       cookie.updated_time lastCheckedTime
+                  FROM xianyu_account account
+                  LEFT JOIN xianyu_cookie cookie ON cookie.xianyu_account_id=account.id
+                 WHERE account.tenant_id=? AND account.id=?
+                """, tenant(), accountId);
+        if (rows.isEmpty()) return null;
+        Map<String, Object> row = rows.get(0);
+        long accountStatus = number(row.get("accountStatus"));
+        Long cookieStatus = nullableNumber(row.get("cookieStatus"));
+        Instant expiresAt = credentialExpiry(row);
+        boolean expiredByTime = expiresAt != null && !expiresAt.isAfter(Instant.now());
+        boolean credentialReady = accountStatus == 1 && cookieStatus != null && cookieStatus == 1 && !expiredByTime;
+        String connection = credentialReady ? "CONNECTED"
+                : accountStatus == -2 ? "NEEDS_VERIFICATION"
+                : expiredByTime || (cookieStatus != null && (cookieStatus == 2 || cookieStatus == 3)) ? "EXPIRED"
+                : cookieStatus == null ? "DISCONNECTED" : "DEGRADED";
+        String reason = switch (connection) {
+            case "NEEDS_VERIFICATION" -> "账号需要安全验证，请在连接管理重新扫码续期";
+            case "EXPIRED" -> "扫码/Cookie 凭据已过期，请重新扫码续期";
+            case "DISCONNECTED" -> "未找到扫码/Cookie 登录凭据";
+            case "DEGRADED" -> "账号未处于可运行状态，请先恢复连接";
+            default -> null;
+        };
+        boolean executionAvailable = credentialReady && platformWritePolicy.enabled();
+        Map<String, Object> features = new LinkedHashMap<>(featureMatrix("QR_COOKIE", credentialReady, Map.of()));
+        if (credentialReady && storedChannel != null && storedChannel.get("features") instanceof Map<?, ?> storedFeatures) {
+            storedFeatures.forEach((key, value) -> features.put(String.valueOf(key), value));
+        }
+        features.put("execution", executionAvailable ? "READY" : credentialReady ? "ENVIRONMENT_BLOCKED" : "UNAVAILABLE");
+        Map<String, Object> channel = new LinkedHashMap<>();
+        channel.put("channelCode", "QR_COOKIE");
+        channel.put("channelName", "扫码/Cookie 通道");
+        channel.put("available", credentialReady);
+        channel.put("executionAvailable", executionAvailable);
+        channel.put("connectionStatus", connection);
+        channel.put("authorizationStatus", "NOT_APPLICABLE");
+        channel.put("authorizationScope", "个人号商品预检与单品发布；高级字段仍按能力矩阵阻断");
+        channel.put("credentialExpireTime", expiresAt);
+        channel.put("source", "LOCAL_RUNTIME");
+        channel.put("coverageStatus", cookieStatus == null ? "PARTIAL" : "FULL");
+        channel.put("lastCheckedTime", instantValue(row.get("lastCheckedTime")));
+        channel.put("reason", reason);
+        channel.put("executionReason", executionAvailable ? null : credentialReady
+                ? "当前运行环境关闭真实平台写入，只允许平台预检"
+                : reason);
+        channel.put("recoveryRoute", "/connection?accountId=" + accountId + "&renew=1");
+        channel.put("features", features);
         return channel;
     }
 
@@ -159,6 +254,29 @@ public class PublishCapabilityService {
         Long tenantId = TenantContext.get();
         if (tenantId == null) throw new BusinessException(401, "缺少经营主体上下文");
         return tenantId;
+    }
+
+    private long number(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
+    }
+
+    private Long nullableNumber(Object value) {
+        return value instanceof Number number ? number.longValue() : null;
+    }
+
+    private Instant credentialExpiry(Map<String, Object> row) {
+        Long tokenExpireTime = nullableNumber(row.get("tokenExpireTime"));
+        if (tokenExpireTime != null && tokenExpireTime > 0) return Instant.ofEpochMilli(tokenExpireTime);
+        return instantValue(row.get("credentialExpireTime"));
+    }
+
+    private Instant instantValue(Object value) {
+        if (value instanceof Timestamp timestamp) return timestamp.toInstant();
+        if (value instanceof java.time.LocalDateTime dateTime) {
+            return dateTime.atZone(java.time.ZoneId.systemDefault()).toInstant();
+        }
+        if (value instanceof Instant instant) return instant;
+        return null;
     }
 
     private Instant instant(ResultSet rs, String column) throws SQLException {

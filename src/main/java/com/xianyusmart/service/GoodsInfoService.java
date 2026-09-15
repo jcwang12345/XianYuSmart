@@ -25,7 +25,9 @@ public interface GoodsInfoService {
      */
     boolean savePublishedGoods(String xyGoodId, Long xianyuAccountId, String title,
                                String coverPic, String infoPic, String detailInfo,
-                               String detailUrl, String soldPrice);
+                               String detailUrl, String soldPrice, Integer stock,
+                               String categoryId, String categoryName,
+                               String publishChannel, String syncStatus);
     
     /**
      * 批量保存或更新商品信息

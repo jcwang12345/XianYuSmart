@@ -60,6 +60,7 @@ public class ProductMatrixService {
             Map.entry("PRODUCT_SYNC_EXCEPTION", "商品同步异常"),
             Map.entry("PRODUCT_PUBLISHED", "商品已发布"),
             Map.entry("PRODUCT_PUBLISH", "商品发布"),
+            Map.entry("PUBLISH", "商品发布"),
             Map.entry("PRODUCT_PUBLISH_FAILED", "商品发布失败"),
             Map.entry("PRODUCT_ON_SALE", "商品已上架"),
             Map.entry("PRODUCT_OFF_SHELF", "商品已下架"),

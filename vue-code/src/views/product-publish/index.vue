@@ -76,7 +76,7 @@ const leafCategories = computed(() => selectedIndustry.value?.leafCategories || 
 const selectedLeaf = computed(() => leafCategories.value.find(item => item.code === form.leafCategoryCode) || null)
 const attributes = computed(() => selectedLeaf.value?.attributes || [])
 const formFingerprint = computed(() => JSON.stringify(baseCommand()))
-const canExecute = computed(() => Boolean(preflightRequestId.value && preflightRequestId.value === publishRequestId.value && publishFingerprint.value === formFingerprint.value && preflightResult.value?.valid !== false))
+const canExecute = computed(() => Boolean(preflightRequestId.value && preflightRequestId.value === publishRequestId.value && publishFingerprint.value === formFingerprint.value && preflightResult.value?.valid !== false && selectedChannel.value?.executionAvailable !== false))
 const structureErrors = computed<Array<Record<string, any>>>(() =>
   (localValidation.value?.fieldErrors || []).filter((item: Record<string, any>) => item.code !== 'PROHIBITED_TERM')
 )
@@ -251,6 +251,7 @@ const preflight = async () => {
   } catch (error: any) { toast.error(error?.message || '发布前校验失败') } finally { loading.value = false }
 }
 const publish = async () => {
+  if (selectedChannel.value?.executionAvailable === false) return toast.error(selectedChannel.value.executionReason || '当前通道只允许预检，不能创建真实发布任务')
   if (!canExecute.value) return toast.error('内容已变化，请重新执行发布前校验')
   if (executionBlockers.value.length) return toast.error(`当前通道尚未验证：${executionBlockers.value.join('、')}；为避免静默丢字段，已阻止真实提交`)
   try {
@@ -263,7 +264,10 @@ const publish = async () => {
   } catch (error: any) { toast.error(error?.message || '发布请求失败') } finally { loading.value = false }
 }
 const refreshStatus = async () => { if (publishRequestId.value) publishResult.value = (await getPublishingRequestStatus(publishRequestId.value)).data || null }
-const statusText = (value: unknown) => ({ READY: '可用', SUPPORTED: '支持', PARTIAL: '部分能力', MOCK_ONLY: '隔离模拟', NOT_VERIFIED: '未验证', UNKNOWN: '未知', UNAVAILABLE: '不可用', REQUIRES_PLATFORM_PERMISSION: '需平台权限', NOT_CONNECTED: '未接入', AUTHORIZED: '已授权', NOT_APPLICABLE: '无需授权' }[String(value)] || String(value || '未同步'))
+const statusText = (value: unknown) => ({ READY: '可用', SUPPORTED: '支持', PARTIAL: '部分能力', MOCK_ONLY: '隔离模拟', NOT_VERIFIED: '未验证', UNKNOWN: '未知', UNAVAILABLE: '不可用', ENVIRONMENT_BLOCKED: '环境禁止写入', NEEDS_VERIFICATION: '需要验证', REQUIRES_PLATFORM_PERMISSION: '需平台权限', NOT_CONNECTED: '未接入', AUTHORIZED: '已授权', NOT_APPLICABLE: '无需授权' }[String(value)] || String(value || '未同步'))
+const channelAvailabilityText = (channel: Record<string, any>) => channel.available
+  ? channel.executionAvailable === false ? '仅可预检' : '可发布'
+  : statusText(channel.authorizationStatus === 'NOT_APPLICABLE' ? channel.connectionStatus : channel.authorizationStatus || channel.connectionStatus)
 const verificationText = (value: unknown, qa = false) => ({
   VERIFIED: qa ? '隔离夹具已核对' : '平台字段已回读',
   PENDING: '字段待人工核对',
@@ -278,7 +282,7 @@ const evidenceValue = (value: unknown) => {
   const text = String(value)
   return text.length > 90 ? `${text.slice(0, 90)}…` : text
 }
-const channelTone = (channel: Record<string, any>) => channel.available ? 'ready' : channel.authorizationStatus === 'NOT_CONNECTED' ? 'missing' : 'blocked'
+const channelTone = (channel: Record<string, any>) => channel.available ? channel.executionAvailable === false ? 'missing' : 'ready' : channel.authorizationStatus === 'NOT_CONNECTED' ? 'missing' : 'blocked'
 const scrollTo = (id: string) => { activeSection.value = id; document.getElementById(`publish-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
 onMounted(async () => { await loadBase(); readyForAutosave.value = true })
 onBeforeUnmount(() => clearTimeout(autosaveTimer))
@@ -299,8 +303,8 @@ onBeforeUnmount(() => clearTimeout(autosaveTimer))
           <header><div><span>01</span><h2>店铺与发布通道</h2></div><p>授权、类目、SKU、编辑和营销能力都必须有真实证据。</p></header>
           <div class="publish-grid publish-grid--two"><label class="workbench__field">发布店铺<select v-model="form.xianyuAccountId" class="workbench__select"><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }} · ID {{ account.id }}</option></select></label><label class="workbench__field">发布身份<select v-model="form.businessMode" class="workbench__select"><option v-for="item in schema?.businessModes || []" :key="item.value" :value="item.value">{{ item.label }} · {{ item.description }}</option></select></label></div>
           <div v-if="schemaLoading" class="publish-studio__loading" role="status">正在读取当前店铺的连接、授权与通道能力…</div>
-          <div v-else class="channel-grid"><button v-for="channel in channels" :key="channel.channelCode" type="button" class="channel-card" :class="[`channel-card--${channelTone(channel)}`, { selected: form.publishChannel === channel.channelCode }]" :disabled="!channel.available" @click="form.publishChannel = channel.channelCode; invalidatePreflight()"><span class="channel-card__radio"></span><div><strong>{{ channel.channelName }}</strong><small>{{ channel.channelCode }} · {{ channel.source || '来源未同步' }}</small></div><em>{{ channel.available ? '可选择' : statusText(channel.authorizationStatus || channel.connectionStatus) }}</em><p>{{ channel.reason || `最近核验：${channel.lastCheckedTime ? new Date(channel.lastCheckedTime).toLocaleString('zh-CN') : '未同步'}` }}</p></button></div>
-          <div v-if="selectedChannel" class="capability-matrix"><span v-for="(value, key) in selectedChannel.features" :key="key"><small>{{ key }}</small><strong>{{ statusText(value) }}</strong></span></div>
+          <div v-else class="channel-grid"><button v-for="channel in channels" :key="channel.channelCode" type="button" class="channel-card" :class="[`channel-card--${channelTone(channel)}`, { selected: form.publishChannel === channel.channelCode }]" :disabled="!channel.available" @click="form.publishChannel = channel.channelCode; invalidatePreflight()"><span class="channel-card__radio"></span><div><strong>{{ channel.channelName }}</strong><small>{{ channel.channelCode }} · {{ channel.source || '来源未同步' }}</small></div><em>{{ channelAvailabilityText(channel) }}</em><p>{{ channel.reason || channel.executionReason || `最近核验：${channel.lastCheckedTime ? new Date(channel.lastCheckedTime).toLocaleString('zh-CN') : '未同步'}` }}</p></button></div>
+          <div v-if="selectedChannel" class="capability-matrix"><span v-for="(value, key) in selectedChannel.features" :key="key"><small>{{ key }}</small><strong>{{ statusText(value) }}</strong></span></div><p v-if="selectedChannel?.executionAvailable === false" class="publish-studio__channel-notice">{{ selectedChannel.executionReason }}</p>
         </section>
 
         <section id="publish-category" class="publish-card" @focusin="activeSection = 'category'">
@@ -389,5 +393,6 @@ onBeforeUnmount(() => clearTimeout(autosaveTimer))
 @media(max-width:767px){.publish-studio__mobile-switch{display:grid;grid-template-columns:1fr 1fr;margin-top:14px;padding:3px;border-radius:10px;background:#ece9e2}.publish-studio__mobile-switch button{padding:9px;border:0;border-radius:8px;background:transparent;font-weight:700}.publish-studio__mobile-switch button.active{background:#fff;box-shadow:0 2px 8px rgba(50,44,32,.1)}.publish-studio__shell{margin-top:10px}.publish-studio__shell--preview .publish-studio__nav,.publish-studio__shell--preview .publish-studio__form{display:none}.publish-studio__shell--form>.listing-preview{display:none}.draft-state{width:100%;text-align:center}.draft-versions li{grid-template-columns:36px 64px 1fr}.draft-versions code{display:none}}
 @media(max-width:767px){.content-risk>header,.content-risk>footer{display:grid}.content-risk>footer b{text-align:left}.content-risk li button{grid-template-columns:auto 1fr}.content-risk li button small{grid-column:1/-1;white-space:normal}}
 .publish-evidence__diff--verified{display:grid;gap:6px;margin:10px 0;padding:0;list-style:none}.publish-evidence__diff--verified li{display:grid;grid-template-columns:90px minmax(0,1fr);gap:3px 10px;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.72)}.publish-evidence__diff--verified li strong{font-size:11px}.publish-evidence__diff--verified li span{color:#5f5b54}.publish-evidence__diff--verified li small{grid-column:2;color:#8a5b00;overflow-wrap:anywhere}.publish-evidence__diff--verified .difference--different{border-left:3px solid #d89b00}.publish-evidence__diff--verified .difference--unavailable{border-left:3px solid #cf5d50}
+.publish-studio__channel-notice{margin:9px 0 0;padding:9px 11px;border-radius:9px;color:#775300;background:#fff6d8;font-size:10px}
 @media(max-width:767px){.publish-evidence__diff--verified li{grid-template-columns:1fr}.publish-evidence__diff--verified li small{grid-column:1}}
 </style>

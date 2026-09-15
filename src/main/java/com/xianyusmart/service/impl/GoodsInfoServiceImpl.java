@@ -117,7 +117,9 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public boolean savePublishedGoods(String xyGoodId, Long xianyuAccountId, String title,
                                       String coverPic, String infoPic, String detailInfo,
-                                      String detailUrl, String soldPrice) {
+                                      String detailUrl, String soldPrice, Integer stock,
+                                      String categoryId, String categoryName,
+                                      String publishChannel, String syncStatus) {
         LambdaQueryWrapper<XianyuGoodsInfo> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(XianyuGoodsInfo::getXianyuAccountId, xianyuAccountId)
                 .eq(XianyuGoodsInfo::getXyGoodId, xyGoodId);
@@ -135,10 +137,13 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
         goodsInfo.setDetailInfo(detailInfo);
         goodsInfo.setDetailUrl(detailUrl);
         goodsInfo.setSoldPrice(soldPrice);
+        goodsInfo.setStock(stock);
+        goodsInfo.setCategoryId(categoryId);
+        goodsInfo.setCategoryName(categoryName);
         goodsInfo.setStatus(GoodsStatus.ON_SALE.getCode());
         goodsInfo.setProductSource("SYSTEM_PUBLISH");
-        goodsInfo.setPublishChannel("QR_COOKIE");
-        goodsInfo.setSyncStatus("SUCCEEDED");
+        goodsInfo.setPublishChannel(publishChannel == null || publishChannel.isBlank() ? "QR_COOKIE" : publishChannel);
+        goodsInfo.setSyncStatus(syncStatus == null || syncStatus.isBlank() ? "PARTIAL" : syncStatus);
         goodsInfo.setCoverageStatus("PARTIAL");
         goodsInfo.setLastSyncedTime(getCurrentTimeString());
         goodsInfo.setUpdatedTime(getCurrentTimeString());

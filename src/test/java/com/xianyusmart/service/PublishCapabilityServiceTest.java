@@ -28,6 +28,7 @@ class PublishCapabilityServiceTest {
     private JdbcTemplate jdbcTemplate;
     private AccountAccessService accountAccessService;
     private PublishQaMockService publishQaMockService;
+    private PlatformWritePolicy platformWritePolicy;
     private PublishCapabilityService service;
 
     @BeforeEach
@@ -35,7 +36,9 @@ class PublishCapabilityServiceTest {
         jdbcTemplate = mock(JdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
         publishQaMockService = mock(PublishQaMockService.class);
-        service = new PublishCapabilityService(jdbcTemplate, accountAccessService, new ObjectMapper(), publishQaMockService);
+        platformWritePolicy = mock(PlatformWritePolicy.class);
+        when(platformWritePolicy.enabled()).thenReturn(true);
+        service = new PublishCapabilityService(jdbcTemplate, accountAccessService, new ObjectMapper(), publishQaMockService, platformWritePolicy);
         TenantContext.set(7L);
         when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(1);
     }
@@ -99,6 +102,57 @@ class PublishCapabilityServiceTest {
                 service.reason("DEGRADED", "NOT_APPLICABLE", "部分平台字段未同步"));
         assertEquals("隔离环境模拟凭据过期",
                 service.reason("EXPIRED", "EXPIRED", "隔离环境模拟凭据过期"));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void runtimeQrCookieExplainsVerificationRequiredInsteadOfDisappearing() {
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of());
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of(
+                "accountStatus", -2,
+                "cookieStatus", 1,
+                "tokenExpireTime", System.currentTimeMillis() + 60_000,
+                "lastCheckedTime", java.sql.Timestamp.from(java.time.Instant.now())
+        )));
+
+        Map<String, Object> capabilities = service.capabilities(9L);
+        List<Map<String, Object>> channels = (List<Map<String, Object>>) capabilities.get("channels");
+        Map<String, Object> qr = channels.stream()
+                .filter(channel -> "QR_COOKIE".equals(channel.get("channelCode"))).findFirst().orElseThrow();
+
+        assertEquals(false, qr.get("available"));
+        assertEquals("NEEDS_VERIFICATION", qr.get("connectionStatus"));
+        assertTrue(String.valueOf(qr.get("reason")).contains("重新扫码续期"));
+        assertEquals("LOCAL_RUNTIME", qr.get("source"));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void validRuntimeCredentialCanPreflightButQaEnvironmentCannotExecute() {
+        when(platformWritePolicy.enabled()).thenReturn(false);
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of());
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(Map.of(
+                "accountStatus", 1,
+                "cookieStatus", 1,
+                "tokenExpireTime", System.currentTimeMillis() + 60_000,
+                "lastCheckedTime", java.sql.Timestamp.from(java.time.Instant.now())
+        )));
+
+        Map<String, Object> capabilities = service.capabilities(9L);
+        List<Map<String, Object>> channels = (List<Map<String, Object>>) capabilities.get("channels");
+        Map<String, Object> qr = channels.stream()
+                .filter(channel -> "QR_COOKIE".equals(channel.get("channelCode"))).findFirst().orElseThrow();
+
+        assertEquals(true, qr.get("available"));
+        assertEquals(false, qr.get("executionAvailable"));
+        assertEquals(List.of("QR_COOKIE"), capabilities.get("availableChannelCodes"));
+        assertEquals(List.of(), capabilities.get("executableChannelCodes"));
+        BusinessException denied = assertThrows(BusinessException.class,
+                () -> service.requireExecutableChannel(9L, "QR_COOKIE"));
+        assertEquals(409, denied.getCode());
+        assertTrue(denied.getMessage().contains("只允许预检"));
     }
 
     private Map<String, Object> connectedQrChannel() {

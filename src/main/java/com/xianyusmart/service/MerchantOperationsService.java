@@ -416,6 +416,7 @@ public class MerchantOperationsService {
                 assertPublishReplayMatches(existingTask, payloadFingerprint);
                 return existingPublishResult(existingTask);
             }
+            publishCapabilityService.requireExecutableChannel(accountId, publishChannel);
         }
 
         Map<String, Object> contentPreflight = productContentPolicyService.validate(request);

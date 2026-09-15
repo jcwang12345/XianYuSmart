@@ -995,3 +995,12 @@
 - Product Design：桌面与 390×844 发布结果通过；审查发现并修复统一日志错误归类及筛选缺口，控制台 warning/error 为 0。
 - 测试：后端 335/335、前端类型检查、Vite 365 modules、`git diff --check` 全部通过；无新增迁移，MySQL 5.7 为 60/60。
 - 制品：`xianyusmart-4.0.0-rc.1-20260915T210202Z-7e80d11597be.jar`，SHA-256 `7e80d11597beaf5c16d3c9b153d6fe18a4749960199cea6f1191ebbbf537db1a`。详细见 `V6_WAVE18_IMPLEMENTATION_LOG.md`。
+
+## 批次 41：Wave 19 发布证据闭环与运行时通道（v4.0.0-rc.1-hotfix.16）
+
+- 关闭 `V6-W18-QA-001～004`：发布任务账号不再显示 `-`；商品事件正确呈现“商品发布”及六项字段差异；发布成功快照完整保存库存、类目、来源、通道和同步状态；商品图片失败显示可识别占位。
+- 从账号与 Cookie 当前状态投影 `QR_COOKIE / LOCAL_RUNTIME`，区分可预检与可执行；账号需要安全验证时展示重新扫码路径，不隐藏通道、不误报可发布。
+- 新增迁移 `V61__repair_verified_publish_snapshot.sql`，仅对已有已核验发布证据的缺失字段做安全回填；MySQL 5.7 验证 `61/61` 成功。
+- 后端全量测试 `338/338`；前端类型检查和 Vite 365 modules 生产构建通过；裸机 3000 健康为 `UP`。
+- Product Design 增量 QA 覆盖桌面与 390×844：任务账号、字段级发布事件、图片兜底、真实账号验证提示、加载和无横向溢出通过，控制台无 warning/error。
+- 制品：`xianyusmart-4.0.0-rc.1-20260915T212731Z-2acdb478a347.jar`，SHA-256 `2acdb478a347606fca90e3086385c8606c3b1f5c090458a01c6dd0e1854f4a01`。详细见 `V6_WAVE19_IMPLEMENTATION_LOG.md`。

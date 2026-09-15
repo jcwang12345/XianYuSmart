@@ -204,6 +204,11 @@ class ProductMatrixServiceTest {
         assertEquals("隔离 QA 已确认", qaMarketing.get("outcomeLabel"));
         assertEquals("隔离测试数据", qaMarketing.get("sourceLabel"));
         assertFalse(String.valueOf(qaMarketing.get("summary")).contains("待核对"));
+
+        Map<String, Object> publish = ProductMatrixService.eventPresentation(
+                "PUBLISH", "QA_CONFIRMED", "QA_FIXTURE", "USER", null);
+        assertEquals("商品发布", publish.get("title"));
+        assertEquals("隔离 QA 已确认", publish.get("outcomeLabel"));
     }
 
     @Test

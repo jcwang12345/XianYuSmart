@@ -360,6 +360,7 @@ public class ListingDraftService {
         if ("QA_LOCAL".equals(channelCode)) return validation;
 
         Long accountId = number(payload.get("xianyuAccountId"));
+        capabilityService.requireExecutableChannel(accountId, channelCode);
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> channels = (List<Map<String, Object>>) capabilityService.capabilities(accountId).get("channels");
         Map<String, Object> channel = channels.stream()

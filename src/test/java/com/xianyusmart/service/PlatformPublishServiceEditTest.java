@@ -153,7 +153,7 @@ class PlatformPublishServiceEditTest {
                 .thenReturn(new RiskControlService.GuardDecision(true, RiskControlService.GuardState.NORMAL,
                         0, 0, null, RiskControlService.WriteOperation.ITEM_PUBLISH));
         when(goodsInfoService.savePublishedGoods(anyString(), eq(1L), anyString(), anyString(), anyString(),
-                anyString(), anyString(), anyString())).thenReturn(true);
+                anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString())).thenReturn(true);
         when(apiCallUtils.callApiWithRetry(eq(1L), eq("mtop.taobao.idle.kgraph.property.recommend"),
                 eq("2.0"), any(), eq("cookie=ok"), isNull(), any()))
                 .thenReturn(new XianyuApiCallUtils.ApiCallResult(true,
@@ -194,7 +194,8 @@ class PlatformPublishServiceEditTest {
         assertEquals("DIFFERENT", ((Map<?, ?>) result.get("fieldDifferences")).get("status"));
         verify(goodsInfoService).savePublishedGoods(eq("12345678"), eq(1L), eq("平台规范标题"),
                 eq("https://img.alicdn.com/a.jpg?x=1"), anyString(), eq("发布详情"),
-                eq("https://www.goofish.com/item?id=12345678"), eq("12.34"));
+                eq("https://www.goofish.com/item?id=12345678"), eq("12.34"), eq(2),
+                eq("5001"), eq("软件"), eq("QR_COOKIE"), eq("SUCCEEDED"));
     }
 
     private Map<String, Object> snapshot() {

@@ -15,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -54,7 +55,7 @@ class PublishQaMockServiceTest {
     void executeSuccessPersistsQaProductWithoutPlatformWrite() throws Exception {
         GoodsInfoService goods = mock(GoodsInfoService.class);
         when(goods.savePublishedGoods(anyString(), eq(101L), anyString(), anyString(), anyString(),
-                anyString(), anyString(), anyString())).thenReturn(true);
+                anyString(), anyString(), anyString(), any(), anyString(), anyString(), anyString(), anyString())).thenReturn(true);
         PublishQaMockService service = qaService(goods);
         MerchantTask task = task(77L);
         MerchantResource material = material(Map.of(
@@ -74,7 +75,8 @@ class PublishQaMockServiceTest {
         assertEquals("SAME", ((Map<?, ?>) result.get("fieldDifferences")).get("status"));
         assertEquals("QA_FIXTURE", ((Map<?, ?>) result.get("platformReadBack")).get("dataSource"));
         verify(goods).savePublishedGoods(eq("QA-PUBLISHED-77"), eq(101L), anyString(), anyString(),
-                anyString(), anyString(), anyString(), anyString());
+                anyString(), anyString(), anyString(), anyString(), any(), anyString(), anyString(),
+                eq("QA_LOCAL"), eq("SUCCEEDED"));
     }
 
     @Test

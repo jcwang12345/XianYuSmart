@@ -191,7 +191,11 @@ public class PlatformPublishService {
             String storedDescription = valueOrDefault(platformReadBack.get("description"), description);
             BigDecimal storedAmount = decimalOrDefault(platformReadBack.get("price"), material.getAmount());
             List<String> storedImages = stringListOrDefault(platformReadBack.get("images"), cdnImages);
-            persistPublishedItem(itemId, storedTitle, storedDescription, storedAmount, storedImages, accountId);
+            Integer storedStock = integerOrDefault(platformReadBack.get("stock"), material.getStock());
+            String storedCategoryId = valueOrDefault(platformReadBack.get("categoryId"), text(category.get("catId")));
+            String storedCategoryName = valueOrDefault(platformReadBack.get("categoryName"), text(category.get("catName")));
+            persistPublishedItem(itemId, storedTitle, storedDescription, storedAmount, storedStock,
+                    storedCategoryId, storedCategoryName, storedImages, accountId);
         } catch (Exception e) {
             localSynced = false;
             log.error("平台商品发布成功但本地商品记录保存失败: itemId={}, accountId={}", itemId, accountId, e);
@@ -374,7 +378,17 @@ public class PlatformPublishService {
         return resolved.isEmpty() ? fallback : resolved;
     }
 
+    private Integer integerOrDefault(Object value, Integer fallback) {
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return value == null || text(value).isBlank() ? fallback : Integer.valueOf(text(value));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
     private void persistPublishedItem(String itemId, String title, String description, BigDecimal amount,
+                                      Integer stock, String categoryId, String categoryName,
                                       List<String> images, Long accountId) {
         String infoPic;
         try {
@@ -393,7 +407,8 @@ public class PlatformPublishService {
                 infoPic,
                 description,
                 "https://www.goofish.com/item?id=" + itemId,
-                amount.stripTrailingZeros().toPlainString())) {
+                amount.stripTrailingZeros().toPlainString(),
+                stock, categoryId, categoryName, "QR_COOKIE", "SUCCEEDED")) {
             throw new IllegalStateException("本地商品记录保存失败");
         }
     }

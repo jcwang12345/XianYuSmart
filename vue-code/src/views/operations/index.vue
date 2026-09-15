@@ -102,7 +102,11 @@ const pagedTasks = computed(() => tasks.value.slice((taskPage.value - 1) * pageS
 const pageRange = (page: number, total: number) => total
   ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)}`
   : '0'
-const accountName = (id?: number) => accounts.value.find(item => item.id === id)?.accountNote || accounts.value.find(item => item.id === id)?.unb || '-'
+const accountName = (id?: number | string) => {
+  if (id === undefined || id === null || id === '') return '-'
+  const account = accounts.value.find(item => String(item.id) === String(id))
+  return account?.accountNote || account?.unb || `账号 ${id}`
+}
 const statusText = (status: number) => ({ 0: '停用', 1: '启用', 2: '已完成', '-1': '失败' } as Record<string, string>)[String(status)] || '处理中'
 const taskStatusText = (status: number) => ({ 0: '待执行', 1: '执行中', 2: '成功', 3: '已取消', 4: '结果未知', '-1': '失败' } as Record<string, string>)[String(status)] || '-'
 const formatTime = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'

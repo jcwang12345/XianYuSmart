@@ -125,12 +125,16 @@ public class PublishQaMockService {
         }
         String itemId = "QA-PUBLISHED-" + task.getId();
         boolean localSynced = !"LOCAL_PENDING".equals(scenario);
+        Map<String, Object> readBack = qaReadBack(itemId, material, data);
         if (localSynced) {
             List<String> images = stringList(data.get("images"));
             String infoPic = json(images.stream().map(image -> Map.of("url", image)).toList());
             boolean saved = goodsInfoService.savePublishedGoods(itemId, accountId, title,
                     images.isEmpty() ? null : images.getFirst(), infoPic, text(data.get("description")),
-                    "/qa/products/" + itemId, String.valueOf(material.getAmount()));
+                    "/qa/products/" + itemId, String.valueOf(material.getAmount()),
+                    readBack.get("stock") instanceof Number number ? number.intValue() : material.getStock(),
+                    text(readBack.get("categoryId")), text(readBack.get("categoryName")),
+                    "QA_LOCAL", "SUCCEEDED");
             if (!saved) throw new IllegalStateException("QA_MOCK 本地商品记录保存失败");
         }
         Map<String, Object> result = new LinkedHashMap<>();
@@ -145,7 +149,6 @@ public class PublishQaMockService {
         result.put("outcomeState", localSynced ? "QA_CONFIRMED" : "QA_CONFIRMED_LOCAL_PENDING");
         result.put("verificationStatus", "VERIFIED");
         result.put("platformReadBackVerified", true);
-        Map<String, Object> readBack = qaReadBack(itemId, material, data);
         result.put("platformReadBack", readBack);
         result.put("fieldDifferences", qaFieldDifferences(readBack));
         if (!localSynced) {
