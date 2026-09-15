@@ -49,6 +49,8 @@ export interface MatrixAccount {
   accountStatus?: number
   connectionStatus: string
   authorizationStatus: string
+  connectionSource?: string
+  connectionLastCheckedTime?: string
   credentialExpireTime?: string
   shopNickname?: string
   shopLevel?: string

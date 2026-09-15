@@ -3,8 +3,10 @@ package com.xianyusmart.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuAccount;
+import com.xianyusmart.entity.XianyuCookie;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.XianyuAccountMapper;
+import com.xianyusmart.mapper.XianyuCookieMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,7 +36,9 @@ import static org.mockito.Mockito.atLeast;
 class AccountMatrixServiceTest {
 
     private XianyuAccountMapper accountMapper;
+    private XianyuCookieMapper cookieMapper;
     private JdbcTemplate jdbcTemplate;
+    private WebSocketService webSocketService;
     private AccountAccessService accountAccessService;
     private OperationLogService operationLogService;
     private NotificationCenterService notificationCenterService;
@@ -44,11 +48,13 @@ class AccountMatrixServiceTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void setUp() {
         accountMapper = mock(XianyuAccountMapper.class);
+        cookieMapper = mock(XianyuCookieMapper.class);
         jdbcTemplate = mock(JdbcTemplate.class);
+        webSocketService = mock(WebSocketService.class);
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
         notificationCenterService = mock(NotificationCenterService.class);
-        service = new AccountMatrixService(accountMapper, jdbcTemplate, accountAccessService,
+        service = new AccountMatrixService(accountMapper, cookieMapper, jdbcTemplate, webSocketService, accountAccessService,
                 operationLogService, notificationCenterService, new ObjectMapper());
         UserContext.set(31L, "tester", 9L);
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class))).thenReturn(List.of());
@@ -86,6 +92,46 @@ class AccountMatrixServiceTest {
         assertEquals("UNSYNCED", summary.get("riskCoverage"));
         assertNull(summary.get("knownActiveRiskCount"));
         assertEquals(2, summary.get("unsyncedProfileCount"));
+    }
+
+    @Test
+    void runtimeConnectionIsTheCurrentAccessTruthWithoutInventingPlatformCoverage() {
+        when(accountMapper.selectList(any())).thenReturn(List.of(account(5L, "真实账号")));
+        when(webSocketService.isConnected(5L)).thenReturn(true);
+        XianyuCookie cookie = new XianyuCookie();
+        cookie.setCookieStatus(1);
+        cookie.setTokenExpireTime(Instant.parse("2026-09-16T00:00:00Z").toEpochMilli());
+        when(cookieMapper.selectOne(any())).thenReturn(cookie);
+
+        Map<String, Object> row = service.listAccounts(null, null, null, 1, 20).records().getFirst();
+
+        assertEquals("CONNECTED", row.get("connectionStatus"));
+        assertEquals("AUTHORIZED", row.get("authorizationStatus"));
+        assertEquals("LOCAL_RUNTIME", row.get("connectionSource"));
+        assertEquals("UNSYNCED", row.get("profileCoverageStatus"));
+        assertEquals("UNSYNCED", row.get("riskCoverageStatus"));
+        assertNull(row.get("knownActiveRiskCount"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void runtimeAccessEvidenceNeverExposesCredentialContent() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "真实账号"));
+        when(webSocketService.isConnected(5L)).thenReturn(true);
+        XianyuCookie cookie = new XianyuCookie();
+        cookie.setCookieStatus(1);
+        cookie.setCookieText("sensitive-cookie");
+        cookie.setWebsocketToken("sensitive-token");
+        when(cookieMapper.selectOne(any())).thenReturn(cookie);
+
+        Map<String, Object> detail = service.accountDetail(5L);
+
+        List<Map<String, Object>> channels = (List<Map<String, Object>>) detail.get("accessChannels");
+        assertEquals(1, channels.size());
+        assertEquals("MESSAGE_WS", channels.getFirst().get("channelCode"));
+        assertEquals("LOCAL_RUNTIME", channels.getFirst().get("source"));
+        assertFalse(detail.toString().contains("sensitive-cookie"));
+        assertFalse(detail.toString().contains("sensitive-token"));
     }
 
     @Test

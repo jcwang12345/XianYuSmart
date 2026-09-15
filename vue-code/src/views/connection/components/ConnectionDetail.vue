@@ -5,7 +5,7 @@ import { toast } from '@/utils/toast'
 import { getConnectionStatus, startConnection, stopConnection } from '@/api/websocket'
 import type { RiskGuardStatus } from '@/api/websocket'
 import { queryOperationLogs, type OperationLog } from '@/api/operation-log'
-import { showSuccess, showError, showInfo } from '@/utils'
+import { formatTime, showSuccess, showError, showInfo } from '@/utils'
 import CredentialModal from './CredentialModal.vue'
 import ManualUpdateCookieModal from './ManualUpdateCookieModal.vue'
 import QRUpdateDialog from './QRUpdateDialog.vue'
@@ -184,11 +184,7 @@ const getCookieStatusColor = (status?: number) => {
 
 const formatTimestamp = (timestamp?: number | string) => {
   if (!timestamp) return '未设置'
-  const date = new Date(timestamp)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
-  }).replace(/\//g, '-')
+  return formatTime(timestamp).replace(/\//g, '-')
 }
 
 const isTokenExpired = (timestamp?: number) => {

@@ -6,9 +6,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuAccount;
+import com.xianyusmart.entity.XianyuCookie;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.XianyuAccountMapper;
+import com.xianyusmart.mapper.XianyuCookieMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,20 +44,26 @@ public class AccountMatrixService {
     private static final Set<String> HANDLING_STATUSES = Set.of("UNHANDLED", "ACKNOWLEDGED", "IN_PROGRESS", "DONE", "IGNORED");
 
     private final XianyuAccountMapper accountMapper;
+    private final XianyuCookieMapper cookieMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final WebSocketService webSocketService;
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
     private final NotificationCenterService notificationCenterService;
     private final ObjectMapper objectMapper;
 
     public AccountMatrixService(XianyuAccountMapper accountMapper,
+                                XianyuCookieMapper cookieMapper,
                                 JdbcTemplate jdbcTemplate,
+                                WebSocketService webSocketService,
                                 AccountAccessService accountAccessService,
                                 OperationLogService operationLogService,
                                 NotificationCenterService notificationCenterService,
                                 ObjectMapper objectMapper) {
         this.accountMapper = accountMapper;
+        this.cookieMapper = cookieMapper;
         this.jdbcTemplate = jdbcTemplate;
+        this.webSocketService = webSocketService;
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
         this.notificationCenterService = notificationCenterService;
@@ -137,7 +145,7 @@ public class AccountMatrixService {
     public Map<String, Object> accountDetail(Long accountId) {
         XianyuAccount account = requireAccount(accountId);
         Map<String, Object> result = buildAccountView(account, true);
-        result.put("accessChannels", accessChannels(accountId));
+        result.put("accessChannels", effectiveAccessChannels(accountId));
         result.put("risks", risks(accountId, null));
         result.put("datasetEvidence", Map.of(
                 "shopProfile", datasetStateWithSnapshotFallback(accountId, "SHOP_PROFILE",
@@ -349,7 +357,7 @@ public class AccountMatrixService {
 
     private Map<String, Object> buildAccountView(XianyuAccount account, boolean includeProfile) {
         Map<String, Object> profile = latestProfile(account.getId());
-        List<Map<String, Object>> channels = accessChannels(account.getId());
+        List<Map<String, Object>> channels = effectiveAccessChannels(account.getId());
         Map<String, Object> primaryChannel = channels.stream()
                 .filter(item -> "CONNECTED".equals(item.get("connectionStatus"))).findFirst()
                 .orElse(channels.isEmpty() ? null : channels.get(0));
@@ -364,6 +372,8 @@ public class AccountMatrixService {
         result.put("connectionStatus", primaryChannel == null ? "UNKNOWN" : primaryChannel.get("connectionStatus"));
         result.put("authorizationStatus", primaryChannel == null ? "UNKNOWN" : primaryChannel.get("authorizationStatus"));
         result.put("credentialExpireTime", primaryChannel == null ? null : primaryChannel.get("credentialExpireTime"));
+        result.put("connectionSource", primaryChannel == null ? "NONE" : primaryChannel.get("source"));
+        result.put("connectionLastCheckedTime", primaryChannel == null ? null : primaryChannel.get("lastCheckedTime"));
         result.put("shopNickname", profile.get("shopNickname"));
         result.put("shopLevel", profile.get("shopLevel"));
         result.put("profileSource", profile.get("source"));
@@ -504,6 +514,61 @@ public class AccountMatrixService {
             item.put("lastErrorMessage", rs.getString("last_error_message"));
             return item;
         }, requireTenant(), accountId);
+    }
+
+    /**
+     * 接入快照用于保留历史和平台适配证据；WebSocket 与最新凭证则是当前进程可直接核验的实况。
+     * 两者冲突时以实况作为 MESSAGE_WS 当前状态，但不会据此推断店铺画像、风险或平台写能力。
+     */
+    private List<Map<String, Object>> effectiveAccessChannels(Long accountId) {
+        List<Map<String, Object>> stored = accessChannels(accountId);
+        Map<String, Object> runtime = runtimeAccessChannel(accountId);
+        if (runtime == null) return stored;
+        List<Map<String, Object>> merged = new ArrayList<>();
+        merged.add(runtime);
+        stored.stream()
+                .filter(item -> !"MESSAGE_WS".equals(item.get("channelCode")))
+                .forEach(merged::add);
+        return List.copyOf(merged);
+    }
+
+    private Map<String, Object> runtimeAccessChannel(Long accountId) {
+        boolean connected = webSocketService.isConnected(accountId);
+        XianyuCookie cookie = cookieMapper.selectOne(new LambdaQueryWrapper<XianyuCookie>()
+                .eq(XianyuCookie::getXianyuAccountId, accountId)
+                .orderByDesc(XianyuCookie::getCreatedTime)
+                .last("LIMIT 1"));
+        if (!connected && cookie == null) return null;
+
+        Integer cookieStatus = cookie == null ? null : cookie.getCookieStatus();
+        String connectionStatus = connected ? "CONNECTED"
+                : cookieStatus != null && (cookieStatus == 2 || cookieStatus == 3) ? "EXPIRED"
+                : "DISCONNECTED";
+        String authorizationStatus = cookieStatus == null ? "UNKNOWN"
+                : cookieStatus == 1 ? "AUTHORIZED"
+                : cookieStatus == 3 ? "REVOKED" : "EXPIRED";
+        Instant checkedAt = Instant.now();
+        Instant expiresAt = cookie != null && cookie.getTokenExpireTime() != null
+                && cookie.getTokenExpireTime() > 0
+                ? Instant.ofEpochMilli(cookie.getTokenExpireTime()) : null;
+
+        Map<String, Object> runtime = new LinkedHashMap<>();
+        runtime.put("channelCode", "MESSAGE_WS");
+        runtime.put("channelName", "消息实时连接");
+        runtime.put("connectionStatus", connectionStatus);
+        runtime.put("authorizationStatus", authorizationStatus);
+        runtime.put("authorizationScope", "会话连接与凭证状态；商品、订单等平台能力需单独核验");
+        runtime.put("credentialExpireTime", expiresAt);
+        runtime.put("capabilities", Map.of(
+                "realtimeMessaging", connected,
+                "credentialPresent", cookie != null));
+        runtime.put("source", "LOCAL_RUNTIME");
+        runtime.put("coverageStatus", "FULL");
+        runtime.put("lastCheckedTime", checkedAt);
+        runtime.put("lastSuccessTime", connected ? checkedAt : null);
+        runtime.put("lastErrorCode", null);
+        runtime.put("lastErrorMessage", null);
+        return runtime;
     }
 
     private Map<String, Object> latestProfile(Long accountId) {
