@@ -14,6 +14,8 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.namedparam.SqlParameterSource;
 import org.springframework.dao.DuplicateKeyException;
 
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,6 +76,31 @@ class ProductMatrixServiceTest {
         assertNull(summary.get("knownStockTotal"));
         assertEquals("UNSYNCED", summary.get("metricCoverageStatus"));
         assertEquals("FILTERED_RESULT", result.get("summaryScope"));
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void filteredSummaryRequiresTheWholeWindowAndOneSourceForFullCoverage() {
+        when(namedJdbc.queryForMap(anyString(), any(SqlParameterSource.class)))
+                .thenReturn(Map.of("productCount", 1L), Map.of(
+                        "sampleRows", 1L,
+                        "sampleDays", 1L,
+                        "metricCoverageStatus", "PARTIAL"));
+
+        Map<String, Object> result = service.list(new ProductMatrixService.ProductFilter(
+                null, List.of(), null, "ALL", null, null, 7, 1, 20));
+
+        Map<String, Object> summary = (Map<String, Object>) result.get("summary");
+        assertEquals("PARTIAL", summary.get("metricCoverageStatus"));
+        Map<String, Object> coverage = (Map<String, Object>) summary.get("metricCoverage");
+        assertEquals(1, coverage.get("numerator"));
+        assertEquals(7, coverage.get("denominator"));
+
+        org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(namedJdbc, org.mockito.Mockito.times(2))
+                .queryForMap(sql.capture(), any(SqlParameterSource.class));
+        assertTrue(sql.getAllValues().get(1).contains("COUNT(DISTINCT metric.metric_date)>=:metricWindowDays"));
+        assertTrue(sql.getAllValues().get(1).contains("COUNT(DISTINCT metric.source)=1"));
     }
 
     @Test
@@ -153,6 +180,118 @@ class ProductMatrixServiceTest {
         assertEquals(0, diff.get("changedFieldCount"));
         assertEquals(List.of(), diff.get("changedFields"));
         assertEquals(Map.of(), diff.get("fields"));
+    }
+
+    @Test
+    void productEventPresentationIsChineseAndKeepsUnknownOutcomeSafe() {
+        Map<String, Object> presentation = ProductMatrixService.eventPresentation(
+                "PRICE_CHANGED", "UNKNOWN", "PLATFORM_API", "BATCH", null);
+
+        assertEquals("商品价格已变更", presentation.get("title"));
+        assertEquals("结果未知", presentation.get("outcomeLabel"));
+        assertEquals("平台接口", presentation.get("sourceLabel"));
+        assertEquals("批量任务", presentation.get("originLabel"));
+        assertTrue(String.valueOf(presentation.get("summary")).contains("结果未知"));
+        assertTrue(String.valueOf(presentation.get("nextAction")).contains("不要自动重试"));
+
+        Map<String, Object> qaMarketing = ProductMatrixService.eventPresentation(
+                "MARKETING_APPLIED", "QA_CONFIRMED", "QA_FIXTURE", "USER", null);
+        assertEquals("营销配置已应用", qaMarketing.get("title"));
+        assertEquals("隔离 QA 已确认", qaMarketing.get("outcomeLabel"));
+        assertEquals("隔离测试数据", qaMarketing.get("sourceLabel"));
+        assertFalse(String.valueOf(qaMarketing.get("summary")).contains("待核对"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void emptyMetricWindowUsesNullAndExplainsScopeCheckAndNextAction() {
+        Instant checkedAt = Instant.parse("2026-09-16T02:00:00Z");
+        Map<String, Object> row = mapWithNulls(
+                "sampleDays", 0, "sources", null,
+                "exposureCount", null, "visitorCount", null, "clickCount", null,
+                "favoriteCount", null, "inquiryCount", null, "paidOrderCount", null,
+                "paidAmount", null);
+
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(row, 7, 101L,
+                "QA-GOODS-0999", checkedAt);
+
+        assertNull(metric.get("exposureCount"));
+        assertNull(metric.get("sampleDays"));
+        assertEquals("UNSYNCED", metric.get("coverageStatus"));
+        assertEquals("UNSYNCED", metric.get("source"));
+        assertEquals(checkedAt, metric.get("lastCheckedAt"));
+        Map<String, Object> scope = (Map<String, Object>) metric.get("scope");
+        assertEquals("当前商品 · 最近 7 天", scope.get("label"));
+        Map<String, Object> emptyState = (Map<String, Object>) metric.get("emptyState");
+        assertTrue(String.valueOf(emptyState.get("reason")).contains("不代表"));
+        assertTrue(String.valueOf(emptyState.get("nextAction")).contains("核对"));
+        Map<String, Object> fields = (Map<String, Object>) metric.get("fields");
+        Map<String, Object> exposure = (Map<String, Object>) fields.get("exposureCount");
+        assertNull(exposure.get("value"));
+        assertTrue(String.valueOf(exposure.get("definition")).contains("展示"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void partialMetricWindowReturnsPerFieldCoverageAndSource() {
+        Instant syncedAt = Instant.parse("2026-09-16T01:30:00Z");
+        Map<String, Object> row = mapWithNulls(
+                "sampleDays", 2, "sources", "PLATFORM_API", "coverageStatus", "PARTIAL",
+                "dataStartDate", LocalDate.parse("2026-09-15"), "dataDate", LocalDate.parse("2026-09-16"),
+                "syncedAt", syncedAt, "exposureCount", 35L, "exposureDays", 2,
+                "visitorCount", 8L, "visitorDays", 2, "clickCount", null, "clickDays", 0,
+                "favoriteCount", 1L, "favoriteDays", 1, "inquiryCount", 2L, "inquiryDays", 2,
+                "paidOrderCount", 1L, "paidOrderDays", 2, "paidAmount", new java.math.BigDecimal("12.00"),
+                "paidAmountDays", 1);
+
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(row, 7, 101L,
+                "QA-GOODS-0999", Instant.parse("2026-09-16T02:00:00Z"));
+
+        assertEquals(35L, metric.get("exposureCount"));
+        assertEquals("PARTIAL", metric.get("coverageStatus"));
+        assertEquals("PLATFORM_API", metric.get("source"));
+        Map<String, Object> coverage = (Map<String, Object>) metric.get("coverage");
+        assertEquals(2, coverage.get("numerator"));
+        assertEquals(7, coverage.get("denominator"));
+        Map<String, Object> fields = (Map<String, Object>) metric.get("fields");
+        Map<String, Object> click = (Map<String, Object>) fields.get("clickCount");
+        assertNull(click.get("value"));
+        Map<String, Object> clickCoverage = (Map<String, Object>) click.get("coverage");
+        assertEquals("UNSYNCED", clickCoverage.get("status"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void emptyTimelineExplainsExactScopeAndLastCheck() {
+        Instant checkedAt = Instant.parse("2026-09-16T02:00:00Z");
+        Map<String, Object> state = ProductMatrixService.timelineState(
+                101L, "QA-GOODS-0999", List.of(), checkedAt);
+
+        assertEquals(0, state.get("eventCount"));
+        assertEquals(checkedAt, state.get("lastCheckedAt"));
+        assertNull(state.get("latestEventAt"));
+        Map<String, Object> scope = (Map<String, Object>) state.get("scope");
+        assertEquals(101L, scope.get("accountId"));
+        assertEquals("QA-GOODS-0999", scope.get("goodsId"));
+        Map<String, Object> emptyState = (Map<String, Object>) state.get("emptyState");
+        assertTrue(String.valueOf(emptyState.get("nextAction")).contains("同步"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void productListEmptyStateExplainsFilterScopeAndRecovery() {
+        Instant checkedAt = Instant.parse("2026-09-16T02:00:00Z");
+        ProductMatrixService.ProductFilter filter = new ProductMatrixService.ProductFilter(
+                "没有的商品", List.of(101L), null, "OFF_SHELF", "PLATFORM_API", null, 7, 1, 20);
+
+        Map<String, Object> state = ProductMatrixService.productListEmptyState(filter, checkedAt);
+
+        assertEquals("当前筛选范围没有匹配商品", state.get("title"));
+        assertEquals(checkedAt, state.get("lastCheckedAt"));
+        Map<String, Object> scope = (Map<String, Object>) state.get("scope");
+        assertEquals(List.of(101L), scope.get("accountIds"));
+        assertEquals("OFF_SHELF", scope.get("statusBucket"));
+        assertTrue(String.valueOf(state.get("nextAction")).contains("清除"));
     }
 
     @Test

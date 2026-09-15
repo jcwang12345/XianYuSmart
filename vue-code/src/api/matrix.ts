@@ -318,6 +318,14 @@ export interface ProductMatrixPage extends MatrixPage<MatrixProduct> {
   summary: Record<string, number | null>
   summaryScope: string
   dataNotice: string
+  lastCheckedAt: string
+  emptyState?: {
+    title: string
+    scope: Record<string, unknown> & { label: string }
+    lastCheckedAt: string
+    reason: string
+    nextAction: string
+  } | null
 }
 
 export function queryProductMatrix(filter: ProductFilter) {

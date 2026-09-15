@@ -47,6 +47,69 @@ public class ProductMatrixService {
             "CANCEL_REQUESTED", "CANCELLED");
     private static final Set<String> ITEM_RETRYABLE = Set.of("FAILED");
     private static final int MAX_BATCH_ITEMS = 1000;
+    private static final Map<String, String> PRODUCT_EVENT_LABELS = Map.ofEntries(
+            Map.entry("LOCAL_DETAILS_EDIT", "本地商品资料已编辑"),
+            Map.entry("PRODUCT_LOCAL_EDIT", "本地商品资料已编辑"),
+            Map.entry("AUTOMATION_CONFIG_UPDATED", "自动化配置已更新"),
+            Map.entry("AUTOMATION_CONFIG_CHANGED", "自动化配置已更新"),
+            Map.entry("PRODUCT_AUTOMATION_UPDATE", "自动化配置已更新"),
+            Map.entry("PRODUCT_SYNC_STARTED", "商品同步开始"),
+            Map.entry("PRODUCT_SYNC_SUCCEEDED", "商品同步成功"),
+            Map.entry("PRODUCT_SYNC_FAILED", "商品同步失败"),
+            Map.entry("PRODUCT_SYNC_EXCEPTION", "商品同步异常"),
+            Map.entry("PRODUCT_PUBLISHED", "商品已发布"),
+            Map.entry("PRODUCT_PUBLISH", "商品发布"),
+            Map.entry("PRODUCT_PUBLISH_FAILED", "商品发布失败"),
+            Map.entry("PRODUCT_ON_SALE", "商品已上架"),
+            Map.entry("PRODUCT_OFF_SHELF", "商品已下架"),
+            Map.entry("PRICE_CHANGED", "商品价格已变更"),
+            Map.entry("STOCK_CHANGED", "商品库存已变更"),
+            Map.entry("POLISH_SUCCEEDED", "商品擦亮成功"),
+            Map.entry("BATCH_ITEM_SUCCEEDED", "批量子任务成功"),
+            Map.entry("BATCH_ITEM_FAILED", "批量子任务失败"),
+            Map.entry("BATCH_NOTIFICATION", "批量任务通知已生成"),
+            Map.entry("BATCH_CANCEL", "批量任务已取消"),
+            Map.entry("PRODUCT_BATCH_CANCEL", "批量任务已取消"),
+            Map.entry("PRODUCT_BATCH_CREATE", "批量任务已创建"),
+            Map.entry("PRODUCT_BATCH_RETRY", "批量失败项已重试"),
+            Map.entry("PRODUCT_BATCH_SUCCEEDED", "批量任务成功"),
+            Map.entry("PRODUCT_BATCH_PARTIAL", "批量任务部分成功"),
+            Map.entry("PRODUCT_BATCH_FAILED", "批量任务失败"),
+            Map.entry("MARKETING_DRAFT_SAVED", "营销草稿已保存"),
+            Map.entry("MARKETING_DRAFT_CHANGED", "营销草稿已保存"),
+            Map.entry("MARKETING_APPLIED", "营销配置已应用"));
+    private static final Map<String, String> PRODUCT_OUTCOME_LABELS = Map.ofEntries(
+            Map.entry("LOCAL_SUCCESS", "本地处理成功"),
+            Map.entry("PLATFORM_CONFIRMED", "平台已确认"),
+            Map.entry("PLATFORM_REQUESTED", "已请求平台"),
+            Map.entry("SUCCEEDED", "成功"),
+            Map.entry("FAILED", "失败"),
+            Map.entry("UNKNOWN", "结果未知"),
+            Map.entry("SKIPPED", "已跳过"),
+            Map.entry("CANCEL_REQUESTED", "正在取消"),
+            Map.entry("CANCELLED", "已取消"),
+            Map.entry("QA_CONFIRMED", "隔离 QA 已确认"),
+            Map.entry("QUEUED", "已排队"),
+            Map.entry("RUNNING", "处理中"));
+    private static final Map<String, String> PRODUCT_SOURCE_LABELS = Map.ofEntries(
+            Map.entry("LOCAL", "本地记录"),
+            Map.entry("LOCAL_CACHE", "本地缓存"),
+            Map.entry("PLATFORM_API", "平台接口"),
+            Map.entry("PLATFORM_WEB", "平台页面"),
+            Map.entry("PLATFORM_LIST_SYNC", "平台列表同步"),
+            Map.entry("WEBHOOK", "平台事件"),
+            Map.entry("SYSTEM", "系统任务"),
+            Map.entry("QA_MOCK", "隔离测试"),
+            Map.entry("QA_FIXTURE", "隔离测试数据"),
+            Map.entry("MULTIPLE", "多个数据源"),
+            Map.entry("UNSYNCED", "尚未同步"));
+    private static final Map<String, String> PRODUCT_ORIGIN_LABELS = Map.ofEntries(
+            Map.entry("USER", "人工操作"),
+            Map.entry("SYSTEM", "系统任务"),
+            Map.entry("WEBHOOK", "平台回调"),
+            Map.entry("BATCH", "批量任务"),
+            Map.entry("SYNC", "同步任务"),
+            Map.entry("QA", "隔离测试"));
 
     private final JdbcTemplate jdbcTemplate;
     private final NamedParameterJdbcTemplate namedJdbc;
@@ -109,8 +172,37 @@ public class ProductMatrixService {
         response.put("summaryScope", "FILTERED_RESULT");
         response.put("summary", filteredSummary(withStatus, normalized.metricWindowDays()));
         response.put("metricWindowDays", normalized.metricWindowDays());
+        Instant checkedAt = Instant.now();
+        response.put("lastCheckedAt", checkedAt);
+        response.put("emptyState", safeTotal == 0 ? productListEmptyState(normalized, checkedAt) : null);
         response.put("dataNotice", "商品主字段来自本地缓存；每行 source、syncStatus、coverageStatus、lastSyncedTime 表示其平台同步证据。");
         return response;
+    }
+
+    static Map<String, Object> productListEmptyState(ProductFilter filter, Instant checkedAt) {
+        boolean narrowed = filter.search() != null || !filter.accountIds().isEmpty() || filter.groupId() != null
+                || !"ALL".equals(filter.statusBucket()) || filter.source() != null || filter.publishChannel() != null;
+        Map<String, Object> scope = new LinkedHashMap<>();
+        scope.put("search", filter.search());
+        scope.put("accountIds", filter.accountIds());
+        scope.put("groupId", filter.groupId());
+        scope.put("statusBucket", filter.statusBucket());
+        scope.put("source", filter.source());
+        scope.put("publishChannel", filter.publishChannel());
+        scope.put("metricWindowDays", filter.metricWindowDays());
+        scope.put("label", narrowed ? "当前组合筛选范围" : "当前经营主体的全部可见商品");
+        Map<String, Object> empty = new LinkedHashMap<>();
+        empty.put("title", narrowed ? "当前筛选范围没有匹配商品" : "当前范围尚无商品");
+        empty.put("scope", scope);
+        empty.put("lastCheckedAt", checkedAt);
+        empty.put("reason", narrowed
+                ? "已按当前账号、状态、来源和关键词组合检查，没有找到匹配记录。"
+                : "已检查当前权限范围内的商品缓存，没有找到可验证商品记录。");
+        empty.put("nextAction", narrowed
+                ? "清除部分筛选条件后重试，或切换账号确认商品同步范围。"
+                : "先选择账号同步商品；未同步数据不会显示成 0。"
+        );
+        return empty;
     }
 
     public Map<String, Object> capabilities(Long accountId, String goodsId) {
@@ -278,11 +370,14 @@ public class ProductMatrixService {
         response.put("skus", skuRows);
         response.put("skuEvidence", skuEvidence);
         response.put("marketing", marketing(accountId, goodsId));
-        response.put("metrics", Map.of(
-                "day1", metricWindow(accountId, goodsId, 1),
-                "day7", metricWindow(accountId, goodsId, 7),
-                "day30", metricWindow(accountId, goodsId, 30)));
-        response.put("timeline", events(accountId, goodsId, 200));
+        Map<String, Object> metricWindows = new LinkedHashMap<>();
+        metricWindows.put("day1", metricWindow(accountId, goodsId, 1));
+        metricWindows.put("day7", metricWindow(accountId, goodsId, 7));
+        metricWindows.put("day30", metricWindow(accountId, goodsId, 30));
+        response.put("metrics", metricWindows);
+        List<Map<String, Object>> timeline = events(accountId, goodsId, 200);
+        response.put("timeline", timeline);
+        response.put("timelineState", timelineState(accountId, goodsId, timeline, Instant.now()));
         response.put("capabilities", capabilities(accountId, goodsId));
         response.put("refreshModes", List.of(
                 Map.of("code", "CACHE", "label", "读取缓存", "available", true),
@@ -991,36 +1086,51 @@ public class ProductMatrixService {
 
     private Map<String, Object> metricWindow(Long accountId, String goodsId, int days) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                SELECT COUNT(*) sample_days,
+                SELECT COUNT(DISTINCT metric_date) sample_days,
                        SUM(exposure_count) exposure_count, SUM(visitor_count) visitor_count,
                        SUM(click_count) click_count, SUM(favorite_count) favorite_count,
                        SUM(inquiry_count) inquiry_count, SUM(paid_order_count) paid_order_count,
                        SUM(paid_amount) paid_amount,
+                       COUNT(exposure_count) exposure_days, COUNT(visitor_count) visitor_days,
+                       COUNT(click_count) click_days, COUNT(favorite_count) favorite_days,
+                       COUNT(inquiry_count) inquiry_days, COUNT(paid_order_count) paid_order_days,
+                       COUNT(paid_amount) paid_amount_days,
                        CASE WHEN COUNT(*)=0 THEN 'UNSYNCED'
-                            WHEN SUM(coverage_status='FULL')=COUNT(*) THEN 'FULL' ELSE 'PARTIAL' END coverage_status,
-                       MAX(metric_date) data_date, MAX(synced_at) synced_at
+                            WHEN COUNT(DISTINCT metric_date)>=? AND COUNT(DISTINCT source)=1
+                                 AND SUM(coverage_status='FULL')=COUNT(*)
+                            THEN 'FULL' ELSE 'PARTIAL' END coverage_status,
+                       MIN(metric_date) data_start_date, MAX(metric_date) data_date, MAX(synced_at) synced_at,
+                       COUNT(DISTINCT source) source_count,
+                       GROUP_CONCAT(DISTINCT source ORDER BY source SEPARATOR ',') sources
                   FROM xianyu_goods_metric_daily
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
                    AND metric_date >= DATE_SUB(CURRENT_DATE(), INTERVAL ? DAY)
                 """, (rs, rowNum) -> {
-            int samples = rs.getInt("sample_days");
-            Map<String, Object> metric = new LinkedHashMap<>();
-            metric.put("windowDays", days);
-            metric.put("sampleDays", samples);
-            metric.put("exposureCount", samples == 0 ? null : nullableLong(rs, "exposure_count"));
-            metric.put("visitorCount", samples == 0 ? null : nullableLong(rs, "visitor_count"));
-            metric.put("clickCount", samples == 0 ? null : nullableLong(rs, "click_count"));
-            metric.put("favoriteCount", samples == 0 ? null : nullableLong(rs, "favorite_count"));
-            metric.put("inquiryCount", samples == 0 ? null : nullableLong(rs, "inquiry_count"));
-            metric.put("paidOrderCount", samples == 0 ? null : nullableLong(rs, "paid_order_count"));
-            metric.put("paidAmount", samples == 0 ? null : rs.getBigDecimal("paid_amount"));
-            metric.put("coverageStatus", samples == 0 ? "UNSYNCED" : rs.getString("coverage_status"));
-            metric.put("dataDate", samples == 0 || rs.getDate("data_date") == null
-                    ? null : rs.getDate("data_date").toLocalDate());
-            metric.put("syncedAt", samples == 0 ? null : instant(rs, "synced_at"));
-            return metric;
-        }, requireTenant(), accountId, goodsId, Math.max(0, days - 1));
-        return rows.getFirst();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("sampleDays", rs.getInt("sample_days"));
+            row.put("exposureCount", nullableLong(rs, "exposure_count"));
+            row.put("visitorCount", nullableLong(rs, "visitor_count"));
+            row.put("clickCount", nullableLong(rs, "click_count"));
+            row.put("favoriteCount", nullableLong(rs, "favorite_count"));
+            row.put("inquiryCount", nullableLong(rs, "inquiry_count"));
+            row.put("paidOrderCount", nullableLong(rs, "paid_order_count"));
+            row.put("paidAmount", rs.getBigDecimal("paid_amount"));
+            row.put("exposureDays", rs.getInt("exposure_days"));
+            row.put("visitorDays", rs.getInt("visitor_days"));
+            row.put("clickDays", rs.getInt("click_days"));
+            row.put("favoriteDays", rs.getInt("favorite_days"));
+            row.put("inquiryDays", rs.getInt("inquiry_days"));
+            row.put("paidOrderDays", rs.getInt("paid_order_days"));
+            row.put("paidAmountDays", rs.getInt("paid_amount_days"));
+            row.put("coverageStatus", rs.getString("coverage_status"));
+            row.put("dataStartDate", rs.getDate("data_start_date") == null ? null : rs.getDate("data_start_date").toLocalDate());
+            row.put("dataDate", rs.getDate("data_date") == null ? null : rs.getDate("data_date").toLocalDate());
+            row.put("syncedAt", instant(rs, "synced_at"));
+            row.put("sourceCount", rs.getInt("source_count"));
+            row.put("sources", rs.getString("sources"));
+            return row;
+        }, days, requireTenant(), accountId, goodsId, Math.max(0, days - 1));
+        return metricWindowResponse(rows.getFirst(), days, accountId, goodsId, Instant.now());
     }
 
     private Map<String, Object> eventRow(ResultSet rs) throws SQLException {
@@ -1044,7 +1154,134 @@ public class ProductMatrixService {
         event.put("platformResponseCode", rs.getString("platform_response_code"));
         event.put("errorMessage", rs.getString("error_message"));
         event.put("createdTime", instant(rs, "created_time"));
+        event.put("presentation", eventPresentation(
+                rs.getString("event_type"), rs.getString("outcome_state"), rs.getString("data_source"),
+                rs.getString("event_origin"), rs.getString("error_message")));
         return event;
+    }
+
+    static Map<String, Object> eventPresentation(String eventType, String outcomeState, String dataSource,
+                                                 String eventOrigin, String errorMessage) {
+        String title = PRODUCT_EVENT_LABELS.getOrDefault(eventType, "其他商品事件");
+        String outcomeLabel = PRODUCT_OUTCOME_LABELS.getOrDefault(outcomeState, "状态待核对");
+        String sourceLabel = PRODUCT_SOURCE_LABELS.getOrDefault(dataSource, "其他来源");
+        String originLabel = PRODUCT_ORIGIN_LABELS.getOrDefault(eventOrigin, "来源待核对");
+        String nextAction;
+        if ("UNKNOWN".equals(outcomeState)) {
+            nextAction = "先到平台核对实际结果；确认前不要自动重试。";
+        } else if ("FAILED".equals(outcomeState)) {
+            nextAction = "查看失败原因，修复后使用新的请求重新执行。";
+        } else if ("PLATFORM_REQUESTED".equals(outcomeState) || "RUNNING".equals(outcomeState)) {
+            nextAction = "等待平台回执；超时后进入结果未知并人工核对。";
+        } else if ("CANCEL_REQUESTED".equals(outcomeState)) {
+            nextAction = "等待未开始项停止；已请求平台的项目仍需核对结果。";
+        } else {
+            nextAction = "当前无需额外处理。";
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("title", title);
+        result.put("outcomeLabel", outcomeLabel);
+        result.put("sourceLabel", sourceLabel);
+        result.put("originLabel", originLabel);
+        result.put("summary", title + "，结果：" + outcomeLabel + (errorMessage == null || errorMessage.isBlank() ? "" : "；原因：" + errorMessage));
+        result.put("nextAction", nextAction);
+        return result;
+    }
+
+    static Map<String, Object> timelineState(Long accountId, String goodsId,
+                                             List<Map<String, Object>> timeline, Instant checkedAt) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("scope", Map.of("accountId", accountId, "goodsId", goodsId,
+                "label", "当前店铺 · 当前商品"));
+        result.put("eventCount", timeline.size());
+        result.put("lastCheckedAt", checkedAt);
+        result.put("latestEventAt", timeline.isEmpty() ? null : timeline.getFirst().get("createdTime"));
+        result.put("source", "LOCAL_DATABASE");
+        if (timeline.isEmpty()) {
+            result.put("emptyState", Map.of(
+                    "title", "当前范围尚无商品事件",
+                    "reason", "已检查当前店铺和商品的本地事件记录，没有找到可验证事件。",
+                    "nextAction", "完成商品同步、本地编辑、自动化保存或批量任务后，可在这里核对事件证据。"));
+        } else {
+            result.put("emptyState", null);
+        }
+        return result;
+    }
+
+    static Map<String, Object> metricWindowResponse(Map<String, Object> row, int days, Long accountId,
+                                                    String goodsId, Instant checkedAt) {
+        int samples = integer(row.get("sampleDays")) == null ? 0 : integer(row.get("sampleDays"));
+        String sourceCsv = string(row.get("sources"));
+        List<String> sources = sourceCsv == null || sourceCsv.isBlank() ? List.of() : List.of(sourceCsv.split(","));
+        String source = sources.isEmpty() ? "UNSYNCED" : sources.size() == 1 ? sources.getFirst() : "MULTIPLE";
+        String coverageStatus = samples == 0 ? "UNSYNCED" : string(row.get("coverageStatus"));
+        Object syncedAt = samples == 0 ? null : row.get("syncedAt");
+        Map<String, Object> metric = new LinkedHashMap<>();
+        metric.put("windowDays", days);
+        metric.put("sampleDays", samples == 0 ? null : samples);
+        metric.put("exposureCount", samples == 0 ? null : row.get("exposureCount"));
+        metric.put("visitorCount", samples == 0 ? null : row.get("visitorCount"));
+        metric.put("clickCount", samples == 0 ? null : row.get("clickCount"));
+        metric.put("favoriteCount", samples == 0 ? null : row.get("favoriteCount"));
+        metric.put("inquiryCount", samples == 0 ? null : row.get("inquiryCount"));
+        metric.put("paidOrderCount", samples == 0 ? null : row.get("paidOrderCount"));
+        metric.put("paidAmount", samples == 0 ? null : row.get("paidAmount"));
+        metric.put("coverageStatus", coverageStatus);
+        metric.put("coverage", coverage(coverageStatus, samples, days));
+        metric.put("source", source);
+        metric.put("sources", sources);
+        metric.put("dataStartDate", samples == 0 ? null : row.get("dataStartDate"));
+        metric.put("dataDate", samples == 0 ? null : row.get("dataDate"));
+        metric.put("syncedAt", syncedAt);
+        metric.put("lastCheckedAt", checkedAt);
+        metric.put("scope", Map.of("accountId", accountId, "goodsId", goodsId, "windowDays", days,
+                "label", "当前商品 · 最近 " + days + " 天"));
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("exposureCount", metricField(metric.get("exposureCount"), source, coverageStatus,
+                integer(row.get("exposureDays")), days, syncedAt, "商品在所选时间范围内获得展示的累计次数"));
+        fields.put("visitorCount", metricField(metric.get("visitorCount"), source, coverageStatus,
+                integer(row.get("visitorDays")), days, syncedAt, "进入商品详情的去重访客累计数"));
+        fields.put("clickCount", metricField(metric.get("clickCount"), source, coverageStatus,
+                integer(row.get("clickDays")), days, syncedAt, "可验证数据源记录的商品点击累计数"));
+        fields.put("favoriteCount", metricField(metric.get("favoriteCount"), source, coverageStatus,
+                integer(row.get("favoriteDays")), days, syncedAt, "商品新增收藏的累计次数"));
+        fields.put("inquiryCount", metricField(metric.get("inquiryCount"), source, coverageStatus,
+                integer(row.get("inquiryDays")), days, syncedAt, "与该商品关联的新咨询累计数"));
+        fields.put("paidOrderCount", metricField(metric.get("paidOrderCount"), source, coverageStatus,
+                integer(row.get("paidOrderDays")), days, syncedAt, "与该商品关联且已支付的订单累计数"));
+        fields.put("paidAmount", metricField(metric.get("paidAmount"), source, coverageStatus,
+                integer(row.get("paidAmountDays")), days, syncedAt, "与该商品关联且金额已同步的支付金额合计"));
+        metric.put("fields", fields);
+        if (samples == 0) {
+            metric.put("emptyState", Map.of(
+                    "title", "最近 " + days + " 天指标尚未同步",
+                    "reason", "已检查本地指标缓存，没有找到可验证样本；这不代表曝光、访客或成交为 0。",
+                    "nextAction", "平台指标适配器接入前请到闲鱼端核对，当前系统不会据此生成经营结论。"));
+        } else {
+            metric.put("emptyState", null);
+        }
+        return metric;
+    }
+
+    private static Map<String, Object> metricField(Object value, String source, String coverageStatus,
+                                                   Integer knownDays, int windowDays, Object syncedAt,
+                                                   String definition) {
+        Map<String, Object> field = new LinkedHashMap<>();
+        field.put("value", value);
+        field.put("source", source);
+        field.put("coverage", coverage(value == null ? "UNSYNCED" : coverageStatus,
+                knownDays == null ? 0 : knownDays, windowDays));
+        field.put("syncedAt", syncedAt);
+        field.put("definition", definition);
+        return field;
+    }
+
+    private static Map<String, Object> coverage(String status, int numerator, int denominator) {
+        Map<String, Object> coverage = new LinkedHashMap<>();
+        coverage.put("status", status == null ? "UNSYNCED" : status);
+        coverage.put("numerator", Math.max(0, Math.min(numerator, denominator)));
+        coverage.put("denominator", denominator);
+        return coverage;
     }
 
     private Map<String, Object> batchRow(ResultSet rs) throws SQLException {
@@ -1234,12 +1471,17 @@ public class ProductMatrixService {
                        SUM(goods.coverage_status='UNSYNCED') unsyncedCount,
                        MAX(goods.last_synced_time) lastSyncedTime
                 """ + query.fromWhere(), query.params());
-        MapSqlParameterSource metricParams = copy(query.params()).addValue("metricDays", Math.max(0, metricWindowDays - 1));
+        MapSqlParameterSource metricParams = copy(query.params())
+                .addValue("metricDays", Math.max(0, metricWindowDays - 1))
+                .addValue("metricWindowDays", metricWindowDays);
         Map<String, Object> metrics = namedJdbc.queryForMap("""
                 SELECT COUNT(metric.id) sampleRows, COUNT(DISTINCT metric.metric_date) sampleDays,
                        MAX(metric.metric_date) dataDate, MAX(metric.synced_at) metricSyncedAt,
                        CASE WHEN COUNT(metric.id)=0 THEN 'UNSYNCED'
-                            WHEN SUM(metric.coverage_status='FULL')=COUNT(metric.id) THEN 'FULL' ELSE 'PARTIAL' END metricCoverageStatus,
+                            WHEN COUNT(DISTINCT metric.metric_date)>=:metricWindowDays
+                                 AND COUNT(DISTINCT metric.source)=1
+                                 AND SUM(metric.coverage_status='FULL')=COUNT(metric.id)
+                            THEN 'FULL' ELSE 'PARTIAL' END metricCoverageStatus,
                        SUM(metric.exposure_count) exposureCount, SUM(metric.visitor_count) visitorCount,
                        SUM(metric.inquiry_count) inquiryCount, SUM(metric.paid_order_count) paidOrderCount
                 FROM (SELECT goods.tenant_id, goods.xianyu_account_id, goods.xy_good_id
@@ -1248,9 +1490,12 @@ public class ProductMatrixService {
                 + " AND metric.xy_goods_id=filtered.xy_good_id AND metric.metric_date>=DATE_SUB(CURRENT_DATE(), INTERVAL :metricDays DAY)", metricParams);
         Map<String, Object> summary = new LinkedHashMap<>(aggregate);
         long samples = metrics.get("sampleRows") instanceof Number n ? n.longValue() : 0;
+        int sampleDays = samples == 0 || !(metrics.get("sampleDays") instanceof Number n) ? 0 : n.intValue();
+        String metricCoverageStatus = samples == 0 ? "UNSYNCED" : string(metrics.get("metricCoverageStatus"));
         summary.put("metricWindowDays", metricWindowDays);
-        summary.put("metricCoverageStatus", samples == 0 ? "UNSYNCED" : metrics.get("metricCoverageStatus"));
-        summary.put("metricSampleDays", samples == 0 ? null : metrics.get("sampleDays"));
+        summary.put("metricCoverageStatus", metricCoverageStatus);
+        summary.put("metricCoverage", coverage(metricCoverageStatus, sampleDays, metricWindowDays));
+        summary.put("metricSampleDays", samples == 0 ? null : sampleDays);
         summary.put("metricDataDate", samples == 0 ? null : metrics.get("dataDate"));
         summary.put("metricSyncedAt", samples == 0 ? null : metrics.get("metricSyncedAt"));
         summary.put("exposureCount", samples == 0 ? null : metrics.get("exposureCount"));

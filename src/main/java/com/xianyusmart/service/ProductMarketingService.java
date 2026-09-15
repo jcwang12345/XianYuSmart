@@ -344,7 +344,7 @@ public class ProductMarketingService {
         if (value == null) throw new BusinessException(400, label + "不能为空");
         if (value.scale() > 2) throw new BusinessException(400, label + "最多保留两位小数");
         if (value.signum() <= 0) throw new BusinessException(400, label + "必须大于 0");
-        if (value.compareTo(productPrice) >= 0) throw new BusinessException(400, label + "必须严格低于商品原价 " + productPrice.toPlainString());
+        if (value.compareTo(productPrice) >= 0) throw new BusinessException(400, label + "必须严格低于商品售价 " + productPrice.toPlainString());
         return value.setScale(2, RoundingMode.UNNECESSARY);
     }
 

@@ -34,6 +34,19 @@ class ProductMarketingServiceTest {
     }
 
     @Test
+    void fanPriceBoundaryMessageUsesProductSalePriceTerminology() {
+        BusinessException equalPrice = assertThrows(BusinessException.class, () -> service.validate(
+                config("19.00", null, null, false, null, null, false, null), money("19.00")));
+        BusinessException abovePrice = assertThrows(BusinessException.class, () -> service.validate(
+                config("19.01", null, null, false, null, null, false, null), money("19.00")));
+
+        assertEquals("全部粉丝价必须严格低于商品售价 19.00", equalPrice.getMessage());
+        assertEquals("全部粉丝价必须严格低于商品售价 19.00", abovePrice.getMessage());
+        assertEquals(money("18.99"), service.validate(
+                config("18.99", null, null, false, null, null, false, null), money("19.00")).fanAllPrice());
+    }
+
+    @Test
     void disabledActivitiesDiscardStaleInputsInsteadOfWritingZero() {
         ProductMarketingService.Configuration result = service.validate(
                 config(null, null, null, false, "5.00", 3, false, 10), money("20.00"));
