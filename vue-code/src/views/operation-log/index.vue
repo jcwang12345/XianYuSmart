@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { inject, defineComponent, h, onMounted } from 'vue'
+import { computed, inject, defineComponent, h, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useOperationLog } from './useOperationLog'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
+import { hasPermission } from '@/utils/permission'
 import './operation-log.css'
 import '@/styles/header-selectors.css'
 
@@ -27,6 +30,38 @@ const diffValue = (value: unknown) => value === null || value === undefined || v
   ? '（空）' : typeof value === 'boolean' ? (value ? '开启' : '关闭')
     : typeof value === 'object' ? JSON.stringify(value) : String(value)
 
+const route = useRoute()
+const router = useRouter()
+const detailReturnScroll = ref(0)
+const appScrollRoot = () => document.querySelector<HTMLElement>('.app-main')
+const outcomeText = (value?: string) => ({
+  LOCAL_SUCCESS: '本地处理成功',
+  PLATFORM_CONFIRMED: '平台已确认',
+  PLATFORM_REJECTED: '平台已拒绝',
+  PARTIAL_SUCCESS: '部分成功',
+  FAILED: '处理失败',
+  UNKNOWN: '结果未知',
+  SKIPPED: '已跳过'
+}[value || ''] || '其他结果')
+const sourceText = (value?: string) => ({
+  LOCAL: '本地系统',
+  SYSTEM: '系统任务',
+  PLATFORM_API: '闲鱼接口',
+  PLATFORM_WEB: '闲鱼网页',
+  WEBHOOK: '平台回调',
+  QA_MOCK: '隔离测试'
+}[value || ''] || '其他来源')
+const moduleText = (value?: string) => ({
+  ACCOUNT: '账号', MESSAGE: '消息', ORDER: '订单', GOODS: '商品', SYSTEM: '系统',
+  PRODUCT: '商品', BUYER: '买家', BATCH: '批量任务', BACKUP: '备份恢复'
+}[value || ''] || '其他模块')
+const targetText = (value?: string) => ({
+  ACCOUNT: '账号', ORDER: '订单', GOODS: '商品', PRODUCT: '商品', BUYER: '买家',
+  BATCH: '批量任务', BATCH_TASK: '批量任务', BACKUP: '备份', BACKUP_RESTORE_JOB: '备份恢复任务',
+  MESSAGE: '消息', GOODS_KNOWLEDGE_VERSION: '商品知识版本', AI_HANDOFF: '人工接待任务',
+  PUBLISH: '发布任务', REFUND: '售后记录', RETURN_SHIPMENT: '售后运单'
+}[value || ''] || '业务对象')
+
 const {
   loading,
   accounts,
@@ -36,6 +71,19 @@ const {
   page,
   pageSize,
   totalPages,
+  filterType,
+  filterModule,
+  filterStatus,
+  filterOutcome,
+  filterOperator,
+  filterRequestId,
+  filterKeyword,
+  filterStart,
+  filterEnd,
+  exporting,
+  operationTypes,
+  operationModules,
+  operationStatuses,
   isMobile,
   mobileView,
   selectedAccountForMobile,
@@ -44,19 +92,71 @@ const {
   selectAccount,
   handlePageChange,
   handleRefresh,
+  handleFilter,
+  handleResetFilter,
+  handleExport,
   viewDetail,
   closeDetail,
   goBackToAccounts,
   getAccountAvatar,
   getAccountName,
   getOperationTypeText,
+  getOperationDescriptionText,
   getOperationTypeClass,
   getStatusText,
   getStatusClass,
   formatTime,
   formatDuration,
-  handleAccountSelectChange
+  handleAccountSelectChange,
+  loadLogs
 } = useOperationLog()
+
+const detailSummary = computed(() => {
+  if (!detailLog.value) return ''
+  const log = detailLog.value
+  const operator = log.operatorUsername || '系统任务'
+  const target = log.targetId ? `${targetText(log.targetType)} ${log.targetId}` : moduleText(log.operationModule)
+  return `${operator} 于 ${formatTime(log.createTime)} 对${target}执行“${getOperationTypeText(log.operationType)}”，结果为${getStatusText(log.operationStatus)}。`
+})
+
+const openLogDetail = async (log: typeof logs.value[number], fromDeepLink = false) => {
+  if (!fromDeepLink) detailReturnScroll.value = appScrollRoot()?.scrollTop || 0
+  viewDetail(log)
+  await router.replace({ query: { ...route.query, accountId: String(log.xianyuAccountId), logId: String(log.id), page: String(page.value) } })
+  await nextTick()
+}
+
+const closeLogDetail = async () => {
+  const scrollTop = detailReturnScroll.value
+  closeDetail()
+  await router.replace({ query: { ...route.query, logId: undefined } })
+  await nextTick()
+  appScrollRoot()?.scrollTo({ top: scrollTop })
+}
+useModalFocusTrap(detailDialogVisible, () => document.querySelector<HTMLElement>('.ol__dialog'), () => void closeLogDetail())
+
+watch([() => logs.value.map(log => String(log.id)).join(','), () => route.query.logId], async () => {
+  const logId = Number(route.query.logId)
+  if (!Number.isSafeInteger(logId) || logId <= 0 || detailLog.value) return
+  const match = logs.value.find(log => Number(log.id) === logId)
+  if (match) await openLogDetail(match, true)
+}, { immediate: true, flush: 'post' })
+watch([selectedAccountId, page, filterType, filterModule, filterStatus, filterOutcome, filterOperator, filterRequestId, filterKeyword, filterStart, filterEnd], ([accountId, currentPage]) => {
+  void router.replace({ query: {
+    ...route.query,
+    accountId: accountId ? String(accountId) : undefined,
+    page: currentPage === 1 ? undefined : String(currentPage),
+    operationType: filterType.value || undefined,
+    operationModule: filterModule.value || undefined,
+    operationStatus: filterStatus.value === '' ? undefined : String(filterStatus.value),
+    outcomeState: filterOutcome.value || undefined,
+    operatorUsername: filterOperator.value.trim() || undefined,
+    requestId: filterRequestId.value.trim() || undefined,
+    keyword: filterKeyword.value.trim() || undefined,
+    startTime: filterStart.value || undefined,
+    endTime: filterEnd.value || undefined
+  } })
+})
 
 // 导航栏注入
 const setHeaderContent = inject<(content: any) => void>('setHeaderContent')
@@ -94,8 +194,27 @@ const HeaderSelectors = defineComponent({
   }
 })
 
-onMounted(() => {
+onMounted(async () => {
+  const accountId = Number(route.query.accountId)
+  const requestedPage = Number(route.query.page)
+  if (Number.isSafeInteger(accountId) && accountId > 0) selectedAccountId.value = accountId
+  if (Number.isSafeInteger(requestedPage) && requestedPage > 0) page.value = requestedPage
+  filterType.value = String(route.query.operationType || '')
+  filterModule.value = String(route.query.operationModule || '')
+  filterStatus.value = String(route.query.operationStatus || '')
+  filterOutcome.value = String(route.query.outcomeState || '')
+  filterOperator.value = String(route.query.operatorUsername || '')
+  filterRequestId.value = String(route.query.requestId || '')
+  filterKeyword.value = String(route.query.keyword || '')
+  filterStart.value = String(route.query.startTime || '')
+  filterEnd.value = String(route.query.endTime || '')
   if (setHeaderContent) setHeaderContent(HeaderSelectors)
+  if (selectedAccountId.value) {
+    await loadLogs()
+    const logId = Number(route.query.logId)
+    const match = logs.value.find(log => Number(log.id) === logId)
+    if (Number.isSafeInteger(logId) && logId > 0 && match && !detailLog.value) await openLogDetail(match, true)
+  }
 })
 </script>
 
@@ -210,6 +329,35 @@ onMounted(() => {
         </template>
 
         <template v-if="selectedAccountId">
+          <section class="ol__filter-bar" aria-label="审计筛选范围">
+            <input v-model="filterKeyword" class="ol__filter-input ol__filter-input--wide" placeholder="描述、对象 ID 或请求 ID" @keyup.enter="handleFilter">
+            <select v-model="filterType" class="ol__select" aria-label="操作类型" @change="handleFilter">
+              <option v-for="option in operationTypes" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <select v-model="filterModule" class="ol__select" aria-label="业务模块" @change="handleFilter">
+              <option v-for="option in operationModules" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+            <select v-model="filterStatus" class="ol__select" aria-label="处理状态" @change="handleFilter">
+              <option v-for="option in operationStatuses" :key="String(option.value)" :value="option.value">{{ option.label }}</option>
+            </select>
+            <select v-model="filterOutcome" class="ol__select" aria-label="结果层" @change="handleFilter">
+              <option value="">全部结果层</option>
+              <option value="LOCAL_SUCCESS">本地成功</option>
+              <option value="PLATFORM_CONFIRMED">平台确认</option>
+              <option value="PARTIAL">部分成功</option>
+              <option value="FAILED">失败</option>
+              <option value="UNKNOWN">结果未知</option>
+            </select>
+            <input v-model="filterOperator" class="ol__filter-input" placeholder="操作者" @keyup.enter="handleFilter">
+            <input v-model="filterRequestId" class="ol__filter-input" placeholder="精确请求 ID" @keyup.enter="handleFilter">
+            <input v-model="filterStart" class="ol__filter-input" type="datetime-local" aria-label="开始时间">
+            <input v-model="filterEnd" class="ol__filter-input" type="datetime-local" aria-label="结束时间">
+            <button class="btn btn--secondary btn--sm" @click="handleFilter">查询</button>
+            <button class="btn btn--ghost btn--sm" @click="handleResetFilter">重置</button>
+            <button v-if="hasPermission('action:audit-export')" class="btn btn--secondary btn--sm" :disabled="exporting" @click="handleExport">
+              {{ exporting ? '导出中' : '导出当前范围' }}
+            </button>
+          </section>
           <!-- Desktop Logs Table -->
           <div v-if="!isMobile" class="ol__logs-content">
             <!-- Loading -->
@@ -240,7 +388,7 @@ onMounted(() => {
                     </span>
                   </td>
                   <td>
-                    <span class="ol__log-desc" :title="log.operationDesc">{{ log.operationDesc || '-' }}</span>
+                    <span class="ol__log-desc" :title="getOperationDescriptionText(log)">{{ getOperationDescriptionText(log) }}</span>
                   </td>
                   <td>{{ log.operatorUsername || '系统任务' }}</td>
                   <td>
@@ -252,7 +400,7 @@ onMounted(() => {
                     <span class="ol__log-time">{{ formatTime(log.createTime) }}</span>
                   </td>
                   <td>
-                    <button class="ol__log-action-btn" @click="viewDetail(log)">
+                    <button class="ol__log-action-btn" @click="openLogDetail(log)">
                       详情
                     </button>
                   </td>
@@ -281,7 +429,7 @@ onMounted(() => {
                 v-for="log in logs"
                 :key="log.id"
                 class="ol__log-card"
-                @click="viewDetail(log)"
+                @click="openLogDetail(log)"
               >
                 <div class="ol__log-card-header">
                   <span class="ol__log-type" :class="`ol__log-type--${getOperationTypeClass(log.operationType)}`">
@@ -291,7 +439,7 @@ onMounted(() => {
                     {{ getStatusText(log.operationStatus) }}
                   </span>
                 </div>
-                <div class="ol__log-card-desc">{{ log.operationDesc || '-' }}</div>
+                <div class="ol__log-card-desc">{{ getOperationDescriptionText(log) }}</div>
                 <div class="ol__log-card-meta">
                   <span class="ol__log-card-meta-item">
                     <IconClock />
@@ -358,12 +506,15 @@ onMounted(() => {
       <div
         v-if="detailDialogVisible && detailLog"
         class="ol__dialog-overlay"
-        @click.self="closeDetail"
+        @click.self="closeLogDetail"
       >
-        <div class="ol__dialog">
+        <div class="ol__dialog" role="dialog" aria-modal="true" aria-labelledby="operation-detail-title" tabindex="-1">
           <div class="ol__dialog-header">
-            <h3 class="ol__dialog-title">操作详情</h3>
-            <button class="ol__dialog-close" @click="closeDetail">
+            <div>
+              <span class="ol__dialog-eyebrow">审计 360 档案</span>
+              <h3 id="operation-detail-title" class="ol__dialog-title">{{ getOperationTypeText(detailLog.operationType) }}</h3>
+            </div>
+            <button class="ol__dialog-close" aria-label="关闭操作详情" @click="closeLogDetail">
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
@@ -371,6 +522,16 @@ onMounted(() => {
             </button>
           </div>
           <div class="ol__dialog-body">
+            <section class="ol__detail-summary" aria-label="操作结论">
+              <div>
+                <span>处理结论</span>
+                <strong>{{ detailSummary }}</strong>
+              </div>
+              <span class="ol__log-status" :class="`ol__log-status--${getStatusClass(detailLog.operationStatus)}`">
+                {{ getStatusText(detailLog.operationStatus) }}
+              </span>
+            </section>
+            <section class="ol__detail-grid" aria-label="操作事实">
             <div class="ol__detail-row">
               <span class="ol__detail-label">操作类型</span>
               <span class="ol__detail-value">
@@ -381,7 +542,7 @@ onMounted(() => {
             </div>
             <div class="ol__detail-row">
               <span class="ol__detail-label">操作描述</span>
-              <span class="ol__detail-value">{{ detailLog.operationDesc || '-' }}</span>
+              <span class="ol__detail-value">{{ getOperationDescriptionText(detailLog) }}</span>
             </div>
             <div class="ol__detail-row">
               <span class="ol__detail-label">操作人</span>
@@ -397,11 +558,11 @@ onMounted(() => {
             </div>
             <div v-if="detailLog.operationModule" class="ol__detail-row">
               <span class="ol__detail-label">模块</span>
-              <span class="ol__detail-value">{{ detailLog.operationModule }}</span>
+              <span class="ol__detail-value">{{ moduleText(detailLog.operationModule) }}</span>
             </div>
             <div v-if="detailLog.targetType" class="ol__detail-row">
               <span class="ol__detail-label">目标类型</span>
-              <span class="ol__detail-value">{{ detailLog.targetType }}</span>
+              <span class="ol__detail-value">{{ targetText(detailLog.targetType) }}</span>
             </div>
             <div v-if="detailLog.targetId" class="ol__detail-row">
               <span class="ol__detail-label">目标ID</span>
@@ -417,7 +578,7 @@ onMounted(() => {
             </div>
             <div v-if="detailLog.outcomeState || detailLog.dataSource" class="ol__detail-row">
               <span class="ol__detail-label">结果 / 来源</span>
-              <span class="ol__detail-value">{{ detailLog.outcomeState || '—' }} · {{ detailLog.dataSource || '—' }}</span>
+              <span class="ol__detail-value">{{ outcomeText(detailLog.outcomeState) }} · {{ sourceText(detailLog.dataSource) }}</span>
             </div>
             <div v-if="detailChanges(detailLog.fieldDiffJson).length" class="ol__detail-row ol__detail-row--stack">
               <span class="ol__detail-label">字段变更</span>
@@ -437,18 +598,30 @@ onMounted(() => {
               <span class="ol__detail-label">时间</span>
               <span class="ol__detail-value">{{ formatTime(detailLog.createTime) }}</span>
             </div>
-            <div v-if="detailLog.requestParams" class="ol__detail-row" style="flex-direction:column;gap:6px;">
-              <span class="ol__detail-label">请求参数</span>
-              <pre class="ol__detail-pre">{{ detailLog.requestParams }}</pre>
-            </div>
-            <div v-if="detailLog.responseResult" class="ol__detail-row" style="flex-direction:column;gap:6px;">
-              <span class="ol__detail-label">响应结果</span>
-              <pre class="ol__detail-pre">{{ detailLog.responseResult }}</pre>
-            </div>
-            <div v-if="detailLog.errorMessage" class="ol__detail-row" style="flex-direction:column;gap:6px;">
-              <span class="ol__detail-label">错误信息</span>
-              <pre class="ol__detail-pre ol__detail-pre--error">{{ detailLog.errorMessage }}</pre>
-            </div>
+            </section>
+            <section v-if="detailLog.errorMessage" class="ol__detail-error" role="alert">
+              <strong>失败原因</strong><span>{{ detailLog.errorMessage }}</span>
+            </section>
+            <details v-if="detailLog.requestParams || detailLog.responseResult || detailLog.errorMessage || detailLog.fieldDiffJson" class="ol__advanced">
+              <summary>查看脱敏高级详情与机器码</summary>
+              <dl class="ol__machine-facts">
+                <div><dt>操作代码</dt><dd>{{ detailLog.operationType }}</dd></div>
+                <div><dt>结果代码</dt><dd>{{ detailLog.outcomeState || '—' }}</dd></div>
+                <div><dt>来源代码</dt><dd>{{ detailLog.dataSource || '—' }}</dd></div>
+              </dl>
+              <div v-if="detailLog.requestParams" class="ol__detail-row ol__detail-row--stack">
+                <span class="ol__detail-label">请求参数</span>
+                <pre class="ol__detail-pre">{{ detailLog.requestParams }}</pre>
+              </div>
+              <div v-if="detailLog.responseResult" class="ol__detail-row ol__detail-row--stack">
+                <span class="ol__detail-label">响应结果</span>
+                <pre class="ol__detail-pre">{{ detailLog.responseResult }}</pre>
+              </div>
+              <div v-if="detailLog.errorMessage" class="ol__detail-row ol__detail-row--stack">
+                <span class="ol__detail-label">错误信息</span>
+                <pre class="ol__detail-pre ol__detail-pre--error">{{ detailLog.errorMessage }}</pre>
+              </div>
+            </details>
           </div>
         </div>
       </div>

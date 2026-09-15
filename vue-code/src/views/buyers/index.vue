@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { getAccountList } from '@/api/account'
 import {
   getBuyerProfileDetail,
@@ -14,17 +15,22 @@ import { queryOrderRateDetails, type OrderRateDetail } from '@/api/order'
 import type { Account } from '@/types'
 import { hasPermission } from '@/utils/permission'
 import { toast } from '@/utils/toast'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 type DetailTab = 'orders' | 'messages' | 'goods' | 'ratings'
 
+const route = useRoute()
+const router = useRouter()
+const routeAccountId = Number(route.query.accountId)
 const accounts = ref<Account[]>([])
-const accountId = ref<number>()
-const keyword = ref('')
-const blockedFilter = ref('')
+const accountId = ref<number | undefined>(Number.isSafeInteger(routeAccountId) && routeAccountId > 0 ? routeAccountId : undefined)
+const keyword = ref(String(route.query.search || ''))
+const blockedFilter = ref(String(route.query.blocked || ''))
 const loading = ref(false)
 const profiles = ref<BuyerProfile[]>([])
 const total = ref(0)
-const pageNum = ref(1)
+const routePage = Number(route.query.page)
+const pageNum = ref(Number.isSafeInteger(routePage) && routePage > 0 ? routePage : 1)
 const pageSize = 30
 const editing = ref<BuyerProfile>()
 const detailLoading = ref(false)
@@ -35,6 +41,7 @@ const selectedOrderId = ref('')
 const ratingLoading = ref(false)
 const ratingMap = ref<Record<string, OrderRateDetail>>({})
 const detailRequestId = ref(0)
+const detailReturnScroll = ref(0)
 const form = ref({
   buyerUserName: '',
   tagsText: '',
@@ -68,6 +75,13 @@ const loadAccounts = async () => {
 
 const loadProfiles = async () => {
   loading.value = true
+  void router.replace({ query: {
+    ...route.query,
+    accountId: accountId.value ? String(accountId.value) : undefined,
+    search: keyword.value.trim() || undefined,
+    blocked: blockedFilter.value || undefined,
+    page: pageNum.value === 1 ? undefined : String(pageNum.value)
+  } })
   try {
     const response = await getBuyerProfiles({
       xianyuAccountId: accountId.value,
@@ -123,15 +137,19 @@ const save = async () => {
   }
 }
 
-const openDetail = async (profile: BuyerProfile) => {
+const appScrollRoot = () => document.querySelector<HTMLElement>('.app-main')
+const openDetail = async (profile: BuyerProfile, fromDeepLink = false) => {
   const requestId = ++detailRequestId.value
+  if (!fromDeepLink) detailReturnScroll.value = appScrollRoot()?.scrollTop || 0
   detailProfile.value = profile
   detail.value = undefined
-  detailTab.value = 'orders'
+  const requestedTab = String(route.query.detailTab || 'orders')
+  detailTab.value = (['orders', 'messages', 'goods', 'ratings'].includes(requestedTab) ? requestedTab : 'orders') as DetailTab
   selectedOrderId.value = ''
   ratingMap.value = {}
   ratingLoading.value = false
   detailLoading.value = true
+  await router.replace({ query: { ...route.query, buyerAccountId: String(profile.xianyuAccountId), buyerId: profile.buyerUserId, detailTab: detailTab.value } })
   try {
     const response = await getBuyerProfileDetail({
       xianyuAccountId: profile.xianyuAccountId,
@@ -145,11 +163,16 @@ const openDetail = async (profile: BuyerProfile) => {
   }
 }
 
-const closeDetail = () => {
+const closeDetail = async () => {
+  const scrollTop = detailReturnScroll.value
   detailRequestId.value++
   detailProfile.value = undefined
   detail.value = undefined
+  await router.replace({ query: { ...route.query, buyerAccountId: undefined, buyerId: undefined, detailTab: undefined } })
+  await nextTick()
+  appScrollRoot()?.scrollTo({ top: scrollTop })
 }
+useModalFocusTrap(computed(() => Boolean(detailProfile.value)), () => document.querySelector<HTMLElement>('.detail-drawer'), () => void closeDetail())
 
 const showOrderConversation = (order: BuyerOrder) => {
   selectedOrderId.value = order.orderId || ''
@@ -206,9 +229,18 @@ const formatTime = (value?: string | number) => {
 const messageSender = (message: BuyerMessage) =>
   message.direction === 'BUYER' ? (message.senderUserName || detailProfile.value?.buyerUserName || '买家') : '商家'
 
+watch(detailTab, tab => {
+  if (detailProfile.value) void router.replace({ query: { ...route.query, detailTab: tab } })
+})
+
 onMounted(async () => {
   await loadAccounts()
   await loadProfiles()
+  const buyerAccountId = Number(route.query.buyerAccountId)
+  const buyerId = String(route.query.buyerId || '')
+  if (Number.isSafeInteger(buyerAccountId) && buyerAccountId > 0 && buyerId) {
+    await openDetail({ xianyuAccountId: buyerAccountId, buyerUserId: buyerId } as BuyerProfile, true)
+  }
 })
 </script>
 
@@ -291,22 +323,22 @@ onMounted(async () => {
 
     <Teleport to="body">
       <div v-if="detailProfile" class="detail-overlay" @click.self="closeDetail">
-        <aside class="detail-drawer">
+        <aside class="detail-drawer" role="dialog" aria-modal="true" aria-labelledby="buyer-detail-title" tabindex="-1">
           <header class="detail-header">
             <div class="buyer-identity">
               <span class="avatar">{{ (detailProfile.buyerUserName || '买').slice(0, 1) }}</span>
-              <span><small>买家全链路</small><h3>{{ detailProfile.buyerUserName || '未命名买家' }}</h3><p>{{ detailProfile.buyerUserId }}</p></span>
+              <span><small>买家全链路</small><h3 id="buyer-detail-title">{{ detailProfile.buyerUserName || '未命名买家' }}</h3><p>{{ detailProfile.buyerUserId }}</p></span>
             </div>
             <div class="detail-header-actions">
               <button v-if="hasPermission('action:buyer-write')" @click="openEdit(detailProfile)">编辑资料</button>
-              <button class="close" @click="closeDetail">×</button>
+              <button class="close" aria-label="关闭买家详情" @click="closeDetail">×</button>
             </div>
           </header>
 
           <div v-if="detailLoading" class="detail-loading">正在汇总订单、会话、商品与评价...</div>
           <template v-else-if="detail">
             <section class="profile-strip">
-              <div><span>成交金额</span><strong>¥{{ detail.profile.totalAmount || '0.00' }}</strong></div>
+              <div><span>成交金额</span><strong>{{ detail.profile.totalAmount == null ? '—' : `¥${detail.profile.totalAmount}` }}</strong></div>
               <div><span>订单</span><strong>{{ detail.orders.length }}</strong></div>
               <div><span>消息</span><strong>{{ detail.messages.length }}</strong></div>
               <div><span>关联商品</span><strong>{{ detail.goods.length }}</strong></div>
@@ -318,11 +350,11 @@ onMounted(async () => {
               <p v-if="detail.profile.note">{{ detail.profile.note }}</p>
             </section>
 
-            <nav class="detail-tabs">
-              <button :class="{ active: detailTab === 'orders' }" @click="detailTab = 'orders'">订单 {{ detail.orders.length }}</button>
-              <button :class="{ active: detailTab === 'messages' }" @click="detailTab = 'messages'">会话 {{ detail.messages.length }}</button>
-              <button :class="{ active: detailTab === 'goods' }" @click="detailTab = 'goods'">商品 {{ detail.goods.length }}</button>
-              <button :class="{ active: detailTab === 'ratings' }" @click="detailTab = 'ratings'">评价记录</button>
+            <nav class="detail-tabs" role="tablist" aria-label="买家详情栏目">
+              <button :class="{ active: detailTab === 'orders' }" role="tab" :aria-selected="detailTab === 'orders'" @click="detailTab = 'orders'">订单 {{ detail.orders.length }}</button>
+              <button :class="{ active: detailTab === 'messages' }" role="tab" :aria-selected="detailTab === 'messages'" @click="detailTab = 'messages'">会话 {{ detail.messages.length }}</button>
+              <button :class="{ active: detailTab === 'goods' }" role="tab" :aria-selected="detailTab === 'goods'" @click="detailTab = 'goods'">商品 {{ detail.goods.length }}</button>
+              <button :class="{ active: detailTab === 'ratings' }" role="tab" :aria-selected="detailTab === 'ratings'" @click="detailTab = 'ratings'">评价记录</button>
             </nav>
 
             <main class="detail-body">
@@ -441,7 +473,7 @@ button { border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 14px; backg
 .buyer-row { cursor: pointer; }.buyer-row:hover { background: #f9fafb; }.buyer-row:focus-visible { outline-offset: -2px; }td strong, td small { display: block; }td small { color: #98a2b3; margin-top: 4px; }.tag { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 4px; background: #fff8d9; color: #9a6200; font-size: 12px; }
 .muted { color: #98a2b3; }.status { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; }.status.normal { color: #067647; background: #ecfdf3; }.status.blocked { color: #b42318; background: #fef3f2; }.link { padding: 0; border: 0; color: #9a6200; }.link.secondary { margin-left: 10px; color: #475467; }
 .empty { padding: 80px 20px; text-align: center; color: #98a2b3; }.empty.compact { padding: 40px 16px; }.pager { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; font-size: 13px; color: #667085; }.pager div { display: flex; align-items: center; gap: 10px; }
-.detail-overlay { position: fixed; inset: 0; z-index: 2100; display: flex; justify-content: flex-end; background: rgba(16,24,40,.42); }.detail-drawer { display: flex; flex-direction: column; width: min(1180px, 92vw); height: 100%; background: #f7f8fa; box-shadow: -18px 0 50px rgba(16,24,40,.16); }
+.detail-overlay { position: fixed; inset: 0; z-index: 2100; display: grid; place-items: center; padding: 22px; background: rgba(16,24,40,.46); backdrop-filter: blur(4px); }.detail-drawer { display: flex; flex-direction: column; width: min(1440px, calc(100vw - 44px)); height: min(900px, calc(100vh - 44px)); min-height: 620px; overflow: hidden; border: 1px solid #fff; border-radius: 22px; background: #f7f8fa; box-shadow: 0 30px 90px rgba(16,24,40,.28); }
 .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e4e7ec; background: #fff; }.buyer-identity { display: flex; align-items: center; gap: 12px; }.buyer-identity .avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 9px; background: #9a6200; color: #fff; font-weight: 700; }.buyer-identity small, .buyer-identity p { color: #98a2b3; font-size: 11px; }.buyer-identity h3 { margin: 2px 0; font-size: 18px; }.detail-header-actions { display: flex; align-items: center; gap: 7px; }.close { padding: 2px 8px; border: 0; font-size: 23px; }
 .detail-loading { padding: 100px 20px; text-align: center; color: #667085; }.profile-strip { display: grid; grid-template-columns: repeat(5, 1fr); margin: 12px 14px 0; border: 1px solid #e4e7ec; border-radius: 9px; background: #fff; }.profile-strip > div { padding: 13px 15px; border-right: 1px solid #eaecf0; }.profile-strip > div:last-child { border-right: 0; }.profile-strip span { display: block; color: #667085; font-size: 11px; }.profile-strip strong { display: block; margin-top: 5px; font-size: 18px; }.profile-strip .danger { color: #b42318; }
 .profile-note { margin: 10px 14px 0; padding: 10px 13px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.profile-note p { margin-top: 6px; color: #667085; font-size: 12px; }.detail-tabs { display: flex; gap: 2px; margin: 12px 14px 0; padding: 4px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.detail-tabs button { flex: 1; border: 0; }.detail-tabs button.active { background: #fff8d9; color: #9a6200; font-weight: 600; }
@@ -451,6 +483,6 @@ button { border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 14px; backg
 .goods-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }.goods-grid article { display: grid; grid-template-columns: 62px 1fr; gap: 12px; padding: 13px; }.goods-grid img, .goods-placeholder { grid-row: 1 / 3; width: 62px; height: 62px; border-radius: 7px; object-fit: cover; }.goods-placeholder { display: grid; place-items: center; background: #f2f4f7; color: #98a2b3; font-size: 12px; }.goods-grid strong, .goods-grid small { display: block; }.goods-grid small { margin-top: 4px; color: #98a2b3; font-size: 11px; }.goods-grid dl { grid-column: 2; display: flex; gap: 20px; margin: 0; }.goods-grid dl div { display: flex; gap: 5px; }.goods-grid dt { color: #98a2b3; font-size: 11px; }.goods-grid dd { margin: 0; font-size: 11px; }
 .sync-tip { padding: 9px 12px; border: 1px solid #efd77f; border-radius: 7px; background: #eff4ff; color: #9a6200; font-size: 12px; }.rating-card { overflow: hidden; }.rating-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid #eaecf0; }.rating-card header strong, .rating-card header small { display: block; }.rating-card header small, .rating-card header > span:last-child { margin-top: 3px; color: #667085; font-size: 11px; }.rating-status { display: flex; align-items: center; gap: 8px; }.rating-status button { padding: 4px 8px; color: #9a6200; font-size: 11px; }.rating-columns { display: grid; grid-template-columns: 1fr 1fr; }.rating-columns > section { padding: 13px 14px; }.rating-columns > section + section { border-left: 1px solid #eaecf0; }.rating-columns h4 { margin-bottom: 9px; font-size: 12px; }.rate-content { padding: 9px 10px; border-radius: 6px; background: #f9fafb; }.rate-content + .rate-content { margin-top: 6px; }.rate-content p { font-size: 12px; line-height: 1.55; }.rate-content small { display: block; margin-top: 5px; color: #98a2b3; font-size: 10px; }.clear-filter { justify-self: start; }
 .overlay { position: fixed; inset: 0; z-index: 2300; display: grid; place-items: center; padding: 20px; background: rgba(16,24,40,.45); }.dialog { width: min(520px, 100%); padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px rgba(16,24,40,.2); }.dialog header, .dialog footer, .switch-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }.dialog header { margin-bottom: 18px; }.dialog header p, .dialog label, .switch-row small { color: #667085; font-size: 13px; }.dialog label { display: grid; gap: 6px; margin: 13px 0; }.dialog label input, .dialog label textarea { width: 100%; }.dialog .switch-row { display: flex; padding: 12px; border: 1px solid #eaecf0; border-radius: 8px; color: #344054; }.switch-row span, .switch-row small { display: block; }.switch-row input { width: auto; }.dialog footer { justify-content: flex-end; margin-top: 18px; }
-@media (max-width: 1000px) { .toolbar { align-items: stretch; flex-direction: column; }.filters > * { flex: 1; min-width: 140px; }.filters input { width: auto; }.detail-drawer { width: 96vw; }.profile-strip { grid-template-columns: repeat(3, 1fr); }.profile-strip > div:nth-child(3) { border-right: 0; }.order-main { grid-template-columns: 1fr 1fr; }.goods-grid { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .buyer-page { padding: 10px; }.detail-drawer { width: 100%; }.detail-header { padding: 12px; }.profile-strip { grid-template-columns: 1fr 1fr; }.profile-strip > div { border-bottom: 1px solid #eaecf0; }.detail-tabs { overflow-x: auto; }.detail-tabs button { min-width: 90px; }.order-main { grid-template-columns: 1fr; }.order-links { align-items: stretch; flex-direction: column; }.conversation-view > header { align-items: stretch; flex-direction: column; }.conversation-view select { max-width: none; }.message { width: 85%; }.rating-columns { grid-template-columns: 1fr; }.rating-columns > section + section { border-left: 0; border-top: 1px solid #eaecf0; } }
+@media (max-width: 1000px) { .toolbar { align-items: stretch; flex-direction: column; }.filters > * { flex: 1; min-width: 140px; }.filters input { width: auto; }.profile-strip { grid-template-columns: repeat(3, 1fr); }.profile-strip > div:nth-child(3) { border-right: 0; }.order-main { grid-template-columns: 1fr 1fr; }.goods-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .buyer-page { padding: 10px; }.detail-overlay { padding: 0; }.detail-drawer { width: 100vw; height: 100dvh; min-height: 0; border: 0; border-radius: 0; }.detail-header { padding: 12px; }.profile-strip { grid-template-columns: 1fr 1fr; }.profile-strip > div { border-bottom: 1px solid #eaecf0; }.detail-tabs { overflow-x: auto; }.detail-tabs button { min-width: 90px; }.order-main { grid-template-columns: 1fr; }.order-links { align-items: stretch; flex-direction: column; }.conversation-view > header { align-items: stretch; flex-direction: column; }.conversation-view select { max-width: none; }.message { width: 85%; }.rating-columns { grid-template-columns: 1fr; }.rating-columns > section + section { border-left: 0; border-top: 1px solid #eaecf0; } }
 </style>

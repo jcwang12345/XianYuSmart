@@ -63,7 +63,7 @@ public class OperationLogController {
     /** 导出本次权限范围内的审计数据；导出动作本身也会记入审计。 */
     @PostMapping("/export")
     public ResponseEntity<byte[]> export(@RequestBody QueryLogsReqDTO reqDTO) {
-        String csv = operationLogService.exportCsv(reqDTO.toQuery());
+        String csv = operationLogService.exportCsv(reqDTO.toQuery(), reqDTO.getExportRequestId());
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.attachment().filename("operation-audit.csv", StandardCharsets.UTF_8).build().toString())
@@ -108,6 +108,7 @@ public class OperationLogController {
         private Long startTime;           // 毫秒时间戳（可选）
         private Long endTime;             // 毫秒时间戳（可选）
         private String keyword;            // 描述、目标或请求ID关键词
+        private String exportRequestId;    // 导出动作自己的请求ID，不参与日志筛选
         private Integer page;             // 页码（默认1）
         private Integer pageSize;         // 每页数量（默认20）
 

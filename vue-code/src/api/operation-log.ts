@@ -1,4 +1,4 @@
-import { request } from '@/utils/request';
+import service, { getAuthToken, request } from '@/utils/request';
 
 // 操作记录
 export interface OperationLog {
@@ -39,6 +39,7 @@ export interface QueryLogsRequest {
   startTime?: number;
   endTime?: number;
   keyword?: string;
+  exportRequestId?: string;
   page?: number;
   pageSize?: number;
 }
@@ -59,6 +60,14 @@ export function queryOperationLogs(data: QueryLogsRequest) {
     method: 'POST',
     data
   });
+}
+
+export async function exportOperationLogs(data: QueryLogsRequest) {
+  const response = await service.post('/operation-log/export', data, {
+    responseType: 'blob',
+    headers: { Authorization: `Bearer ${getAuthToken() || ''}` }
+  });
+  return response.data as Blob;
 }
 
 // 删除旧日志

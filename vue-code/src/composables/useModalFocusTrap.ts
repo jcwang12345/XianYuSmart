@@ -16,7 +16,11 @@ type BackgroundState = {
 }
 
 /** 为自定义弹窗补齐聚焦、背景隔离、Tab 循环、Esc 关闭和焦点恢复。 */
-export function useModalFocusTrap(open: Ref<boolean>, modal: Ref<HTMLElement | null> | (() => HTMLElement | null)) {
+export function useModalFocusTrap(
+  open: Ref<boolean>,
+  modal: Ref<HTMLElement | null> | (() => HTMLElement | null),
+  onRequestClose?: () => void,
+) {
   let opener: HTMLElement | null = null
   let background: BackgroundState[] = []
 
@@ -77,7 +81,8 @@ export function useModalFocusTrap(open: Ref<boolean>, modal: Ref<HTMLElement | n
     if (!open.value) return
     if (event.key === 'Escape') {
       event.preventDefault()
-      open.value = false
+      if (onRequestClose) onRequestClose()
+      else open.value = false
       return
     }
     if (event.key !== 'Tab') return

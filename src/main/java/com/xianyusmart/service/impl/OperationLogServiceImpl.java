@@ -151,8 +151,9 @@ public class OperationLogServiceImpl implements OperationLogService {
     }
 
     @Override
-    public String exportCsv(AuditLogQuery query) {
-        if (query == null || trim(query.requestId()) == null) {
+    public String exportCsv(AuditLogQuery query, String exportRequestId) {
+        String safeExportRequestId = trim(exportRequestId);
+        if (safeExportRequestId == null) {
             throw new BusinessException(400, "导出审计需要requestId");
         }
         AuditLogQuery normalized = query == null
@@ -182,7 +183,7 @@ public class OperationLogServiceImpl implements OperationLogService {
         audit.setOperationStatus(1);
         audit.setOutcomeState("LOCAL_SUCCESS");
         audit.setDataSource("LOCAL");
-        audit.setRequestId(normalized.requestId());
+        audit.setRequestId(safeExportRequestId);
         audit.setTargetType("AUDIT_LOG");
         audit.setResponseResult("{\"exportedCount\":" + logs.size() + "}");
         log(audit);

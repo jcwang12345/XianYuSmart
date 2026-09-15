@@ -35,7 +35,7 @@ public interface OperationLogService {
 
     Map<String, Object> queryLogs(AuditLogQuery query);
 
-    String exportCsv(AuditLogQuery query);
+    String exportCsv(AuditLogQuery query, String exportRequestId);
     
     /**
      * 删除指定天数之前的日志

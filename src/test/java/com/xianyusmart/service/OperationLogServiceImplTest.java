@@ -79,8 +79,8 @@ class OperationLogServiceImplTest {
                 .thenReturn(1);
 
         String csv = service.exportCsv(new OperationLogService.AuditLogQuery(
-                null, null, null, null, null, null, "export-req",
-                null, null, null, 1, 20));
+                12L, null, null, null, null, null, "filter-req",
+                null, null, null, 1, 20), "export-req");
 
         assertTrue(csv.contains("\"包含,逗号\""));
         ArgumentCaptor<XianyuOperationLog> captor = ArgumentCaptor.forClass(XianyuOperationLog.class);
@@ -88,5 +88,8 @@ class OperationLogServiceImplTest {
         assertEquals("AUDIT_EXPORT", captor.getValue().getOperationType());
         assertEquals("LOCAL_SUCCESS", captor.getValue().getOutcomeState());
         assertEquals("auditor", captor.getValue().getOperatorUsername());
+        assertEquals("export-req", captor.getValue().getRequestId());
+        verify(mapper).selectByPage(eq(12L), any(), any(), any(), any(), any(), eq("filter-req"),
+                any(), any(), any(), any(), any());
     }
 }
