@@ -37,18 +37,21 @@ public class ListingDraftService {
     private final PublishCapabilityService capabilityService;
     private final ListingCatalogService catalogService;
     private final OperationLogService operationLogService;
+    private final ProductContentPolicyService contentPolicyService;
 
     public ListingDraftService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper,
                                AccountAccessService accountAccessService,
                                PublishCapabilityService capabilityService,
                                ListingCatalogService catalogService,
-                               OperationLogService operationLogService) {
+                               OperationLogService operationLogService,
+                               ProductContentPolicyService contentPolicyService) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.accountAccessService = accountAccessService;
         this.capabilityService = capabilityService;
         this.catalogService = catalogService;
         this.operationLogService = operationLogService;
+        this.contentPolicyService = contentPolicyService;
     }
 
     public Map<String, Object> formSchema(Long accountId, String listingType) {
@@ -202,11 +205,23 @@ public class ListingDraftService {
         accountAccessService.requireAccess(accountId);
         ListingCatalogService.Catalog catalog = catalogService.active(normalizeType(text(payload.get("productType"))));
         Validation result = validatePayload(payload, catalog);
+        Map<String, Object> contentPolicy = contentPolicyService.inspect(payload);
+        List<String> errors = new ArrayList<>(result.errors());
+        List<Map<String, Object>> fieldErrors = new ArrayList<>(result.fieldErrors());
+        if (!Boolean.TRUE.equals(contentPolicy.get("valid"))) {
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> findings = (List<Map<String, Object>>) contentPolicy.get("findings");
+            findings.forEach(finding -> {
+                errors.add(text(finding.get("message")));
+                fieldErrors.add(new LinkedHashMap<>(finding));
+            });
+        }
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("valid", result.errors().isEmpty());
-        response.put("errors", result.errors());
-        response.put("fieldErrors", result.fieldErrors());
+        response.put("valid", errors.isEmpty());
+        response.put("errors", errors);
+        response.put("fieldErrors", fieldErrors);
         response.put("warnings", result.warnings());
+        response.put("contentPolicy", contentPolicy);
         response.put("preview", preview(payload));
         response.put("fieldReadiness", fieldReadiness(payload));
         response.put("catalogVersion", catalog.version());

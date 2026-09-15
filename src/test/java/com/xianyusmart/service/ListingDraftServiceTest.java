@@ -1,6 +1,8 @@
 package com.xianyusmart.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -12,7 +14,11 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class ListingDraftServiceTest {
 
@@ -131,6 +137,35 @@ class ListingDraftServiceTest {
         assertFalse(result.errors().isEmpty());
         assertTrue(result.errors().stream().anyMatch(value -> value.contains("标题")));
         assertTrue(result.errors().stream().anyMatch(value -> value.contains("图片")));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void validationMergesContentPolicyFindingsIntoFieldErrors() {
+        ListingCatalogService catalogService = mock(ListingCatalogService.class);
+        when(catalogService.active("VIRTUAL")).thenReturn(new ListingCatalogService.Catalog(
+                "catalog-v1", "LOCAL_REFERENCE", "REFERENCE_ONLY", "VIRTUAL", List.of(), Map.of()));
+        ProductContentPolicyService contentPolicy = mock(ProductContentPolicyService.class);
+        Map<String, Object> finding = Map.of(
+                "field", "description", "fieldLabel", "商品详情", "code", "PROHIBITED_TERM",
+                "severity", "BLOCKER", "term", "站外交易", "message", "商品详情命中风险词“站外交易”");
+        when(contentPolicy.inspect(anyMap())).thenReturn(Map.of(
+                "valid", false, "findings", List.of(finding), "summary", "发布内容命中 1 项阻断风险"));
+        ListingDraftService service = new ListingDraftService(
+                mock(JdbcTemplate.class), new ObjectMapper(), mock(AccountAccessService.class),
+                mock(PublishCapabilityService.class), catalogService, mock(OperationLogService.class), contentPolicy);
+        Map<String, Object> payload = validVirtual();
+        payload.put("xianyuAccountId", 101L);
+
+        Map<String, Object> result = service.validate(payload);
+
+        assertFalse((Boolean) result.get("valid"));
+        assertTrue(((List<String>) result.get("errors")).stream().anyMatch(value -> value.contains("站外交易")));
+        assertTrue(((List<Map<String, Object>>) result.get("fieldErrors")).stream()
+                .anyMatch(item -> "description".equals(item.get("field")) && "PROHIBITED_TERM".equals(item.get("code"))));
+        assertTrue(result.get("contentPolicy") instanceof Map);
+        assertThrows(com.xianyusmart.exception.BusinessException.class,
+                () -> service.requireValidForPublish(payload));
     }
 
     @Test
