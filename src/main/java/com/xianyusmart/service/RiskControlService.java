@@ -81,6 +81,7 @@ public interface RiskControlService {
         ITEM_PUBLISH,
         ITEM_DELETE,
         ITEM_STATUS,
+        ITEM_EDIT,
         ITEM_POLISH,
         ORDER_RATE
     }

@@ -238,3 +238,18 @@ result: passed（1920×1080、3840×2160、390×844、完整/部分/空态和滚
 - evidence limitation: Product Design 浏览器只提供本轮会话内联截图，没有持久化 PNG 路径；本记录保存 URL、视口、状态与交互结论。
 
 result: passed（1920×1080、3840×2160、390×844、滚动、加载、空态、错误/无权限和大数据状态通过）
+
+---
+
+## V6 Wave 17：商品改价、库存与审计增量 QA
+
+- flow: 商品管理 → 商品 360 → 改价/改库存 → 批量操作预检；只使用 `101 / QA-GOODS-0000`，未创建任务、未触达平台。
+- reference: 继续采用鱼麦多评审证据中的详情不丢上下文、风险可执行、范围和执行通道可见原则；没有复制其品牌、文案或素材。
+- desktop: 当前运行视口 1280×720 下，商品 360 固定页头/页签/正文/底部动作完整；改价与库存预检在顶层弹窗展示操作、选择范围、店铺、商品、可执行、冲突、每店限速和精确确认文案。
+- truth: 隔离预检明确显示“隔离 QA Mock，不触达平台”；价格 `1.234` 在客户端显示“最多保留两位小数”并且不生成新预检结果；库存 5 可预检且不创建任务。
+- context: 初次检查发现顶层预检按 Esc 会连带关闭商品 360；修复 `useModalFocusTrap` 后复验只关闭顶层，商品 360 保持，焦点返回“改价”按钮。
+- overflow/console: `document.scrollWidth=document.clientWidth=1280`，最终控制台日志为空。
+- evidence: `.artifacts/wave17-design-qa/desktop-product-360.png`、`desktop-price-preflight.png`、`desktop-stock-preflight.png`、`desktop-escape-preserves-detail.png`。
+- narrow-screen limitation: 浏览器安全策略拒绝本轮创建 390px 包装视口；没有据此宣称新的手机动态通过。响应式 CSS 未改变，沿用 Wave 16 已验证的 390×844 规则，并交由独立测试在冻结提交补验本批两个入口和顶层弹窗。
+
+result: passed（桌面增量流、校验、执行通道、Esc 分层关闭与焦点恢复通过；390×844 待独立补验）

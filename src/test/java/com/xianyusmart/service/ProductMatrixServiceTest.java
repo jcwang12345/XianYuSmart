@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.AccountScopeContext;
 import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuGoodsConfig;
+import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +44,7 @@ class ProductMatrixServiceTest {
     private AccountAccessService accountAccessService;
     private OperationLogService operationLogService;
     private ProductBatchQaMockService qaMockService;
+    private PlatformWritePolicy platformWritePolicy;
     private ProductMatrixService service;
 
     @BeforeEach
@@ -53,8 +55,10 @@ class ProductMatrixServiceTest {
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
         qaMockService = mock(ProductBatchQaMockService.class);
+        platformWritePolicy = mock(PlatformWritePolicy.class);
+        when(platformWritePolicy.enabled()).thenReturn(true);
         service = new ProductMatrixService(jdbcTemplate, namedJdbc, accountAccessService,
-                operationLogService, new ObjectMapper(), qaMockService);
+                operationLogService, new ObjectMapper(), qaMockService, platformWritePolicy);
         UserContext.set(4L, "product-tester", 9L);
         when(namedJdbc.queryForObject(anyString(), any(SqlParameterSource.class), eq(Integer.class))).thenReturn(0);
         when(namedJdbc.query(anyString(), any(SqlParameterSource.class), any(RowMapper.class))).thenReturn(List.of());
@@ -556,7 +560,7 @@ class ProductMatrixServiceTest {
     }
 
     @Test
-    void batchPreviewShowsExactAccountProductAndConflictScope() {
+    void batchPricePreviewIsExecutableForSyncedSingleSkuWhenPlatformWritesAreEnabled() {
         when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(product(0, "PLATFORM_LIST_SYNC")));
         ProductMatrixService.BatchRequest request = request("CHANGE_PRICE", Map.of("price", "19.90"), null);
 
@@ -564,9 +568,9 @@ class ProductMatrixServiceTest {
 
         assertEquals(1, preview.selectedCount());
         assertEquals(1, preview.accountCount());
-        assertEquals(1, preview.conflictCount());
-        assertEquals(0, preview.executableCount());
-        assertTrue(preview.items().getFirst().conflictMessage().contains("禁止创建只改本地缓存"));
+        assertEquals(0, preview.conflictCount());
+        assertEquals(1, preview.executableCount());
+        assertTrue(preview.items().getFirst().executable());
         verify(accountAccessService, atLeast(1)).requireAccess(2L);
     }
 
@@ -608,6 +612,61 @@ class ProductMatrixServiceTest {
 
             assertFalse(preview.previewToken().isBlank());
         }
+    }
+
+    @Test
+    void batchEditPreviewExplainsEnvironmentAndMultiSkuSafetyBlocks() {
+        when(platformWritePolicy.enabled()).thenReturn(false);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class)))
+                .thenReturn(List.of(product(0, "PLATFORM_LIST_SYNC")));
+        ProductMatrixService.BatchPreview disabled = service.previewBatch(
+                request("CHANGE_PRICE", Map.of("price", "12.34"), null));
+        assertEquals(0, disabled.executableCount());
+        assertTrue(disabled.items().getFirst().conflictMessage().contains("关闭真实平台写入"));
+
+        when(platformWritePolicy.enabled()).thenReturn(true);
+        Map<String, Object> multiSku = product(0, "PLATFORM_LIST_SYNC");
+        multiSku.put("sku_count", 4);
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(multiSku));
+        ProductMatrixService.BatchPreview blocked = service.previewBatch(
+                request("CHANGE_STOCK", Map.of("stock", 8), null));
+        assertEquals(0, blocked.executableCount());
+        assertTrue(blocked.items().getFirst().conflictMessage().contains("逐 SKU"));
+    }
+
+    @Test
+    void batchStockPreviewRejectsNegativeFractionAndAbovePlatformLimit() {
+        for (Object stock : List.of(-1, "1.5", 10000)) {
+            BusinessException error = assertThrows(BusinessException.class, () -> service.previewBatch(
+                    request("CHANGE_STOCK", Map.of("stock", stock), null)));
+            assertEquals(400, error.getCode());
+            assertTrue(error.getMessage().contains("0至9999"));
+        }
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void productExportWritesSearchableAuditForEveryAccountInScope() {
+        Map<String, Object> exported = new LinkedHashMap<>();
+        exported.put("accountId", 101L);
+        exported.put("goodsId", "QA-GOODS-0000");
+        exported.put("title", "QA 商品");
+        when(namedJdbc.query(anyString(), any(SqlParameterSource.class), any(RowMapper.class)))
+                .thenReturn(List.of(exported));
+        when(namedJdbc.queryForList(anyString(), any(SqlParameterSource.class))).thenReturn(List.of());
+        ProductMatrixService.ProductFilter filter = new ProductMatrixService.ProductFilter(
+                "QA-GOODS-0000", List.of(101L), null, "ALL", null, null, 7, 1, 20);
+
+        service.exportProducts(filter, "product-export-audit-1");
+
+        org.mockito.ArgumentCaptor<XianyuOperationLog> audit =
+                org.mockito.ArgumentCaptor.forClass(XianyuOperationLog.class);
+        verify(operationLogService).log(audit.capture());
+        assertEquals(101L, audit.getValue().getXianyuAccountId());
+        assertEquals("PRODUCT_EXPORT", audit.getValue().getOperationType());
+        assertEquals("product-export-audit-1", audit.getValue().getRequestId());
+        assertTrue(audit.getValue().getResponseResult().contains("\"exportedCount\":1"));
+        assertTrue(audit.getValue().getResponseResult().contains("\"unknownMetricValuesRemainBlank\":true"));
     }
 
     @Test
@@ -808,6 +867,8 @@ class ProductMatrixServiceTest {
         product.put("credential_ready", 1);
         product.put("sold_price", "10.00");
         product.put("stock", 2);
+        product.put("sku_count", 1);
+        product.put("publish_channel", "PLATFORM_WEB");
         return product;
     }
 

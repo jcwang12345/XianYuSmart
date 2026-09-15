@@ -91,6 +91,11 @@ export function useModalFocusTrap(
     if (!open.value || !isTopmostModal()) return
     if (event.key === 'Escape') {
       event.preventDefault()
+      // Multiple focus traps listen on document during nested workflows. Once
+      // the topmost dialog consumes Escape, do not let the same keydown reach
+      // the parent trap after Vue starts closing the child; otherwise both
+      // layers can disappear and the operator loses the detail context.
+      event.stopImmediatePropagation()
       if (onRequestClose) onRequestClose()
       else open.value = false
       return

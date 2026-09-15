@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -216,16 +217,22 @@ public class ProductBatchExecutionService {
         if (claimed != 1) return;
         item.put("platform_request_id", platformRequestId);
         try {
+            Map<String, Object> operationParams = parameters(item.get("new_value_json"));
             Map<String, Object> result = qaMock ? qaMockService.execute(job, item) : switch (operation) {
                 case "SYNC" -> sync(accountId, goodsId);
                 case "ON_SALE" -> platformPublishService.changeListingStatus(accountId, goodsId, true);
                 case "OFF_SHELF" -> platformPublishService.changeListingStatus(accountId, goodsId, false);
+                case "CHANGE_PRICE" -> platformPublishService.editPriceOrStock(
+                        accountId, goodsId, decimal(operationParams.get("price")), null);
+                case "CHANGE_STOCK" -> platformPublishService.editPriceOrStock(
+                        accountId, goodsId, null, nullableInteger(operationParams.get("stock")));
                 case "DELETE" -> platformPublishService.delete(accountId, goodsId);
                 case "POLISH" -> Map.of("success", goodsAutomationService.polishOne(accountId, goodsId));
                 default -> throw new IllegalStateException("当前接入通道不支持" + operation);
             };
             if (!Boolean.TRUE.equals(result.get("success"))) throw new IllegalStateException("平台操作未确认成功");
-            boolean localUpdated = qaMock || updateLocalState(tenantId, accountId, goodsId, operation);
+            boolean localUpdated = qaMock || updateLocalState(
+                    tenantId, accountId, goodsId, operation, operationParams);
             String outcome = qaMock ? "QA_MOCK_CONFIRMED" : localUpdated || "SYNC".equals(operation)
                     ? "PLATFORM_CONFIRMED" : "PLATFORM_CONFIRMED_LOCAL_PENDING";
             jdbcTemplate.update("""
@@ -264,7 +271,26 @@ public class ProductBatchExecutionService {
         return Map.of("success", success, "itemId", goodsId);
     }
 
-    private boolean updateLocalState(Long tenantId, Long accountId, String goodsId, String operation) {
+    private boolean updateLocalState(Long tenantId, Long accountId, String goodsId, String operation,
+                                     Map<String, Object> operationParams) {
+        if ("CHANGE_PRICE".equals(operation)) {
+            BigDecimal price = decimal(operationParams.get("price"));
+            if (price == null) return false;
+            return jdbcTemplate.update("""
+                    UPDATE xianyu_goods SET sold_price=?, row_version=row_version+1, sync_status='SUCCEEDED',
+                           coverage_status='PARTIAL',last_synced_time=NOW(3),last_sync_error_code=NULL,last_sync_error_message=NULL
+                     WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=?
+                    """, price, tenantId, accountId, goodsId) == 1;
+        }
+        if ("CHANGE_STOCK".equals(operation)) {
+            Integer stock = nullableInteger(operationParams.get("stock"));
+            if (stock == null) return false;
+            return jdbcTemplate.update("""
+                    UPDATE xianyu_goods SET stock=?, row_version=row_version+1, sync_status='SUCCEEDED',
+                           coverage_status='PARTIAL',last_synced_time=NOW(3),last_sync_error_code=NULL,last_sync_error_message=NULL
+                     WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=?
+                    """, stock, tenantId, accountId, goodsId) == 1;
+        }
         Integer status = switch (operation) {
             case "ON_SALE" -> 0;
             case "OFF_SHELF" -> 1;
@@ -281,22 +307,42 @@ public class ProductBatchExecutionService {
 
     private void recordEvent(Map<String, Object> job, Map<String, Object> item, String outcome,
                              Map<String, Object> result, String error) {
+        Map<String, Object> before = parameters(item.get("old_value_json"));
+        Map<String, Object> requested = parameters(item.get("new_value_json"));
+        String operation = text(item.get("operation_type"));
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        Map<String, Object> fields = new LinkedHashMap<>();
+        boolean confirmed = outcome != null && outcome.contains("CONFIRMED");
+        if (confirmed && "CHANGE_PRICE".equals(operation) && requested.containsKey("price")) {
+            after.put("price", requested.get("price"));
+            fields.put("price", diffChange("售价", before.get("price"), requested.get("price")));
+        } else if (confirmed && "CHANGE_STOCK".equals(operation) && requested.containsKey("stock")) {
+            after.put("stock", requested.get("stock"));
+            fields.put("stock", diffChange("库存", before.get("stock"), requested.get("stock")));
+        }
+        if (result != null) after.put("platformResult", result);
+        Map<String, Object> fieldDiff = new LinkedHashMap<>();
+        fieldDiff.put("mode", outcome);
+        fieldDiff.put("changedFieldCount", fields.size());
+        fieldDiff.put("fields", fields);
+        if (!confirmed && !requested.isEmpty()) fieldDiff.put("requestedChanges", requested);
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_event
                 (tenant_id, xianyu_account_id, xy_goods_id, event_type, event_origin, outcome_state,
                  data_source, operator_user_id, operator_username, request_id, idempotency_key,
                  batch_job_id,batch_item_id,platform_request_id,
-                 after_json, error_message)
-                VALUES (?,?,?,?, 'BATCH_TASK',?,?, ?,?,?,?,?,?,?,?,?)
-                ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state), after_json=VALUES(after_json),
+                 before_json,after_json,field_diff_json,error_message)
+                VALUES (?,?,?,?, 'BATCH_TASK',?,?, ?,?,?,?,?,?,?,?,?,?,?)
+                ON DUPLICATE KEY UPDATE outcome_state=VALUES(outcome_state), before_json=VALUES(before_json),
+                 after_json=VALUES(after_json),field_diff_json=VALUES(field_diff_json),
                  platform_request_id=VALUES(platform_request_id), error_message=VALUES(error_message),
                  created_time=NOW(3)
                 """, number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id")),
-                "BATCH_" + text(item.get("operation_type")), outcome,
+                "BATCH_" + operation, outcome,
                 qaMockService.isEligible(number(job.get("tenant_id")), number(item.get("xianyu_account_id")), text(item.get("xy_goods_id"))) ? "QA_MOCK" : "PLATFORM_WEB",
                 number(job.get("operator_user_id")),
                 job.get("operator_username"), job.get("request_id"), job.get("idempotency_key"), number(job.get("id")),
-                number(item.get("id")), item.get("platform_request_id"), json(result), error);
+                number(item.get("id")), item.get("platform_request_id"), json(before), json(after), json(fieldDiff), error);
     }
 
     private void refreshJob(Long jobId, Long tenantId) {
@@ -467,6 +513,44 @@ public class ProductBatchExecutionService {
         String lower = message.toLowerCase(Locale.ROOT);
         return lower.contains("timeout") || lower.contains("timed out") || lower.contains("超时")
                 || lower.contains("结果无法确认") || lower.contains("缺少商品id");
+    }
+
+    private Map<String, Object> parameters(Object raw) {
+        if (raw instanceof Map<?, ?> source) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            source.forEach((key, value) -> result.put(String.valueOf(key), value));
+            return result;
+        }
+        if (raw == null || String.valueOf(raw).isBlank()) return Map.of();
+        try {
+            return objectMapper.readValue(String.valueOf(raw), new TypeReference<>() { });
+        } catch (Exception ignored) {
+            return Map.of();
+        }
+    }
+
+    private BigDecimal decimal(Object value) {
+        try {
+            return value == null ? null : new BigDecimal(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Integer nullableInteger(Object value) {
+        try {
+            return value == null ? null : Integer.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> diffChange(String label, Object before, Object after) {
+        Map<String, Object> change = new LinkedHashMap<>();
+        change.put("label", label);
+        change.put("before", before);
+        change.put("after", after);
+        return change;
     }
 
     private String json(Object value) {

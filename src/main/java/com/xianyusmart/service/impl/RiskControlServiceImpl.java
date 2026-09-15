@@ -32,6 +32,7 @@ public class RiskControlServiceImpl implements RiskControlService {
     private static final long CIRCUIT_WINDOW_MS = 600_000L;
     private static final Set<String> GUARDED_WRITE_APIS = Set.of(
             "mtop.idle.pc.idleitem.publish",
+            "mtop.idle.pc.idleitem.edit",
             "mtop.taobao.idle.item.downshelf",
             "com.taobao.idle.item.delete",
             "mtop.taobao.idle.item.polish",

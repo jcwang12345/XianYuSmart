@@ -68,6 +68,13 @@ public class ProductMatrixService {
             Map.entry("POLISH_SUCCEEDED", "商品擦亮成功"),
             Map.entry("BATCH_ITEM_SUCCEEDED", "批量子任务成功"),
             Map.entry("BATCH_ITEM_FAILED", "批量子任务失败"),
+            Map.entry("BATCH_CHANGE_PRICE", "批量商品改价"),
+            Map.entry("BATCH_CHANGE_STOCK", "批量商品改库存"),
+            Map.entry("BATCH_ON_SALE", "批量商品上架"),
+            Map.entry("BATCH_OFF_SHELF", "批量商品下架"),
+            Map.entry("BATCH_POLISH", "批量商品擦亮"),
+            Map.entry("BATCH_SYNC", "批量商品同步"),
+            Map.entry("BATCH_DELETE", "批量商品删除"),
             Map.entry("BATCH_NOTIFICATION", "批量任务通知已生成"),
             Map.entry("BATCH_CANCEL", "批量任务已取消"),
             Map.entry("PRODUCT_BATCH_CANCEL", "批量任务已取消"),
@@ -90,6 +97,7 @@ public class ProductMatrixService {
             Map.entry("CANCEL_REQUESTED", "正在取消"),
             Map.entry("CANCELLED", "已取消"),
             Map.entry("QA_CONFIRMED", "隔离 QA 已确认"),
+            Map.entry("QA_MOCK_CONFIRMED", "隔离 QA 已确认"),
             Map.entry("QUEUED", "已排队"),
             Map.entry("RUNNING", "处理中"));
     private static final Map<String, String> PRODUCT_SOURCE_LABELS = Map.ofEntries(
@@ -118,19 +126,22 @@ public class ProductMatrixService {
     private final OperationLogService operationLogService;
     private final ObjectMapper objectMapper;
     private final ProductBatchQaMockService productBatchQaMockService;
+    private final PlatformWritePolicy platformWritePolicy;
 
     public ProductMatrixService(JdbcTemplate jdbcTemplate,
                                 NamedParameterJdbcTemplate namedJdbc,
                                 AccountAccessService accountAccessService,
                                 OperationLogService operationLogService,
                                 ObjectMapper objectMapper,
-                                ProductBatchQaMockService productBatchQaMockService) {
+                                ProductBatchQaMockService productBatchQaMockService,
+                                PlatformWritePolicy platformWritePolicy) {
         this.jdbcTemplate = jdbcTemplate;
         this.namedJdbc = namedJdbc;
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
         this.productBatchQaMockService = productBatchQaMockService;
+        this.platformWritePolicy = platformWritePolicy;
     }
 
     public Map<String, Object> list(ProductFilter filter) {
@@ -208,13 +219,14 @@ public class ProductMatrixService {
 
     public Map<String, Object> capabilities(Long accountId, String goodsId) {
         Map<String, Object> product = findProduct(accountId, goodsId);
+        boolean qaMock = productBatchQaMockService.isEligible(requireTenant(), accountId, goodsId);
         Map<String, Object> result = new LinkedHashMap<>();
         for (String operation : BATCH_OPERATIONS) {
-            String reason = conflict(operation, Map.of(
+            String reason = qaMock ? null : conflict(operation, Map.of(
                     "price", product.get("sold_price") == null ? BigDecimal.ONE : product.get("sold_price"),
                     "stock", product.get("stock") == null ? 0 : product.get("stock")), product);
             result.put(operation, Map.of("available", reason == null, "reason", reason == null ? "" : reason,
-                    "mode", reason == null ? "PLATFORM" : "SAFE_DEGRADATION"));
+                    "mode", reason == null ? qaMock ? "QA_MOCK" : "PLATFORM" : "SAFE_DEGRADATION"));
         }
         result.put("EDIT", Map.of("available", true, "mode", "LOCAL_ONLY",
                 "reason", "当前平台通道未验证完整编辑协议，只允许维护本地资料并保留来源标识"));
@@ -610,9 +622,40 @@ public class ProductMatrixService {
                     .append(csv(metric.getOrDefault("metricCoverageStatus","UNSYNCED"))).append(',')
                     .append(csv(metric.get("dataDate"))).append(',').append(csv(metric.get("syncedAt"))).append("\r\n");
         }
-        audit(null,"PRODUCT_EXPORT","导出商品经营报表",requestId,"LOCAL_SUCCESS",filter,
-                Map.of("exportedCount",products.size(),"metricWindowDays",filter.metricWindowDays(),
-                        "unknownMetricValuesRemainBlank",true));return csv.toString();
+        auditProductExport(products, filter, requestId);return csv.toString();
+    }
+
+    /** 跨店导出按涉及店铺逐条留痕，使现有账号范围审计可检索且不会形成 accountId=null 孤立记录。 */
+    private void auditProductExport(List<Map<String, Object>> products, ProductFilter filter, String requestId) {
+        Set<Long> accounts = new LinkedHashSet<>();
+        for (Map<String, Object> product : products) {
+            Long accountId = longObject(product.get("accountId"));
+            if (accountId != null) accounts.add(accountId);
+        }
+        if (accounts.isEmpty() && filter.accountIds() != null) {
+            accounts.addAll(filter.accountIds());
+        }
+        if (accounts.isEmpty()) {
+            AccountScopeContext.Scope scope = AccountScopeContext.get();
+            if (scope != null && !scope.unrestricted()) {
+                accounts.addAll(scope.accountIds());
+            } else {
+                jdbcTemplate.queryForList("SELECT id FROM xianyu_account WHERE tenant_id=? ORDER BY id", requireTenant())
+                        .forEach(row -> {
+                            Long accountId = longObject(row.get("id"));
+                            if (accountId != null) accounts.add(accountId);
+                        });
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("exportedCount", products.size());
+        result.put("metricWindowDays", filter.metricWindowDays());
+        result.put("unknownMetricValuesRemainBlank", true);
+        result.put("accountScope", accounts);
+        result.put("accountScopeCount", accounts.size());
+        for (Long accountId : accounts) {
+            audit(accountId,"PRODUCT_EXPORT","导出商品经营报表",requestId,"LOCAL_SUCCESS",filter,result);
+        }
     }
 
     private Map<String, Map<String, Object>> exportMetrics(QueryParts query, int metricWindowDays) {
@@ -1729,7 +1772,9 @@ public class ProductMatrixService {
         }
         if ("CHANGE_STOCK".equals(operation)) {
             Integer stock = integer(params.get("stock"));
-            if (stock == null || stock < 0) throw new BusinessException(400, "批量改库存需要不小于0的stock");
+            if (stock == null || stock < 0 || stock > 9999) {
+                throw new BusinessException(400, "批量改库存需要0至9999的整数stock");
+            }
         }
         return new BatchRequest(requestId, idempotencyKey, operation, selectionMode, request.items(), request.excludedItems(),
                 request.filter(), params, rate, request.confirmationText(), trim(request.previewToken()));
@@ -1739,7 +1784,7 @@ public class ProductMatrixService {
         requireProductAccess(accountId, goodsId);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT goods.title, goods.support_policy, goods.location_text, goods.status,
-                       goods.product_source, goods.publish_channel,
+                       goods.product_source, goods.publish_channel, goods.sku_count,
                        goods.sync_status, goods.coverage_status, goods.row_version, goods.sold_price, goods.stock,
                        account.status account_status,
                        CASE WHEN cookie.cookie_status=1 AND cookie.cookie_text IS NOT NULL AND cookie.cookie_text<>'' THEN 1 ELSE 0 END credential_ready
@@ -1765,11 +1810,20 @@ public class ProductMatrixService {
         if ("DELETE".equals(operation) && Integer.valueOf(-1).equals(status)) return "商品已经删除";
         if ("CHANGE_PRICE".equals(operation)) {
             if (decimal(params.get("price")) == null) return "缺少目标价格";
-            return "当前接入通道尚未验证平台改价能力，禁止创建只改本地缓存的任务";
+            if (!platformWritePolicy.enabled()) return "当前环境关闭真实平台写入，改价仅允许隔离 QA Mock";
+            Integer skuCount = integer(product.get("sku_count"));
+            if (skuCount == null) return "规格数量尚未同步，请先同步商品详情";
+            if (skuCount > 1) return "多规格商品需要逐 SKU 改价，当前统一改价会破坏规格差异";
         }
         if ("CHANGE_STOCK".equals(operation)) {
-            if (integer(params.get("stock")) == null) return "缺少目标库存";
-            return "当前接入通道尚未验证平台改库存能力，禁止创建只改本地缓存的任务";
+            Integer stock = integer(params.get("stock"));
+            if (stock == null) return "缺少目标库存";
+            if (stock == 0) return "平台零库存不作为编辑值提交，请使用下架操作";
+            if (stock > 9999) return "平台库存不能超过9999";
+            if (!platformWritePolicy.enabled()) return "当前环境关闭真实平台写入，库存修改仅允许隔离 QA Mock";
+            Integer skuCount = integer(product.get("sku_count"));
+            if (skuCount == null) return "规格数量尚未同步，请先同步商品详情";
+            if (skuCount > 1) return "多规格商品需要逐 SKU 改库存，当前统一库存会破坏规格差异";
         }
         return null;
     }
@@ -2042,6 +2096,15 @@ public class ProductMatrixService {
 
     private static long longValue(Object value) {
         return value instanceof Number number ? number.longValue() : 0L;
+    }
+
+    private static Long longObject(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return value == null ? null : Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private static String sha256(String value) {

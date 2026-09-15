@@ -25,6 +25,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -38,6 +40,15 @@ public class PlatformPublishService {
     private static final Pattern GOODS_ID_PATTERN = Pattern.compile("(?:id=|/item/)(\\d{8,})");
     private static final Pattern SHOP_USER_ID_PATTERN =
             Pattern.compile("(?i)(?:[?&](?:userId|sellerId|user_id)=)(\\d{5,})");
+    private static final Set<String> EDIT_SCALAR_KEYS = Set.of(
+            "attribute_biz_line", "bizcode", "bucketId", "canBargain", "defaultPrice",
+            "errorTipsMsg", "freebies", "itemStatus", "itemTypeStr", "quantity", "scene",
+            "simpleItem", "supportBargainPrice", "topics");
+    private static final Set<String> EDIT_OBJECT_KEYS = Set.of(
+            "asyncSecurityInfo", "baseParams", "itemAddrDTO", "itemCatDTO", "itemGroupDTO",
+            "itemPostFeeDTO", "itemPriceDTO", "itemTextDTO", "itemTopicParams", "yhbItemInfoDTO");
+    private static final Set<String> EDIT_LIST_KEYS = Set.of(
+            "imageInfoDOList", "itemLabelExtList", "itemProperties", "itemSkuList", "userRightsProtocols");
     private final PlaywrightManager playwrightManager;
     private final AccountService accountService;
     private final ObjectMapper objectMapper;
@@ -284,6 +295,192 @@ public class PlatformPublishService {
             page.waitForTimeout(2000);
             playwrightManager.persistStorageState(accountId, context);
             return Map.of("success", true, "itemId", goodsId, "onSale", onSale);
+        }
+    }
+
+    /**
+     * 基于平台编辑快照修改单规格商品的价格或库存。提交后再次读取平台快照确认，
+     * 网络抖动或延迟生效时不会把“已提交”误记成“已成功”。
+     */
+    public Map<String, Object> editPriceOrStock(Long accountId, String goodsId,
+                                                BigDecimal price, Integer stock) {
+        if (!platformWritePolicy.enabled()) {
+            throw new IllegalStateException("当前环境禁止真实平台商品编辑");
+        }
+        if ((price == null) == (stock == null)) {
+            throw new IllegalArgumentException("每次只能修改价格或库存中的一项");
+        }
+        if (price != null) validateEditPrice(price);
+        if (stock != null && (stock < 1 || stock > 9999)) {
+            throw new IllegalArgumentException("平台库存必须在1至9999之间；零库存请使用下架");
+        }
+        String cookieText = accountService.getCookieByAccountId(accountId);
+        if (cookieText == null || cookieText.isBlank()) {
+            throw new IllegalStateException("账号 Cookie 不可用");
+        }
+        Map<String, Object> before = loadEditDetail(accountId, goodsId, cookieText, false);
+        Map<String, Object> payload = buildEditPayload(before, goodsId, price, stock);
+        requirePermit(accountId, RiskControlService.WriteOperation.ITEM_EDIT);
+        XianyuApiCallUtils.ApiCallResult editResult = apiCallUtils.callApiWithRetry(
+                accountId, "mtop.idle.pc.idleitem.edit", "1.0", payload, cookieText, null, null);
+        if (!editResult.isSuccess()) {
+            if (editResult.isOutcomeUnknown()) {
+                throw new PlatformOutcomeUnknownException("商品编辑请求结果无法确认: " + editResult.getErrorMessage());
+            }
+            throw new IllegalStateException("平台拒绝商品编辑: " + editResult.getErrorMessage());
+        }
+
+        Map<String, Object> confirmed = null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(400L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new PlatformOutcomeUnknownException("商品编辑已提交，但回读确认被中断");
+                }
+            }
+            confirmed = loadEditDetail(accountId, goodsId, refreshedCookie(accountId, cookieText), true);
+            if (editConfirmed(confirmed, price, stock)) break;
+        }
+        if (!editConfirmed(confirmed, price, stock)) {
+            throw new PlatformOutcomeUnknownException("商品编辑已提交，但平台回读值尚未确认，请先人工核对");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", true);
+        result.put("itemId", goodsId);
+        result.put("outcomeState", "PLATFORM_CONFIRMED");
+        result.put("editMode", price == null ? "STOCK" : "PRICE");
+        if (price != null) result.put("price", price.setScale(2));
+        if (stock != null) result.put("stock", stock);
+        result.put("platformReadBackVerified", true);
+        return result;
+    }
+
+    Map<String, Object> buildEditPayload(Map<String, Object> detailData, String goodsId,
+                                         BigDecimal price, Integer stock) {
+        Map<String, Object> source = deepCopy(detailData);
+        if (!supportsSingleSkuEdit(source)) {
+            throw new IllegalStateException("多规格商品必须逐 SKU 修改，已阻止统一覆盖价格或库存");
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        source.forEach((key, value) -> {
+            if (EDIT_SCALAR_KEYS.contains(key) || EDIT_OBJECT_KEYS.contains(key) || EDIT_LIST_KEYS.contains(key)) {
+                payload.put(key, value);
+            }
+        });
+        String resolvedItemId = text(source.get("itemId"));
+        if (!resolvedItemId.isBlank() && !goodsId.equals(resolvedItemId)) {
+            throw new IllegalStateException("平台编辑快照与目标商品不一致");
+        }
+        payload.put("itemId", goodsId);
+        payload.put("sourceId", text(source.get("sourceId")).isBlank() ? goodsId : text(source.get("sourceId")));
+        payload.put("uniqueCode", UUID.randomUUID().toString().replace("-", ""));
+        payload.put("bizcode", text(payload.get("bizcode")).isBlank() ? "pcMainPublish" : text(payload.get("bizcode")));
+        payload.put("publishScene", text(source.get("publishScene")).isBlank()
+                ? "pcMainPublish" : text(source.get("publishScene")));
+
+        if (price != null) {
+            validateEditPrice(price);
+            String cents = price.movePointRight(2).setScale(0, java.math.RoundingMode.UNNECESSARY).toPlainString();
+            Map<String, Object> priceDto = mutableMap(payload.get("itemPriceDTO"));
+            if (priceDto.isEmpty()) throw new IllegalStateException("平台编辑快照缺少价格字段");
+            priceDto.put("priceInCent", cents);
+            payload.put("itemPriceDTO", priceDto);
+            updateSingleSku(payload, "priceInCent", cents);
+        }
+        if (stock != null) {
+            if (stock < 1 || stock > 9999) throw new IllegalArgumentException("平台库存必须在1至9999之间");
+            String quantity = String.valueOf(stock);
+            payload.put("quantity", quantity);
+            updateSingleSku(payload, "quantity", quantity);
+        }
+        return payload;
+    }
+
+    private Map<String, Object> loadEditDetail(Long accountId, String goodsId, String cookieText,
+                                               boolean afterWrite) {
+        XianyuApiCallUtils.ApiCallResult result = apiCallUtils.callApiWithRetry(
+                accountId, "mtop.idle.pc.idleitem.editDetail", "1.0",
+                Map.of("itemId", goodsId), cookieText, null, null);
+        if (!result.isSuccess()) {
+            String message = "平台商品编辑快照读取失败: " + result.getErrorMessage();
+            if (afterWrite) {
+                throw new PlatformOutcomeUnknownException("商品编辑已提交，但" + message);
+            }
+            throw new IllegalStateException(message);
+        }
+        Map<String, Object> root = readData(result.getResponse());
+        Map<String, Object> data = mutableMap(root.get("data"));
+        if (data.containsKey("data") && !data.containsKey("itemPriceDTO")) {
+            data = mutableMap(data.get("data"));
+        }
+        if (data.isEmpty()) {
+            if (afterWrite) throw new PlatformOutcomeUnknownException("商品编辑已提交，但平台未返回回读快照");
+            throw new IllegalStateException("平台未返回可编辑商品快照");
+        }
+        return data;
+    }
+
+    private boolean editConfirmed(Map<String, Object> detail, BigDecimal price, Integer stock) {
+        if (detail == null || detail.isEmpty()) return false;
+        if (price != null) {
+            String cents = text(mutableMap(detail.get("itemPriceDTO")).get("priceInCent"));
+            if (cents.isBlank()) return false;
+            try {
+                return new BigDecimal(cents).compareTo(price.movePointRight(2)) == 0;
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
+        return stock != null && stock == integerValue(detail.get("quantity"));
+    }
+
+    private boolean supportsSingleSkuEdit(Map<String, Object> snapshot) {
+        Object raw = snapshot.get("itemSkuList");
+        if (!(raw instanceof List<?> skus) || skus.isEmpty()) return true;
+        if (skus.size() != 1 || !(skus.getFirst() instanceof Map<?, ?> sku)) return false;
+        Object properties = sku.get("propertyList");
+        return !(properties instanceof List<?> list) || list.isEmpty();
+    }
+
+    private void updateSingleSku(Map<String, Object> payload, String key, Object value) {
+        Object raw = payload.get("itemSkuList");
+        if (!(raw instanceof List<?> list) || list.isEmpty()) return;
+        List<Map<String, Object>> copy = new ArrayList<>();
+        for (Object sku : list) {
+            Map<String, Object> row = mutableMap(sku);
+            row.put(key, value);
+            copy.add(row);
+        }
+        payload.put("itemSkuList", copy);
+    }
+
+    private void validateEditPrice(BigDecimal price) {
+        if (price == null || price.signum() <= 0 || price.compareTo(new BigDecimal("9999999.99")) > 0
+                || Math.max(price.stripTrailingZeros().scale(), 0) > 2) {
+            throw new IllegalArgumentException("平台价格必须大于0、最多两位小数且不超过9999999.99");
+        }
+    }
+
+    private String refreshedCookie(Long accountId, String fallback) {
+        String current = accountService.getCookieByAccountId(accountId);
+        return current == null || current.isBlank() ? fallback : current;
+    }
+
+    private Map<String, Object> deepCopy(Map<String, Object> value) {
+        return objectMapper.convertValue(value, new TypeReference<>() { });
+    }
+
+    private Map<String, Object> mutableMap(Object value) {
+        return new LinkedHashMap<>(map(value));
+    }
+
+    private int integerValue(Object value) {
+        try {
+            return Integer.parseInt(text(value));
+        } catch (NumberFormatException ignored) {
+            return Integer.MIN_VALUE;
         }
     }
 

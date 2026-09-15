@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -136,6 +137,45 @@ class ProductBatchExecutionServiceTest {
             }
         }
         assertTrue(pendingRepair);
+    }
+
+    @Test
+    void priceEditRoutesThroughVerifiedPlatformAdapterThenUpdatesLocalTruthAndDiff() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        PlatformPublishService platform = mock(PlatformPublishService.class);
+        ProductBatchExecutionService service = new ProductBatchExecutionService(
+                jdbc, platform, mock(ItemDetailSyncService.class), mock(GoodsAutomationService.class),
+                new ObjectMapper(), mock(NotificationCenterService.class), mock(ProductBatchQaMockService.class), true);
+        Map<String, Object> job = job();
+        Map<String, Object> item = item("CHANGE_PRICE");
+        item.put("old_value_json", "{\"price\":9.99,\"stock\":2,\"status\":0}");
+        item.put("new_value_json", "{\"price\":12.34}");
+        when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(item));
+        when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Integer.class), any(Object[].class))).thenReturn(1);
+        when(jdbc.queryForObject(anyString(), org.mockito.ArgumentMatchers.eq(Long.class), any(Object[].class))).thenReturn(1L);
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+        when(platform.editPriceOrStock(2L, "goods-1", new BigDecimal("12.34"), null))
+                .thenReturn(Map.of("success", true, "price", new BigDecimal("12.34"),
+                        "platformReadBackVerified", true));
+        when(jdbc.queryForMap(anyString(), any(Object[].class))).thenReturn(Map.of(
+                "total", 1L, "succeeded", 1L, "failed", 0L, "unknown_count", 0L,
+                "active", 0L, "skipped", 0L, "cancelled", 0L, "conflicts", 0L));
+
+        service.executeJob(job);
+
+        verify(platform).editPriceOrStock(2L, "goods-1", new BigDecimal("12.34"), null);
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbc, atLeast(1)).update(sql.capture(), args.capture());
+        assertTrue(sql.getAllValues().stream().anyMatch(value -> value.contains("SET sold_price=?")));
+        boolean diffPersisted = false;
+        for (int index = 0; index < sql.getAllValues().size(); index++) {
+            if (sql.getAllValues().get(index).contains("field_diff_json")) {
+                diffPersisted = String.valueOf(args.getAllValues().get(index)[15]).contains("\"price\"")
+                        && String.valueOf(args.getAllValues().get(index)[15]).contains("12.34");
+            }
+        }
+        assertTrue(diffPersisted);
     }
 
     @Test

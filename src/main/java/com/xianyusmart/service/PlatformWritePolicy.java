@@ -12,6 +12,7 @@ import java.util.Set;
 public class PlatformWritePolicy {
     private static final Set<String> WRITE_APIS = Set.of(
             "mtop.idle.pc.idleitem.publish",
+            "mtop.idle.pc.idleitem.edit",
             "mtop.taobao.idle.item.downshelf",
             "com.taobao.idle.item.delete",
             "mtop.taobao.idle.item.polish",
