@@ -1,11 +1,11 @@
-# Product Design QA — v3.3.0-rc.1 客服与自动回复
+# Product Design QA — v3.3.0-rc.2 客服、自动回复与买家 360 回归
 
 ## 对照证据
 
 - source visual truth: `/tmp/codex-remote-attachments/01a06ce4-25a6-7660-90e5-fd32bbf02361/A649EEC7-2EF6-4971-80BC-8C8159DABA23/1-照片-1.jpg`
 - source pixels: 1280 × 741；截图为鱼麦多店铺详情，用于对照暖黄配色、白色分区、风险优先、详情不丢上下文和可执行状态，不作为客服/自动回复页面的逐像素稿。
 - implementation URL: `http://127.0.0.1:3000`
-- implementation screenshots: Codex In-app Browser tab 6 的本轮浏览器内联截图；工具后端未暴露可持久化文件路径。
+- implementation screenshots: Codex In-app Browser tab 7 的本轮浏览器内联截图；工具后端未暴露可持久化文件路径。
 - desktop capture: 1920 × 1080 CSS px，浏览器 viewport override 1920 × 1080，1× 等尺寸输出。
 - mobile capture: 390 × 844 CSS px，浏览器 viewport override 390 × 844，1× 等尺寸输出。
 - states: 客服大数据量三栏、发送结果未知、人工核对长表单、自动回复知识空态、策略测试结果、手机列表→会话→资料、加载态、无权限态、QA Failure State Shop、长页面滚动。
@@ -23,6 +23,9 @@
 - 图标与控件：使用既有图标体系和原生语义控件；主要按钮、页签、下拉、输入框与开关对齐一致，手机点击目标可用。
 - 状态与交互：浏览器实测加载、空态、无权限、大数据量、结果未知、策略演练和长表单滚动。核对动作必须先预检，确认按钮在预检前禁用；演练不会触达 AI 或闲鱼平台。
 - 可访问性：页签包含 tab/tabpanel 关系；错误和状态使用 alert/status；按钮具有可读名称；手机端返回路径明确；键盘 Enter 可执行策略演练。
+- 买家 360 回归：390 × 844 下头部改为身份区与操作区分层，两个主操作为 154 × 44 px，关闭按钮为 44 × 44 px，无横向溢出或竖排文字；1920 × 1080 下详情保持 1440 × 900 的居中工作台。
+- 页签键盘回归：ArrowRight、End、Home 均同步更新焦点、`aria-selected`、roving `tabindex` 和 URL `detailTab`；四个手机页签触控高度均为 44 px。
+- 滚动回归：390 × 844、10 笔订单夹具下详情正文 `clientHeight=336`、`scrollHeight=3937`，滚轮后 `scrollTop` 从 0 移至 316.5 且未回到顶部。
 
 ## Comparison history
 
@@ -39,6 +42,11 @@
    - 1920 × 1080：三栏、风险入口、回执证据、策略演练、大数据量与滚轮通过。
    - 390 × 844：列表→会话→核对资料、自动回复商品列表→详情、长表单与滚轮通过。
    - 旧 UNKNOWN 记录经 V55 回填后显示 `LEGACY-EVENT-*` 和 `LEGACY-ATTEMPT-*`，不再显示“未返回”。
+4. v3.3.0-rc.2 独立缺陷回归：
+   - 先前 [P2] 手机买家详情头部操作文字被挤成竖排；修复为身份区与操作区纵向分层、两列弹性操作与独立 44 px 关闭位。390 × 844 复核无横向溢出，操作文字单行显示。
+   - 先前 [P2] 买家详情 ARIA 页签不响应 ArrowLeft/ArrowRight/Home/End；修复为 roving tabindex、焦点随选中项移动、tab/tabpanel 显式关联并同步 URL。浏览器实测 ArrowRight→会话、End→评价、Home→订单均通过。
+   - 390 × 844 长订单详情执行真实滚轮滚动后没有回弹到顶部；1920 × 1080 同状态布局、字体、暖黄令牌和内容密度无新增 P0/P1/P2。
+   - 最终浏览器控制台 error/warn 均为 0。
 
 ## Open Questions
 

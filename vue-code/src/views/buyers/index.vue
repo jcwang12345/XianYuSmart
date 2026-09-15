@@ -21,6 +21,8 @@ import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 type DetailTab = 'orders' | 'messages' | 'goods' | 'ratings'
 
+const detailTabOrder: DetailTab[] = ['orders', 'messages', 'goods', 'ratings']
+
 const route = useRoute()
 const router = useRouter()
 const routeAccountId = Number(route.query.accountId)
@@ -261,6 +263,20 @@ const openBuyerConversation = async () => {
   })
 }
 
+const switchDetailTabByKeyboard = async (event: KeyboardEvent) => {
+  const currentIndex = detailTabOrder.indexOf(detailTab.value)
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % detailTabOrder.length
+  else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + detailTabOrder.length) % detailTabOrder.length
+  else if (event.key === 'Home') nextIndex = 0
+  else if (event.key === 'End') nextIndex = detailTabOrder.length - 1
+  else return
+  event.preventDefault()
+  detailTab.value = detailTabOrder[nextIndex]!
+  await nextTick()
+  document.querySelector<HTMLElement>(`[data-buyer-detail-tab="${detailTab.value}"]`)?.focus()
+}
+
 const messageSender = (message: BuyerMessage) =>
   message.direction === 'BUYER' ? (message.senderUserName || detailProfile.value?.buyerUserName || '买家') : '商家'
 
@@ -377,8 +393,8 @@ onMounted(async () => {
               <span><small>买家全链路</small><h3 id="buyer-detail-title">{{ detailProfile.buyerUserName || '未命名买家' }}</h3><p>{{ detailProfile.buyerUserId }}</p></span>
             </div>
             <div class="detail-header-actions">
-              <button @click="openBuyerConversation">打开客服会话</button>
-              <button v-if="hasPermission('action:buyer-write')" @click="openEdit(detailProfile)">编辑资料</button>
+              <button class="detail-action" @click="openBuyerConversation"><span class="detail-action__desktop">打开客服会话</span><span class="detail-action__mobile">客服会话</span></button>
+              <button v-if="hasPermission('action:buyer-write')" class="detail-action" @click="openEdit(detailProfile)"><span class="detail-action__desktop">编辑资料</span><span class="detail-action__mobile">编辑资料</span></button>
               <button class="close" aria-label="关闭买家详情" @click="closeDetail">×</button>
             </div>
           </header>
@@ -398,14 +414,14 @@ onMounted(async () => {
               <p v-if="detail.profile.note">{{ detail.profile.note }}</p>
             </section>
 
-            <nav class="detail-tabs" role="tablist" aria-label="买家详情栏目">
-              <button :class="{ active: detailTab === 'orders' }" role="tab" :aria-selected="detailTab === 'orders'" @click="detailTab = 'orders'">订单 {{ detail.orders.length }}</button>
-              <button :class="{ active: detailTab === 'messages' }" role="tab" :aria-selected="detailTab === 'messages'" @click="detailTab = 'messages'">会话 {{ detail.messages.length }}</button>
-              <button :class="{ active: detailTab === 'goods' }" role="tab" :aria-selected="detailTab === 'goods'" @click="detailTab = 'goods'">商品 {{ detail.goods.length }}</button>
-              <button :class="{ active: detailTab === 'ratings' }" role="tab" :aria-selected="detailTab === 'ratings'" @click="detailTab = 'ratings'">评价记录</button>
+            <nav class="detail-tabs" role="tablist" aria-label="买家详情栏目" @keydown="switchDetailTabByKeyboard">
+              <button id="buyer-tab-orders" data-buyer-detail-tab="orders" :class="{ active: detailTab === 'orders' }" role="tab" aria-controls="buyer-panel-orders" :aria-selected="detailTab === 'orders'" :tabindex="detailTab === 'orders' ? 0 : -1" @click="detailTab = 'orders'">订单 {{ detail.orders.length }}</button>
+              <button id="buyer-tab-messages" data-buyer-detail-tab="messages" :class="{ active: detailTab === 'messages' }" role="tab" aria-controls="buyer-panel-messages" :aria-selected="detailTab === 'messages'" :tabindex="detailTab === 'messages' ? 0 : -1" @click="detailTab = 'messages'">会话 {{ detail.messages.length }}</button>
+              <button id="buyer-tab-goods" data-buyer-detail-tab="goods" :class="{ active: detailTab === 'goods' }" role="tab" aria-controls="buyer-panel-goods" :aria-selected="detailTab === 'goods'" :tabindex="detailTab === 'goods' ? 0 : -1" @click="detailTab = 'goods'">商品 {{ detail.goods.length }}</button>
+              <button id="buyer-tab-ratings" data-buyer-detail-tab="ratings" :class="{ active: detailTab === 'ratings' }" role="tab" aria-controls="buyer-panel-ratings" :aria-selected="detailTab === 'ratings'" :tabindex="detailTab === 'ratings' ? 0 : -1" @click="detailTab = 'ratings'">评价记录</button>
             </nav>
 
-            <main class="detail-body">
+            <main :id="`buyer-panel-${detailTab}`" class="detail-body" role="tabpanel" :aria-labelledby="`buyer-tab-${detailTab}`" tabindex="0">
               <section v-if="detailTab === 'orders'" class="order-list">
                 <article v-for="order in detail.orders" :key="order.id" class="order-card">
                   <div class="order-main">
@@ -526,7 +542,7 @@ button { border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 14px; backg
 .muted { color: #98a2b3; }.status { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; }.status.normal { color: #067647; background: #ecfdf3; }.status.blocked { color: #b42318; background: #fef3f2; }.blacklist-status { margin-left: 5px; }.link { padding: 0; border: 0; color: #9a6200; }.link.secondary { margin-left: 10px; color: #475467; }
 .empty { padding: 80px 20px; text-align: center; color: #98a2b3; }.empty.compact { padding: 40px 16px; }.error-state { display: grid; justify-items: center; gap: 8px; color: #b42318; }.error-state span { max-width: 560px; }.inline-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px; padding: 9px 12px; border: 1px solid #fda29b; border-radius: 7px; color: #b42318; background: #fef3f2; font-size: 12px; }.pager { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; font-size: 13px; color: #667085; }.pager div { display: flex; align-items: center; gap: 10px; }
 .detail-overlay { position: fixed; inset: 0; z-index: 2100; display: grid; place-items: center; padding: 22px; background: rgba(16,24,40,.46); backdrop-filter: blur(4px); }.detail-drawer { display: flex; flex-direction: column; width: min(1440px, calc(100vw - 44px)); height: min(900px, calc(100vh - 44px)); min-height: 620px; overflow: hidden; border: 1px solid #fff; border-radius: 22px; background: #f7f8fa; box-shadow: 0 30px 90px rgba(16,24,40,.28); }
-.detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e4e7ec; background: #fff; }.buyer-identity { display: flex; align-items: center; gap: 12px; }.buyer-identity .avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 9px; background: #9a6200; color: #fff; font-weight: 700; }.buyer-identity small, .buyer-identity p { color: #98a2b3; font-size: 11px; }.buyer-identity h3 { margin: 2px 0; font-size: 18px; }.detail-header-actions { display: flex; align-items: center; gap: 7px; }.close { padding: 2px 8px; border: 0; font-size: 23px; }
+.detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e4e7ec; background: #fff; }.buyer-identity { display: flex; min-width: 0; align-items: center; gap: 12px; }.buyer-identity > span:last-child { min-width: 0; }.buyer-identity .avatar { display: grid; flex: 0 0 auto; place-items: center; width: 42px; height: 42px; border-radius: 9px; background: #9a6200; color: #fff; font-weight: 700; }.buyer-identity small, .buyer-identity p { overflow: hidden; color: #98a2b3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.buyer-identity h3 { overflow: hidden; margin: 2px 0; font-size: 18px; text-overflow: ellipsis; white-space: nowrap; }.detail-header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }.detail-action { white-space: nowrap; }.detail-action__mobile { display: none; }.close { display: grid; flex: 0 0 auto; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; font-size: 23px; }
 .detail-loading { padding: 100px 20px; text-align: center; color: #667085; }.profile-strip { display: grid; grid-template-columns: repeat(5, 1fr); margin: 12px 14px 0; border: 1px solid #e4e7ec; border-radius: 9px; background: #fff; }.profile-strip > div { padding: 13px 15px; border-right: 1px solid #eaecf0; }.profile-strip > div:last-child { border-right: 0; }.profile-strip span { display: block; color: #667085; font-size: 11px; }.profile-strip strong { display: block; margin-top: 5px; font-size: 18px; }.profile-strip .danger { color: #b42318; }
 .profile-note { margin: 10px 14px 0; padding: 10px 13px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.profile-note p { margin-top: 6px; color: #667085; font-size: 12px; }.detail-tabs { display: flex; gap: 2px; margin: 12px 14px 0; padding: 4px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.detail-tabs button { flex: 1; border: 0; }.detail-tabs button.active { background: #fff8d9; color: #9a6200; font-weight: 600; }.profile-strip small { display: block; margin-top: 4px; color: #98a2b3; font-size: 10px; font-weight: 400; }
 .detail-body { flex: 1; margin: 10px 14px 14px; overflow: auto; }.order-list, .rating-list { display: grid; gap: 8px; }.order-card, .conversation-view, .goods-grid article, .rating-card { border: 1px solid #e4e7ec; border-radius: 9px; background: #fff; }.order-main { display: grid; grid-template-columns: minmax(210px, 1.4fr) minmax(170px, 1fr) minmax(150px, .8fr) 130px 90px; align-items: center; gap: 14px; padding: 14px 16px; }.order-main span strong, .order-main span small { display: block; }.order-main small { color: #98a2b3; font-size: 11px; }.order-main strong { margin-top: 4px; font-size: 12px; font-weight: 500; }.order-title > strong { margin-top: 0; color: #101828; font-size: 14px; font-weight: 600; }
@@ -536,5 +552,5 @@ button { border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 14px; backg
 .sync-tip { padding: 9px 12px; border: 1px solid #efd77f; border-radius: 7px; background: #eff4ff; color: #9a6200; font-size: 12px; }.rating-card { overflow: hidden; }.rating-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid #eaecf0; }.rating-card header strong, .rating-card header small { display: block; }.rating-card header small, .rating-card header > span:last-child { margin-top: 3px; color: #667085; font-size: 11px; }.rating-status { display: flex; align-items: center; gap: 8px; }.rating-status button { padding: 4px 8px; color: #9a6200; font-size: 11px; }.rating-columns { display: grid; grid-template-columns: 1fr 1fr; }.rating-columns > section { padding: 13px 14px; }.rating-columns > section + section { border-left: 1px solid #eaecf0; }.rating-columns h4 { margin-bottom: 9px; font-size: 12px; }.rate-content { padding: 9px 10px; border-radius: 6px; background: #f9fafb; }.rate-content + .rate-content { margin-top: 6px; }.rate-content p { font-size: 12px; line-height: 1.55; }.rate-content small { display: block; margin-top: 5px; color: #98a2b3; font-size: 10px; }.clear-filter { justify-self: start; }
 .overlay { position: fixed; inset: 0; z-index: 2300; display: grid; place-items: center; padding: 20px; background: rgba(16,24,40,.45); }.dialog { width: min(520px, 100%); max-height: calc(100dvh - 40px); overflow: auto; padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px rgba(16,24,40,.2); }.dialog header, .dialog footer, .switch-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }.dialog header { margin-bottom: 18px; }.dialog header p, .dialog label, .switch-row small { color: #667085; font-size: 13px; }.dialog label { display: grid; gap: 6px; margin: 13px 0; }.dialog label input, .dialog label textarea { width: 100%; }.dialog .switch-row { display: flex; padding: 12px; border: 1px solid #eaecf0; border-radius: 8px; color: #344054; }.dialog .blacklist-switch { border-color: #f0b2aa; background: #fff8f7; }.switch-row span, .switch-row small { display: block; }.switch-row input { width: auto; }.dialog footer { justify-content: flex-end; margin-top: 18px; }
 @media (max-width: 1000px) { .toolbar { align-items: stretch; flex-direction: column; }.filters > * { flex: 1; min-width: 140px; }.filters input { width: auto; }.profile-strip { grid-template-columns: repeat(3, 1fr); }.profile-strip > div:nth-child(3) { border-right: 0; }.order-main { grid-template-columns: 1fr 1fr; }.goods-grid { grid-template-columns: 1fr; } }
-@media (max-width: 700px) { .buyer-page { padding: 10px; }.detail-overlay { padding: 0; }.detail-drawer { width: 100vw; height: 100dvh; min-height: 0; border: 0; border-radius: 0; }.detail-header { padding: 12px; }.profile-strip { grid-template-columns: 1fr 1fr; }.profile-strip > div { border-bottom: 1px solid #eaecf0; }.detail-tabs { overflow-x: auto; }.detail-tabs button { min-width: 90px; }.order-main { grid-template-columns: 1fr; }.order-links { align-items: stretch; flex-direction: column; }.conversation-view > header { align-items: stretch; flex-direction: column; }.conversation-view select { max-width: none; }.message { width: 85%; }.rating-columns { grid-template-columns: 1fr; }.rating-columns > section + section { border-left: 0; border-top: 1px solid #eaecf0; } }
+@media (max-width: 700px) { .buyer-page { padding: 10px; }.detail-overlay { padding: 0; }.detail-drawer { width: 100vw; height: 100dvh; min-height: 0; border: 0; border-radius: 0; }.detail-header { align-items: stretch; flex-direction: column; gap: 10px; padding: 12px; }.detail-header-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) 44px; width: 100%; }.detail-header-actions button { min-width: 0; min-height: 44px; }.detail-action__desktop { display: none; }.detail-action__mobile { display: inline; }.detail-header-actions .close { width: 44px; height: 44px; }.profile-strip { grid-template-columns: 1fr 1fr; }.profile-strip > div { border-bottom: 1px solid #eaecf0; }.detail-tabs { overflow-x: auto; }.detail-tabs button { min-width: 90px; min-height: 44px; }.order-main { grid-template-columns: 1fr; }.order-links { align-items: stretch; flex-direction: column; }.conversation-view > header { align-items: stretch; flex-direction: column; }.conversation-view select { max-width: none; }.message { width: 85%; }.rating-columns { grid-template-columns: 1fr; }.rating-columns > section + section { border-left: 0; border-top: 1px solid #eaecf0; } }
 </style>
