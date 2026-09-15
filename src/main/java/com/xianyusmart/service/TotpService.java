@@ -5,9 +5,12 @@ import com.google.zxing.BarcodeFormat;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.xianyusmart.entity.SysUser;
+import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.SysUserMapper;
 import com.xianyusmart.security.SensitiveDataCodec;
+import com.xianyusmart.cache.CacheService;
+import com.google.gson.Gson;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,21 +28,32 @@ import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /** 标准 TOTP 两步验证和一次性恢复码。 */
 @Service
 public class TotpService {
 
     private static final String ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    private static final String ATTEMPT_PREFIX = "totp_attempt:";
+    private static final int MAX_ATTEMPTS = 5;
+    private static final long ATTEMPT_WINDOW_MINUTES = 10;
     private final SysUserMapper userMapper;
+    private final CacheService cacheService;
+    private final OperationLogService operationLogService;
+    private final Gson gson = new Gson();
     private final SecureRandom random = new SecureRandom();
 
-    public TotpService(SysUserMapper userMapper) {
+    public TotpService(SysUserMapper userMapper, CacheService cacheService,
+                       OperationLogService operationLogService) {
         this.userMapper = userMapper;
+        this.cacheService = cacheService;
+        this.operationLogService = operationLogService;
     }
 
     @Transactional
-    public Map<String, Object> begin(Long userId) {
+    public Map<String, Object> begin(Long userId, String requestId) {
         SysUser user = requireUser(userId);
         if (Integer.valueOf(1).equals(user.getTotpEnabled())) {
             throw new BusinessException(409, "两步验证已经启用，请先验证并关闭后再重新绑定");
@@ -51,6 +65,8 @@ public class TotpService {
         user.setTotpEnabled(0);
         user.setTotpRecoveryCodes(null);
         userMapper.updateById(user);
+        audit(user, "TWO_FACTOR_ENROLLMENT_BEGIN", requestId,
+                Map.of("enrollment", "NOT_STARTED"), Map.of("enrollment", "PENDING"));
         String label = "XianYuSmart:" + user.getUsername();
         String uri = "otpauth://totp/" + url(label) + "?secret=" + secret
                 + "&issuer=XianYuSmart&algorithm=SHA1&digits=6&period=30";
@@ -58,9 +74,11 @@ public class TotpService {
     }
 
     @Transactional
-    public List<String> confirm(Long userId, String code) {
+    public List<String> confirm(Long userId, String code, String requestId) {
         SysUser user = requireUser(userId);
+        assertAttemptAllowed(userId);
         if (user.getTotpSecret() == null || !verify(SensitiveDataCodec.decrypt(user.getTotpSecret()), code)) {
+            recordFailure(userId);
             throw new BusinessException(400, "两步验证码不正确");
         }
         List<String> recoveryCodes = generateRecoveryCodes();
@@ -68,30 +86,51 @@ public class TotpService {
         user.setTotpRecoveryCodes(recoveryCodes.stream().map(this::normalizeRecoveryCode).map(this::hash)
                 .reduce((a, b) -> a + "," + b).orElse(""));
         userMapper.updateById(user);
+        clearFailures(userId);
+        audit(user, "TWO_FACTOR_ENABLED", requestId,
+                Map.of("enabled", false, "recoveryCodeCount", 0),
+                Map.of("enabled", true, "recoveryCodeCount", recoveryCodes.size()));
         return recoveryCodes;
     }
 
     @Transactional
-    public void disable(Long userId, String code) {
+    public void disable(Long userId, String code, String requestId) {
         SysUser user = requireUser(userId);
+        int recoveryCount = recoveryCodeCount(user);
         if (!verifyForUser(user, code)) throw new BusinessException(400, "验证码或恢复码不正确");
         user.setTotpEnabled(0);
         user.setTotpSecret(null);
         user.setTotpRecoveryCodes(null);
         userMapper.updateById(user);
+        audit(user, "TWO_FACTOR_DISABLED", requestId,
+                Map.of("enabled", true, "recoveryCodeCount", recoveryCount),
+                Map.of("enabled", false, "recoveryCodeCount", 0));
     }
 
     @Transactional
     public boolean verifyForUser(SysUser user, String code) {
         if (user == null || !Integer.valueOf(1).equals(user.getTotpEnabled())) return true;
-        if (verify(SensitiveDataCodec.decrypt(user.getTotpSecret()), code)) return true;
+        if (!attemptAllowed(user.getId())) return false;
+        if (verify(SensitiveDataCodec.decrypt(user.getTotpSecret()), code)) {
+            clearFailures(user.getId());
+            return true;
+        }
         String codeHash = hash(normalizeRecoveryCode(code));
         List<String> hashes = new ArrayList<>(user.getTotpRecoveryCodes() == null || user.getTotpRecoveryCodes().isBlank()
                 ? List.of() : List.of(user.getTotpRecoveryCodes().split(",")));
-        if (!hashes.remove(codeHash)) return false;
+        if (!hashes.remove(codeHash)) {
+            recordFailure(user.getId());
+            return false;
+        }
         user.setTotpRecoveryCodes(String.join(",", hashes));
         userMapper.updateById(user);
+        clearFailures(user.getId());
         return true;
+    }
+
+    public int recoveryCodeCount(SysUser user) {
+        if (user == null || user.getTotpRecoveryCodes() == null || user.getTotpRecoveryCodes().isBlank()) return 0;
+        return (int) List.of(user.getTotpRecoveryCodes().split(",")).stream().filter(value -> !value.isBlank()).count();
     }
 
     public boolean verify(String secret, String code) {
@@ -143,6 +182,54 @@ public class TotpService {
         SysUser user = userMapper.selectOne(new LambdaQueryWrapper<SysUser>().eq(SysUser::getId, userId));
         if (user == null) throw new BusinessException(404, "用户不存在");
         return user;
+    }
+
+    private void assertAttemptAllowed(Long userId) {
+        if (!attemptAllowed(userId)) {
+            throw new BusinessException(429, "两步验证码错误次数过多，请10分钟后再试");
+        }
+    }
+
+    private boolean attemptAllowed(Long userId) {
+        Object value = cacheService.get(ATTEMPT_PREFIX + userId);
+        if (value == null) return true;
+        try {
+            return Long.parseLong(value.toString()) < MAX_ATTEMPTS;
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private void recordFailure(Long userId) {
+        String key = ATTEMPT_PREFIX + userId;
+        boolean existed = cacheService.containsKey(key);
+        cacheService.increment(key);
+        if (!existed || cacheService.getExpire(key) == -1) {
+            cacheService.expire(key, ATTEMPT_WINDOW_MINUTES, TimeUnit.MINUTES);
+        }
+    }
+
+    private void clearFailures(Long userId) {
+        cacheService.remove(ATTEMPT_PREFIX + userId);
+    }
+
+    private void audit(SysUser user, String operationType, String requestId,
+                       Map<String, Object> before, Map<String, Object> after) {
+        XianyuOperationLog log = new XianyuOperationLog();
+        log.setOperationType(operationType);
+        log.setOperationModule("账号安全");
+        log.setOperationDesc("更新两步验证安全状态");
+        log.setOperationStatus(1);
+        log.setOutcomeState("LOCAL_SUCCESS");
+        log.setDataSource("LOCAL");
+        log.setRequestId(requestId == null || requestId.isBlank()
+                ? "two-factor-" + UUID.randomUUID() : requestId.trim());
+        log.setTargetType("SYS_USER");
+        log.setTargetId(String.valueOf(user.getId()));
+        log.setRequestParams(gson.toJson(before));
+        log.setResponseResult(gson.toJson(after));
+        log.setFieldDiffJson(gson.toJson(Map.of("before", before, "after", after)));
+        operationLogService.logRequired(log);
     }
 
     private String hash(String value) {

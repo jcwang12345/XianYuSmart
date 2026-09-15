@@ -2,8 +2,10 @@ import { request } from '@/utils/request'
 
 export interface SysSetting {
   settingKey: string
-  settingValue: string
-  settingDesc: string
+  settingValue: string | null
+  settingDesc: string | null
+  configured?: boolean | null
+  updatedTime?: string | null
 }
 
 /** 获取配置 */
@@ -25,11 +27,14 @@ export function getAllSettings() {
 }
 
 /** 保存配置 */
-export function saveSetting(data: { settingKey: string; settingValue: string; settingDesc?: string }) {
-  return request<null>({
+export function saveSetting(data: { settingKey: string; settingValue: string; settingDesc?: string; requestId?: string }) {
+  return request<SysSetting>({
     url: '/setting/save',
     method: 'post',
-    data
+    data: {
+      ...data,
+      requestId: data.requestId || `setting-${crypto.randomUUID()}`
+    }
   })
 }
 

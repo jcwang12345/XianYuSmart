@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 系统配置控制器
@@ -22,6 +23,9 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/setting")
 public class SysSettingController {
+
+    private static final Set<String> WRITE_ONLY_KEYS = Set.of(
+            "ai_api_key", "ai_embedding_api_key", "ai_image_api_key", "email_smtp_password");
 
     @Autowired
     private SysSettingService sysSettingService;
@@ -52,10 +56,15 @@ public class SysSettingController {
                 respDTO.setSettingKey(respBO.getSettingKey());
                 respDTO.setSettingValue(respBO.getSettingValue());
                 respDTO.setSettingDesc(respBO.getSettingDesc());
+                respDTO.setConfigured(respBO.getConfigured());
+                respDTO.setUpdatedTime(respBO.getUpdatedTime());
             } else {
                 respDTO.setSettingKey(reqDTO.getSettingKey());
                 respDTO.setSettingValue(null);
                 respDTO.setSettingDesc(null);
+                if (WRITE_ONLY_KEYS.contains(reqDTO.getSettingKey().trim())) {
+                    respDTO.setConfigured(false);
+                }
             }
             return ResultObject.success(respDTO);
         } catch (Exception e) {
@@ -78,6 +87,8 @@ public class SysSettingController {
                 respDTO.setSettingKey(respBO.getSettingKey());
                 respDTO.setSettingValue(respBO.getSettingValue());
                 respDTO.setSettingDesc(respBO.getSettingDesc());
+                respDTO.setConfigured(respBO.getConfigured());
+                respDTO.setUpdatedTime(respBO.getUpdatedTime());
                 result.add(respDTO);
             }
 
@@ -105,9 +116,16 @@ public class SysSettingController {
             reqBO.setSettingKey(reqDTO.getSettingKey());
             reqBO.setSettingValue(reqDTO.getSettingValue());
             reqBO.setSettingDesc(reqDTO.getSettingDesc());
+            reqBO.setRequestId(reqDTO.getRequestId());
 
-            sysSettingService.saveSetting(reqBO);
-            return ResultObject.success(null);
+            GetSettingRespBO saved = sysSettingService.saveSetting(reqBO);
+            GetSettingRespDTO response = new GetSettingRespDTO();
+            response.setSettingKey(saved.getSettingKey());
+            response.setSettingValue(saved.getSettingValue());
+            response.setSettingDesc(saved.getSettingDesc());
+            response.setConfigured(saved.getConfigured());
+            response.setUpdatedTime(saved.getUpdatedTime());
+            return ResultObject.success(response);
         } catch (IllegalArgumentException e) {
             return ResultObject.validateFailed(e.getMessage());
         } catch (Exception e) {

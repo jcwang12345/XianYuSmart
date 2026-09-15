@@ -1,6 +1,7 @@
 package com.xianyusmart.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.google.gson.Gson;
 import com.xianyusmart.controller.dto.PlatformUserPasswordReqDTO;
 import com.xianyusmart.controller.dto.PlatformUserRespDTO;
 import com.xianyusmart.controller.dto.PlatformUserSaveReqDTO;
@@ -21,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Objects;
 
 /**
  * 全站账号与权限管理
@@ -36,6 +38,7 @@ public class PlatformUserService {
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private final Gson gson = new Gson();
 
     public PlatformUserService(SysUserMapper userMapper,
                                SysLoginTokenMapper loginTokenMapper,
@@ -66,6 +69,7 @@ public class PlatformUserService {
     @Transactional
     public PlatformUserRespDTO save(PlatformUserSaveReqDTO request) {
         String requestId=requireRequestId(request==null?null:request.getRequestId());
+        PlatformUserRespDTO before = request.getId() == null ? null : existingResponse(request.getId());
         assertPlatformRoleChangeAllowed(request.getId(), request.getRole());
         String role = normalizeRole(request.getRole());
         String memberRole = normalizeMemberRole(request.getMemberRole(), role);
@@ -86,8 +90,14 @@ public class PlatformUserService {
         }
         accountAccessService.replaceScope(user.getId(), user.getTenantId(), scopeMode,
                 request.getAccountIds(), request.getAccountGroupIds());
-        audit("TEAM_MEMBER_SAVE","保存团队成员",user.getId(),requestId);
-        return toResponse(userMapper.selectById(user.getId()));
+        PlatformUserRespDTO after = toResponse(userMapper.selectById(user.getId()));
+        Map<String, Object> diff = memberDiff(before, after);
+        if (before != null && !diff.isEmpty()) {
+            // 让角色、权限或账号范围收窄对旧会话的下一次请求立即生效。
+            revokeTokens(user.getId());
+        }
+        auditMemberChange(user.getId(), requestId, before, after, diff);
+        return after;
     }
 
     @Transactional
@@ -106,11 +116,13 @@ public class PlatformUserService {
         if (SysUser.ROLE_ADMIN.equalsIgnoreCase(user.getRole()) && !isActorPlatformAdmin()) {
             throw new BusinessException(403, "租户管理员不能重置平台管理员密码");
         }
+        Long activeSessions = loginTokenMapper.selectCount(new LambdaQueryWrapper<SysLoginToken>()
+                .eq(SysLoginToken::getUserId, user.getId()));
         user.setPassword(passwordEncoder.encode(request.getNewPassword()));
         user.setUpdatedTime(now());
         userMapper.updateById(user);
         revokeTokens(user.getId());
-        audit("TEAM_MEMBER_PASSWORD_RESET","重置团队成员密码并撤销设备会话",user.getId(),requestId);
+        auditPasswordReset(user.getId(), requestId, activeSessions == null ? 0 : activeSessions);
     }
 
     public List<PermissionCatalog.PermissionOption> permissionOptions() {
@@ -277,6 +289,16 @@ public class PlatformUserService {
                 .eq(SysLoginToken::getUserId, userId));
     }
 
+    private PlatformUserRespDTO existingResponse(Long userId) {
+        SysUser existing = userMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getId, userId)
+                .eq(SysUser::getTenantId, requireTenantId()));
+        if (existing == null) {
+            throw new BusinessException(404, "平台账号不存在");
+        }
+        return toResponse(existing);
+    }
+
     private PlatformUserRespDTO toResponse(SysUser user) {
         PlatformUserRespDTO response = new PlatformUserRespDTO();
         response.setId(user.getId());
@@ -312,11 +334,69 @@ public class PlatformUserService {
         String text=value.trim();if(text.length()>80)throw new BusinessException(400,"requestId不能超过80个字符");return text;
     }
 
-    private void audit(String type,String description,Long targetId,String requestId){
+    private Map<String, Object> memberSnapshot(PlatformUserRespDTO user) {
+        if (user == null) return null;
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("username", user.getUsername());
+        snapshot.put("role", user.getRole());
+        snapshot.put("memberRole", user.getMemberRole());
+        snapshot.put("status", user.getStatus());
+        snapshot.put("accountScopeMode", user.getAccountScopeMode());
+        snapshot.put("permissions", user.getPermissions() == null ? List.of() : user.getPermissions());
+        snapshot.put("accountIds", user.getAccountIds() == null ? List.of() : user.getAccountIds());
+        snapshot.put("accountGroupIds", user.getAccountGroupIds() == null ? List.of() : user.getAccountGroupIds());
+        return snapshot;
+    }
+
+    private Map<String, Object> memberDiff(PlatformUserRespDTO before, PlatformUserRespDTO after) {
+        Map<String, Object> beforeMap = memberSnapshot(before);
+        Map<String, Object> afterMap = memberSnapshot(after);
+        Map<String, Object> diff = new LinkedHashMap<>();
+        if (beforeMap == null) {
+            afterMap.forEach((key, value) -> {
+                Map<String, Object> change = new LinkedHashMap<>();
+                change.put("before", "未创建");
+                change.put("after", value);
+                diff.put(key, change);
+            });
+            return diff;
+        }
+        afterMap.forEach((key, value) -> {
+            Object old = beforeMap.get(key);
+            if (!Objects.equals(old, value)) {
+                Map<String, Object> change = new LinkedHashMap<>();
+                change.put("before", old);
+                change.put("after", value);
+                diff.put(key, change);
+            }
+        });
+        return diff;
+    }
+
+    private void auditMemberChange(Long targetId, String requestId, PlatformUserRespDTO before,
+                                   PlatformUserRespDTO after, Map<String, Object> diff) {
         com.xianyusmart.entity.XianyuOperationLog event=new com.xianyusmart.entity.XianyuOperationLog();
-        event.setOperationType(type);event.setOperationModule("团队与权限");event.setOperationDesc(description);
+        event.setOperationType("TEAM_MEMBER_SAVE");event.setOperationModule("团队与权限");
+        event.setOperationDesc(before == null ? "创建团队成员并应用最小权限" : "更新团队成员权限与账号范围");
         event.setOperationStatus(1);event.setTargetType("SYS_USER");event.setTargetId(String.valueOf(targetId));
         event.setRequestId(requestId);event.setIdempotencyKey(requestId);event.setOutcomeState("LOCAL_SUCCESS");event.setDataSource("LOCAL");
-        operationLogService.log(event);
+        event.setRequestParams(gson.toJson(Map.of("before", memberSnapshot(before) == null ? "未创建" : memberSnapshot(before))));
+        event.setResponseResult(gson.toJson(Map.of("after", memberSnapshot(after))));
+        event.setFieldDiffJson(gson.toJson(diff));
+        operationLogService.logRequired(event);
+    }
+
+    private void auditPasswordReset(Long targetId, String requestId, long revokedSessions) {
+        com.xianyusmart.entity.XianyuOperationLog event = new com.xianyusmart.entity.XianyuOperationLog();
+        event.setOperationType("TEAM_MEMBER_PASSWORD_RESET");event.setOperationModule("团队与权限");
+        event.setOperationDesc("重置团队成员密码并撤销设备会话");event.setOperationStatus(1);
+        event.setTargetType("SYS_USER");event.setTargetId(String.valueOf(targetId));event.setRequestId(requestId);
+        event.setIdempotencyKey(requestId);event.setOutcomeState("LOCAL_SUCCESS");event.setDataSource("LOCAL");
+        event.setRequestParams("{\"password\":\"已提供但不记录\"}");
+        event.setResponseResult(gson.toJson(Map.of("revokedSessions", revokedSessions)));
+        event.setFieldDiffJson(gson.toJson(Map.of(
+                "password", Map.of("before", "已配置", "after", "已更新"),
+                "activeSessions", Map.of("before", revokedSessions, "after", 0))));
+        operationLogService.logRequired(event);
     }
 }

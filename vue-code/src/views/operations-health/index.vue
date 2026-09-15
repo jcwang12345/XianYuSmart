@@ -393,20 +393,30 @@ onMounted(async () => {
       <section v-if="overview" class="summary" :class="overview.overallStatus.toLowerCase()">
         <div>
           <span>当前状态</span>
-          <strong>{{ overview.overallStatus === 'HEALTHY' ? '运行正常' : overview.overallStatus === 'CRITICAL' ? '需要立即处理' : '存在待处理项' }}</strong>
+          <strong>{{ overview.overallStatus === 'HEALTHY' ? '运行正常' : overview.overallStatus === 'CRITICAL' ? '需要立即处理' : overview.overallStatus === 'UNKNOWN' ? '部分状态未知' : '存在待处理项' }}</strong>
         </div>
         <div><span>紧急异常</span><strong>{{ overview.criticalCount }}</strong></div>
         <div><span>一般提醒</span><strong>{{ overview.warningCount }}</strong></div>
+        <div><span>状态未知</span><strong>{{ overview.unknownCount }}</strong></div>
+      </section>
+      <section v-if="overview" class="diagnostic-counts panel">
+        <div><span>系统提醒</span><strong>{{ overview.countGroups.systemReminders }}</strong></div>
+        <div><span>业务待办</span><strong>{{ overview.countGroups.businessActions }}</strong></div>
+        <div><span>外部投递失败</span><strong>{{ overview.countGroups.externalDeliveryFailures }}</strong></div>
+        <p>{{ overview.countRelationship }}</p>
+        <small>证据时间 {{ formatDateTime(overview.evidenceTime) }} · 来源 {{ overview.dataSource }}</small>
       </section>
       <section class="check-grid">
         <article v-for="check in overview?.checks || []" :key="check.key" class="panel check">
           <header>
             <strong>{{ check.name }}</strong>
-            <span :class="check.status === 'HEALTHY' ? 'badge success' : 'badge warning'">
-              {{ check.status === 'HEALTHY' ? '正常' : `${check.count} 项` }}
+            <span :class="check.status === 'HEALTHY' ? 'badge success' : check.status === 'UNKNOWN' ? 'badge unknown' : 'badge warning'">
+              {{ check.status === 'HEALTHY' ? '正常' : check.status === 'UNKNOWN' ? '未知' : `${check.count} 项` }}
             </span>
           </header>
-          <p>{{ check.status === 'HEALTHY' ? '当前未发现异常。' : check.action }}</p>
+          <p class="check-impact">影响：{{ check.impact }}</p>
+          <p>处理：{{ check.action }}</p>
+          <small>证据 {{ formatDateTime(check.evidenceTime) }} · {{ check.source }}</small>
         </article>
       </section>
     </template>
@@ -545,13 +555,21 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .tabs { display: flex; gap: 4px; margin: 12px 0; border-bottom: 1px solid #eaecf0; }
 .tabs button { border: 0; border-radius: 6px 6px 0 0; background: transparent; color: #667085; }
 .tabs button.active { color: #9a6200; background: #fff8d9; font-weight: 600; }
-.summary { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1px; margin-bottom: 12px; overflow: hidden; border: 1px solid #eaecf0; border-radius: 10px; background: #eaecf0; }
+.summary { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 1px; margin-bottom: 12px; overflow: hidden; border: 1px solid #eaecf0; border-radius: 10px; background: #eaecf0; }
 .summary > div { padding: 18px; background: #fff; } .summary span, .summary strong { display: block; } .summary span { color: #667085; font-size: 12px; }
-.summary strong { margin-top: 5px; font-size: 20px; } .summary.critical strong { color: #b42318; } .summary.warning strong { color: #b54708; } .summary.healthy strong { color: #067647; }
+.summary strong { margin-top: 5px; font-size: 20px; } .summary.critical strong { color: #b42318; } .summary.warning strong { color: #b54708; } .summary.healthy strong { color: #067647; } .summary.unknown strong { color: #475467; }
+.diagnostic-counts { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; margin-bottom: 12px; overflow: hidden; background: #eaecf0; }
+.diagnostic-counts > div { padding: 14px 16px; background: #fff; }
+.diagnostic-counts > div span,.diagnostic-counts > div strong { display: block; }
+.diagnostic-counts > div span { color: #667085; font-size: 12px; }
+.diagnostic-counts > div strong { margin-top: 4px; font-size: 18px; }
+.diagnostic-counts > p,.diagnostic-counts > small { grid-column: 1/-1; padding: 10px 16px; color: #667085; background: #fffcf0; font-size: 12px; line-height: 1.6; }
+.diagnostic-counts > small { padding-top: 0; }
 .check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
-.check { padding: 16px; } .check header { display: flex; justify-content: space-between; gap: 12px; } .check p { margin-top: 16px; color: #667085; font-size: 13px; }
+.check { padding: 16px; } .check header { display: flex; justify-content: space-between; gap: 12px; } .check p { margin-top: 10px; color: #667085; font-size: 13px; }.check .check-impact{color:#344054}.check>small{display:block;margin-top:12px;color:#98a2b3;font-size:11px}
 .badge { display: inline-block; width: max-content; padding: 3px 8px; border-radius: 12px; color: #475467; background: #f2f4f7; font-size: 12px; white-space: nowrap; }
 .badge.success { color: #067647; background: #ecfdf3; } .badge.warning { color: #b54708; background: #fffaeb; }
+.badge.unknown { color: #475467; background: #f2f4f7; }
 .badge.danger-badge { color: #b42318; background: #fef3f2; }
 .actions a { display:inline-flex; align-items:center; padding:8px 12px; border:1px solid #d0d5dd; border-radius:6px; color:#344054; text-decoration:none; }
 .list { overflow: hidden; } .list article { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 16px; border-bottom: 1px solid #eaecf0; }
@@ -583,5 +601,5 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .dialog fieldset { border: 1px solid #eaecf0; border-radius: 8px; } .dialog .check-option { display: inline-flex; align-items: center; gap: 5px; margin-right: 16px; }
 .dialog .check-option input, .dialog .enabled input { width: auto; } .dialog .enabled { display: flex; padding: 10px 0; color: #344054; }
 .dialog footer { justify-content: flex-end; margin-top: 18px; } .close { border: 0; padding: 3px 8px; font-size: 22px; }
-@media (max-width: 720px) { .summary { grid-template-columns: 1fr; } .page-head, .list article { align-items: stretch; flex-direction: column; } .actions { justify-content: flex-end; flex-wrap: wrap; } .exception-actions { justify-content: space-between; } .item-meta { align-items: flex-start; text-align: left; } .channel-types { grid-template-columns: repeat(2, 1fr); } .inbox-toolbar { grid-template-columns: 1fr; } .inbox-scope-note { flex-direction: column; } }
+@media (max-width: 720px) { .summary,.diagnostic-counts { grid-template-columns: 1fr; } .page-head, .list article { align-items: stretch; flex-direction: column; } .actions { justify-content: flex-end; flex-wrap: wrap; } .exception-actions { justify-content: space-between; } .item-meta { align-items: flex-start; text-align: left; } .channel-types { grid-template-columns: repeat(2, 1fr); } .inbox-toolbar { grid-template-columns: 1fr; } .inbox-scope-note { flex-direction: column; } }
 </style>

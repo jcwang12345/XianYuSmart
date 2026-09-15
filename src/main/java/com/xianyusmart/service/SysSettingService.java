@@ -28,7 +28,7 @@ public interface SysSettingService {
     /**
      * 保存配置
      */
-    void saveSetting(SaveSettingReqBO reqBO);
+    GetSettingRespBO saveSetting(SaveSettingReqBO reqBO);
 
     /**
      * 删除配置

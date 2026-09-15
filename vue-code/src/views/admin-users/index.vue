@@ -42,6 +42,32 @@ const menuGroups = computed(() => groupOptions('MENU'))
 const actionGroups = computed(() => groupOptions('ACTION'))
 const isCreating = computed(() => editing.value === null)
 const canManageOwner = computed(() => isPlatformAdmin.value || permissionState.value?.memberRole === 'OWNER')
+const permissionLabel = (code: string) => options.value.find(option => option.code === code)?.label || code
+const permissionDiff = computed(() => {
+  const before = new Set(editing.value?.permissions || [])
+  const after = new Set(form.value.role === 'ADMIN' ? options.value.map(option => option.code) : form.value.permissions)
+  return {
+    added: [...after].filter(code => !before.has(code)).map(permissionLabel),
+    removed: [...before].filter(code => !after.has(code)).map(permissionLabel)
+  }
+})
+const scopeSummary = computed(() => {
+  if (form.value.role === 'ADMIN') return '全站管理范围；不受菜单和店铺范围限制'
+  if (form.value.accountScopeMode === 'ALL') return '全部闲鱼账号，包括以后新增账号'
+  const direct = form.value.accountIds.length
+  const groups = form.value.accountGroupIds.length
+  return `仅指定范围：${direct} 个直授权账号 + ${groups} 个动态分组`
+})
+const accessWillBeRevoked = computed(() => !!editing.value && (
+  editing.value.status !== form.value.status
+  || editing.value.role !== form.value.role
+  || editing.value.memberRole !== form.value.memberRole
+  || editing.value.accountScopeMode !== form.value.accountScopeMode
+  || permissionDiff.value.added.length > 0
+  || permissionDiff.value.removed.length > 0
+  || JSON.stringify([...(editing.value.accountIds || [])].sort()) !== JSON.stringify([...form.value.accountIds].sort())
+  || JSON.stringify([...(editing.value.accountGroupIds || [])].sort()) !== JSON.stringify([...form.value.accountGroupIds].sort())
+))
 
 function groupOptions(type: 'MENU' | 'ACTION') {
   return options.value
@@ -333,6 +359,14 @@ onMounted(load)
             </section>
           </div>
 
+          <section class="access-preview" aria-live="polite">
+            <div><strong>保存前范围摘要</strong><span>{{ scopeSummary }}</span></div>
+            <div v-if="permissionDiff.added.length"><strong>新增权限 {{ permissionDiff.added.length }} 项</strong><span>{{ permissionDiff.added.join('、') }}</span></div>
+            <div v-if="permissionDiff.removed.length"><strong>移除权限 {{ permissionDiff.removed.length }} 项</strong><span>{{ permissionDiff.removed.join('、') }}</span></div>
+            <div v-if="!permissionDiff.added.length && !permissionDiff.removed.length"><strong>权限项无变化</strong><span>仍会按上方角色、状态和账号范围进行校验。</span></div>
+            <p v-if="accessWillBeRevoked">保存后将撤销该成员现有设备会话，下一次请求必须重新登录。</p>
+          </section>
+
           <footer>
             <button @click="closeEditor">取消</button>
             <button class="primary" :disabled="saving" @click="save">{{ saving ? '保存中...' : '保存账号与权限' }}</button>
@@ -377,11 +411,15 @@ label { color: #475467; font-size: 13px; }.base-form label, .password-dialog lab
 .admin-notice { margin: 0 20px 20px; padding: 13px 14px; border: 1px solid #efd77f; border-radius: 8px; background: #eff4ff; color: #344054; font-size: 13px; }
 .scope-form { display: grid; grid-template-columns: 1fr 2fr; gap: 12px; margin: 0 20px 18px; padding: 13px; border: 1px solid #d1e9ff; border-radius: 8px; background: #f5fbff; }.scope-form label { display: grid; gap: 6px; }.scope-form select[multiple] { min-height: 90px; }
 .permission-sections { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 0 20px 18px; overflow: auto; }.permission-sections > section { border: 1px solid #e4e7ec; border-radius: 9px; overflow: hidden; }
+.access-preview { display: grid; gap: 8px; margin: 0 20px 16px; padding: 12px 14px; border: 1px solid #efd77f; border-radius: 9px; background: #fffaf0; }
+.access-preview div { display: grid; grid-template-columns: minmax(130px, auto) 1fr; gap: 10px; font-size: 12px; }
+.access-preview strong { color: #7a4c00; }.access-preview span { color: #475467; overflow-wrap: anywhere; }
+.access-preview p { color: #b42318; font-size: 12px; font-weight: 600; }
 .section-title { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #eaecf0; }.section-title strong, .section-title small { display: block; }.section-title small { margin-top: 3px; color: #98a2b3; font-size: 11px; }.section-title button { padding: 4px 8px; font-size: 12px; }
 .permission-group { display: grid; grid-template-columns: 120px 1fr 1fr; align-items: center; gap: 8px; min-height: 40px; padding: 7px 12px; border-bottom: 1px solid #f2f4f7; }.permission-group:last-child { border-bottom: 0; }
 .group-check, .permission-option { display: flex; align-items: center; gap: 7px; }.group-check { color: #344054; font-weight: 600; }.permission-option input, .group-check input { width: 15px; height: 15px; margin: 0; }
 .editor > footer, .password-dialog footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid #eaecf0; }
 .password-dialog { width: min(440px, 96vw); padding-bottom: 4px; border-radius: 12px; background: #fff; }.password-dialog header { padding: 16px 18px; }.password-dialog header p { margin-top: 3px; color: #667085; font-size: 12px; }.password-dialog > label, .password-dialog .hint { margin: 16px 18px 0; }.hint { color: #667085; font-size: 12px; line-height: 1.6; }
 @media (max-width: 900px) { .account-row { grid-template-columns: 1fr 1fr; }.actions { justify-content: flex-start; }.permission-sections { grid-template-columns: 1fr; }.base-form, .scope-form { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .permission-page { padding: 10px; }.permission-hero { align-items: stretch; flex-direction: column; }.summary-grid { grid-template-columns: 1fr; }.account-row { grid-template-columns: 1fr; }.overlay { padding: 0; }.editor { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }.permission-group { grid-template-columns: 1fr 1fr; }.group-check { grid-column: 1 / -1; } }
+@media (max-width: 600px) { .permission-page { padding: 10px; }.permission-hero { align-items: stretch; flex-direction: column; }.summary-grid { grid-template-columns: 1fr; }.account-row { grid-template-columns: 1fr; }.overlay { padding: 0; }.editor { width: 100%; height: 100%; max-height: 100%; border-radius: 0; }.permission-group { grid-template-columns: 1fr 1fr; }.group-check { grid-column: 1 / -1; }.access-preview div { grid-template-columns: 1fr; gap: 3px; } }
 </style>

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -43,5 +44,14 @@ class GrowthResourceServiceTest {
         assertThrows(BusinessException.class, () -> service.storageAmount("SUPPLY", "-0.01"));
         assertThrows(BusinessException.class, () -> service.storageAmount("SUPPLY", "1.234"));
         assertEquals(new BigDecimal("1.23"), service.storageAmount("SUPPLY", "1.23"));
+    }
+
+    @Test
+    void detailProjectionUsesTheActiveImmutableVersion() {
+        Map<String, Object> draft = Map.of("version", 2, "lifecycleState", "DRAFT");
+        Map<String, Object> active = Map.of("version", 1, "lifecycleState", "ACTIVE");
+
+        assertEquals(active, service.activeVersion(List.of(draft, active)));
+        assertNull(service.activeVersion(List.of(draft)));
     }
 }

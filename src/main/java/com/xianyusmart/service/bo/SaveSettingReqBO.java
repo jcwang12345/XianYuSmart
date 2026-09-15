@@ -11,4 +11,5 @@ public class SaveSettingReqBO {
     private String settingKey;
     private String settingValue;
     private String settingDesc;
+    private String requestId;
 }

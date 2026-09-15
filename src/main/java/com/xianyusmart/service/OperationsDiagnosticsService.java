@@ -1,6 +1,6 @@
 package com.xianyusmart.service;
 
-import com.xianyusmart.context.UserContext;
+import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.service.diagnostics.OperationsHealthEvaluator;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.time.Instant;
 
 /**
  * 运营诊断服务
@@ -34,6 +35,7 @@ public class OperationsDiagnosticsService {
 
     public Map<String, Object> overview(boolean includePlatformChecks) {
         Long tenantId = requireTenantId();
+        String evidenceTime = Instant.now().toString();
         long accountAbnormal = count("""
                 SELECT COUNT(*)
                 FROM xianyu_account
@@ -126,46 +128,72 @@ public class OperationsDiagnosticsService {
                 .filter(accountId -> !webSocketService.isConnected(accountId)).count();
         long versionWarning = 0;
         long updateAgentWarning = 0;
+        long unknownCount = 0;
         String versionAction = "当前已是最新版本";
+        String versionStatus = "HEALTHY";
         boolean updateAgentAvailable = true;
+        String updateAgentStatus = "HEALTHY";
         if (includePlatformChecks) {
             try {
                 var version = systemUpdateService.checkUpdate();
                 if (Boolean.TRUE.equals(version.getHasUpdate())) {
                     versionWarning = 1;
+                    versionStatus = "WARNING";
                     versionAction = "发现新版本 " + version.getLatestVersion() + "，可在右上角自动更新";
                 }
             } catch (Exception e) {
-                versionWarning = 1;
-                versionAction = "版本服务暂时不可用，请稍后重试";
+                unknownCount++;
+                versionStatus = "UNKNOWN";
+                versionAction = "版本服务暂时不可用，当前版本状态未知，请稍后重试";
             }
-            updateAgentAvailable = Boolean.TRUE.equals(systemUpdateService.updateAgentStatus().get("available"));
-            updateAgentWarning = updateAgentAvailable ? 0 : 1;
+            try {
+                updateAgentAvailable = Boolean.TRUE.equals(systemUpdateService.updateAgentStatus().get("available"));
+                updateAgentWarning = updateAgentAvailable ? 0 : 1;
+                updateAgentStatus = updateAgentAvailable ? "HEALTHY" : "WARNING";
+            } catch (Exception e) {
+                updateAgentAvailable = false;
+                updateAgentStatus = "UNKNOWN";
+                unknownCount++;
+            }
         }
 
         List<Map<String, Object>> checks = new ArrayList<>(List.of(
-                check("DATABASE", "数据库服务", 0, "检查数据库连接"),
-                check("WEBSOCKET", "实时连接", websocketDisconnected, "系统正在自动恢复断开的账号连接"),
-                check("ACCOUNT", "账号连接", accountAbnormal + cookieInvalid, "检查异常账号或更新登录凭证"),
-                check("DELIVERY", "自动发货", deliveryFailed + deliveryReview, "处理失败订单和待人工核对订单"),
-                check("REPLY", "自动回复", replyFailed, "检查失败回复记录"),
-                check("STOCK", "卡密库存", lowStock, "补充低库存卡密仓库"),
-                check("EXTERNAL_SUPPLY", "外部卡密供货", externalReview, "核对失败或不确定的外部供货请求"),
-                check("NOTIFICATION", "通知渠道", notificationFailed, "检查近24小时发送失败的通知")
+                check("DATABASE", "数据库服务", 0, "检查数据库连接", "数据库不可用会阻断全部业务读写", "DATABASE_SNAPSHOT", evidenceTime),
+                check("WEBSOCKET", "实时连接", websocketDisconnected, "系统正在自动恢复断开的账号连接", "断线账号无法实时接收买家消息和订单事件", "LOCAL_RUNTIME", evidenceTime),
+                check("ACCOUNT", "账号连接", accountAbnormal + cookieInvalid, "检查异常账号或更新登录凭证", "异常凭证会影响该店铺的同步、回复与履约", "DATABASE_SNAPSHOT", evidenceTime),
+                check("DELIVERY", "自动发货", deliveryFailed + deliveryReview, "处理失败订单和待人工核对订单", "未处理订单可能延迟履约；结果未知时禁止重复发货", "DATABASE_SNAPSHOT", evidenceTime),
+                check("REPLY", "自动回复", replyFailed, "检查失败回复记录", "回复失败可能导致买家等待或转人工", "DATABASE_SNAPSHOT", evidenceTime),
+                check("STOCK", "卡密库存", lowStock, "补充低库存卡密仓库", "低库存可能导致后续虚拟商品无法自动履约", "DATABASE_SNAPSHOT", evidenceTime),
+                check("EXTERNAL_SUPPLY", "外部卡密供货", externalReview, "核对失败或不确定的外部供货请求", "外部结果未知时必须人工核对，不能重复请求", "DATABASE_SNAPSHOT", evidenceTime),
+                check("NOTIFICATION", "通知渠道", notificationFailed, "检查近24小时发送失败的通知", "业务事件仍会保留，但外部协作工具可能没有收到提醒", "DATABASE_SNAPSHOT", evidenceTime)
         ));
         if (includePlatformChecks) {
-            checks.add(check("VERSION", "版本状态", versionWarning, versionAction));
-            checks.add(check("UPDATE_AGENT", "自动更新服务", updateAgentWarning,
-                    updateAgentAvailable ? "自动更新服务运行正常" : "自动更新服务尚未就绪"));
+            checks.add(check("VERSION", "版本状态", versionWarning, versionStatus, versionAction,
+                    "版本未知不等于已是最新版本", "UPDATE_SERVICE", evidenceTime));
+            checks.add(check("UPDATE_AGENT", "自动更新服务", updateAgentWarning, updateAgentStatus,
+                    updateAgentAvailable ? "自动更新服务运行正常" : "自动更新服务尚未就绪或状态未知",
+                    "更新代理不可用时仍可运行当前版本，但不能自动升级", "LOCAL_RUNTIME", evidenceTime));
         }
         long criticalCount = deliveryFailed + deliveryReview + externalReview;
         long warningCount = accountAbnormal + cookieInvalid + websocketDisconnected
                 + replyFailed + lowStock + notificationFailed + versionWarning + updateAgentWarning;
 
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("overallStatus", OperationsHealthEvaluator.overallStatus(criticalCount, warningCount));
+        long systemReminders = accountAbnormal + cookieInvalid + websocketDisconnected + lowStock
+                + versionWarning + updateAgentWarning;
+        long businessActions = deliveryFailed + deliveryReview + replyFailed + externalReview;
+        long externalDeliveryFailures = notificationFailed;
+        result.put("overallStatus", OperationsHealthEvaluator.overallStatus(criticalCount, warningCount, unknownCount));
         result.put("criticalCount", criticalCount);
         result.put("warningCount", warningCount);
+        result.put("unknownCount", unknownCount);
+        result.put("evidenceTime", evidenceTime);
+        result.put("dataSource", "TENANT_SCOPED_DATABASE_AND_LOCAL_RUNTIME");
+        result.put("countGroups", Map.of(
+                "systemReminders", systemReminders,
+                "businessActions", businessActions,
+                "externalDeliveryFailures", externalDeliveryFailures));
+        result.put("countRelationship", "系统提醒表示服务或配置状态；业务待办表示需要处理的订单、回复或供货事实；外部投递失败只表示提醒没有送达外部渠道，不会新增或消除业务待办。三类独立统计，不合并为同一个总数。");
         result.put("checks", checks);
         return result;
     }
@@ -350,13 +378,22 @@ public class OperationsDiagnosticsService {
     public record ExceptionReference(String exceptionType, Long exceptionId, Integer exceptionVersion) {
     }
 
-    private Map<String, Object> check(String key, String name, long count, String action) {
+    private Map<String, Object> check(String key, String name, long count, String action,
+                                      String impact, String source, String evidenceTime) {
+        return check(key, name, count, count > 0 ? "WARNING" : "HEALTHY", action, impact, source, evidenceTime);
+    }
+
+    private Map<String, Object> check(String key, String name, long count, String status, String action,
+                                      String impact, String source, String evidenceTime) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("key", key);
         result.put("name", name);
         result.put("count", count);
-        result.put("status", count > 0 ? "WARNING" : "HEALTHY");
+        result.put("status", status);
         result.put("action", action);
+        result.put("impact", impact);
+        result.put("source", source);
+        result.put("evidenceTime", evidenceTime);
         return result;
     }
 
@@ -365,8 +402,8 @@ public class OperationsDiagnosticsService {
         return value == null ? 0 : value;
     }
 
-    private Long requireTenantId() {
-        Long tenantId = UserContext.getUserId();
+    Long requireTenantId() {
+        Long tenantId = TenantContext.get();
         if (tenantId == null) {
             throw new IllegalStateException("登录状态已失效");
         }

@@ -11,4 +11,6 @@ public class GetSettingRespBO {
     private String settingKey;
     private String settingValue;
     private String settingDesc;
+    private Boolean configured;
+    private String updatedTime;
 }

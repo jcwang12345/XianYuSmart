@@ -4,14 +4,26 @@ export interface HealthCheck {
   key: string
   name: string
   count: number
-  status: 'HEALTHY' | 'WARNING'
+  status: 'HEALTHY' | 'WARNING' | 'UNKNOWN'
   action: string
+  impact: string
+  source: string
+  evidenceTime: string
 }
 
 export interface HealthOverview {
-  overallStatus: 'HEALTHY' | 'WARNING' | 'CRITICAL'
+  overallStatus: 'HEALTHY' | 'WARNING' | 'CRITICAL' | 'UNKNOWN'
   criticalCount: number
   warningCount: number
+  unknownCount: number
+  evidenceTime: string
+  dataSource: string
+  countGroups: {
+    systemReminders: number
+    businessActions: number
+    externalDeliveryFailures: number
+  }
+  countRelationship: string
   checks: HealthCheck[]
 }
 

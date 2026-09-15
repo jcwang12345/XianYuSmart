@@ -27,7 +27,8 @@ import {
   moveMenuItem,
   normalizeMenuLayout,
   serializeMenuLayout,
-  type MenuItemDefinition
+  type MenuItemDefinition,
+  type MenuLayout
 } from '@/config/menu'
 import IconUser from '@/components/icons/IconUser.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
@@ -64,6 +65,7 @@ const loggingOut = ref(false)
 
 // 登录安全
 const twoFactorEnabled = ref(false)
+const recoveryCodeCount = ref(0)
 const twoFactorSetup = ref<{ secret: string; qrCode: string }>()
 const twoFactorCode = ref('')
 const recoveryCodes = ref<string[]>([])
@@ -114,6 +116,7 @@ const aiProvider = ref('deepseek')
 const aiProtocol = ref<AIProtocol>('openai')
 const aiCustomName = ref('')
 const aiApiKey = ref('')
+const aiApiKeyConfigured = ref(false)
 const aiBaseUrl = ref('https://api.deepseek.com')
 const aiModel = ref('deepseek-v4-flash')
 const aiApiKeySaving = ref(false)
@@ -133,6 +136,7 @@ const DEFAULT_EMBEDDING_MODEL = 'text-embedding-v3'
 
 const embeddingEnabled = ref(false)
 const embeddingApiKey = ref('')
+const embeddingApiKeyConfigured = ref(false)
 const embeddingBaseUrl = ref(DEFAULT_EMBEDDING_BASE_URL)
 const embeddingModel = ref(DEFAULT_EMBEDDING_MODEL)
 const embeddingSaving = ref(false)
@@ -149,6 +153,7 @@ const DEFAULT_IMAGE_MODEL = 'wanx2.1-t2i-turbo'
 
 const imageEnabled = ref(false)
 const imageApiKey = ref('')
+const imageApiKeyConfigured = ref(false)
 const imageBaseUrl = ref(DEFAULT_IMAGE_BASE_URL)
 const imageModel = ref(DEFAULT_IMAGE_MODEL)
 const imageSaving = ref(false)
@@ -169,6 +174,7 @@ const emailSmtpHost = ref('')
 const emailSmtpPort = ref('465')
 const emailSmtpUsername = ref('')
 const emailSmtpPassword = ref('')
+const emailPasswordConfigured = ref(false)
 const emailSmtpFrom = ref('')
 const emailSmtpSsl = ref(true)
 const emailSaving = ref(false)
@@ -204,6 +210,7 @@ watch([aiProvider, aiProtocol, aiCustomName, aiApiKey, aiBaseUrl, aiModel, aiTes
 
 // 菜单排序配置
 const menuLayout = ref(normalizeMenuLayout(permissionState.value?.menuLayout))
+const savedMenuLayout = ref(normalizeMenuLayout(permissionState.value?.menuLayout))
 const menuLayoutSaving = ref(false)
 const draggedGroupId = ref('')
 const draggedItemGroupId = ref('')
@@ -212,6 +219,18 @@ const lastGroupTargetId = ref('')
 const lastItemTargetKey = ref('')
 const canSaveMenuLayout = computed(() => hasPermission('action:system-write'))
 const menuGroupDefinitionMap = new Map(MENU_GROUPS.map(group => [group.id, group]))
+const menuLayoutChanged = computed(() => serializeMenuLayout(menuLayout.value) !== serializeMenuLayout(savedMenuLayout.value))
+const menuPreview = (layout: MenuLayout) => layout.groups.flatMap(groupLayout => {
+  const definition = menuGroupDefinitionMap.get(groupLayout.id)
+  if (!definition) return []
+  const labels = groupLayout.items.flatMap(itemId => {
+    const item = definition.items.find(candidate => candidate.id === itemId)
+    return item ? [item.label] : []
+  })
+  return [{ id: definition.id, group: definition.label, items: labels }]
+})
+const savedMenuPreview = computed(() => menuPreview(savedMenuLayout.value))
+const draftMenuPreview = computed(() => menuPreview(menuLayout.value))
 const editableMenuGroups = computed<Array<{ id: string; label: string; items: MenuItemDefinition[] }>>(() => menuLayout.value.groups.flatMap(groupLayout => {
   const definition = menuGroupDefinitionMap.get(groupLayout.id)
   if (!definition) return []
@@ -261,6 +280,7 @@ onMounted(async () => {
       username.value = res.data.username || ''
       lastLoginTime.value = res.data.lastLoginTime || ''
       menuLayout.value = normalizeMenuLayout(res.data.menuLayout)
+      savedMenuLayout.value = normalizeMenuLayout(res.data.menuLayout)
     }
   } catch (e) {
     console.error('获取用户信息失败:', e)
@@ -315,6 +335,7 @@ async function loadSecurity() {
   try {
     const [status, sessions] = await Promise.all([getTwoFactorStatus(), getLoginSessions()])
     twoFactorEnabled.value = status.data?.enabled === true
+    recoveryCodeCount.value = status.data?.recoveryCodeCount || 0
     loginSessions.value = sessions.data || []
   } catch (e) { console.error('加载登录安全配置失败:', e) }
 }
@@ -334,6 +355,7 @@ async function enableTwoFactor() {
   securitySaving.value = true
   try {
     recoveryCodes.value = (await confirmTwoFactor(twoFactorCode.value.trim())).data || []
+    recoveryCodeCount.value = recoveryCodes.value.length
     twoFactorEnabled.value = true
     twoFactorSetup.value = undefined
     twoFactorCode.value = ''
@@ -347,6 +369,7 @@ async function turnOffTwoFactor() {
   try {
     await disableTwoFactor(twoFactorCode.value.trim())
     twoFactorEnabled.value = false
+    recoveryCodeCount.value = 0
     twoFactorCode.value = ''
     recoveryCodes.value = []
     toast.success('两步验证已关闭')
@@ -387,9 +410,8 @@ async function loadAIConfig() {
     if (customNameRes.code === 200 && customNameRes.data) {
       aiCustomName.value = customNameRes.data.settingValue || ''
     }
-    if (apiKeyRes.code === 200 && apiKeyRes.data) {
-      aiApiKey.value = apiKeyRes.data.settingValue || ''
-    }
+    aiApiKey.value = ''
+    aiApiKeyConfigured.value = apiKeyRes.code === 200 && apiKeyRes.data?.configured === true
     const preset = selectedAIProvider.value.defaults[aiProtocol.value]
     aiBaseUrl.value = storedBaseUrl || preset?.baseUrl || ''
     aiModel.value = storedModel || preset?.model || ''
@@ -408,9 +430,8 @@ async function loadEmbeddingConfig() {
       getSetting({ settingKey: EMBEDDING_MODEL_SETTING })
     ])
 
-    if (apiKeyRes.code === 200 && apiKeyRes.data) {
-      embeddingApiKey.value = apiKeyRes.data.settingValue || ''
-    }
+    embeddingApiKey.value = ''
+    embeddingApiKeyConfigured.value = apiKeyRes.code === 200 && apiKeyRes.data?.configured === true
     if (baseUrlRes.code === 200 && baseUrlRes.data && baseUrlRes.data.settingValue) {
       embeddingBaseUrl.value = baseUrlRes.data.settingValue
     }
@@ -420,7 +441,7 @@ async function loadEmbeddingConfig() {
     const enabledValue = enabledRes.code === 200 && enabledRes.data ? enabledRes.data.settingValue : ''
     embeddingEnabled.value = enabledValue
       ? enabledValue === '1' || enabledValue === 'true'
-      : !!embeddingApiKey.value
+      : embeddingApiKeyConfigured.value
   } catch (e) {
     console.error('获取Embedding配置失败:', e)
   }
@@ -437,7 +458,8 @@ async function loadImageConfig() {
 
     const enabledValue = enabledRes.code === 200 && enabledRes.data ? enabledRes.data.settingValue : ''
     imageEnabled.value = enabledValue === '1' || enabledValue === 'true'
-    if (apiKeyRes.code === 200 && apiKeyRes.data) imageApiKey.value = apiKeyRes.data.settingValue || ''
+    imageApiKey.value = ''
+    imageApiKeyConfigured.value = apiKeyRes.code === 200 && apiKeyRes.data?.configured === true
     if (baseUrlRes.code === 200 && baseUrlRes.data && baseUrlRes.data.settingValue) imageBaseUrl.value = baseUrlRes.data.settingValue
     if (modelRes.code === 200 && modelRes.data && modelRes.data.settingValue) imageModel.value = modelRes.data.settingValue
   } catch (e) {
@@ -514,7 +536,7 @@ function isValidHttpUrl(value: string): boolean {
 
 async function handleTestAIConnection() {
   if (!aiApiKey.value.trim() || !aiBaseUrl.value.trim() || !aiModel.value.trim()) {
-    toast.warning('请先填写 API Key、Base URL 和模型名称')
+    toast.warning('连通性测试不会读取已保存密钥，请重新填写 API Key、Base URL 和模型名称')
     return
   }
   if (!isValidHttpUrl(aiBaseUrl.value)) {
@@ -672,8 +694,8 @@ function handleResetSimilarityThreshold() {
 }
 
 async function handleSaveAIConfig() {
-  if (!aiApiKey.value.trim()) {
-    toast.warning('API Key 不能为空')
+  if (!aiApiKey.value.trim() && !aiApiKeyConfigured.value) {
+    toast.warning('首次配置必须填写 API Key')
     return
   }
   if (!aiBaseUrl.value.trim()) {
@@ -691,7 +713,7 @@ async function handleSaveAIConfig() {
 
   aiApiKeySaving.value = true
   try {
-    const results = await Promise.all([
+    const requests = [
       saveSetting({
         settingKey: AI_PROVIDER_SETTING,
         settingValue: aiProvider.value,
@@ -708,11 +730,6 @@ async function handleSaveAIConfig() {
         settingDesc: '第三方中转站名称'
       }),
       saveSetting({
-        settingKey: AI_API_KEY_SETTING,
-        settingValue: aiApiKey.value.trim(),
-        settingDesc: 'AI服务的API Key（配置后立即生效，无需重启）'
-      }),
-      saveSetting({
         settingKey: AI_BASE_URL_SETTING,
         settingValue: aiBaseUrl.value.trim(),
         settingDesc: 'AI服务的API Base URL'
@@ -722,9 +739,20 @@ async function handleSaveAIConfig() {
         settingValue: aiModel.value.trim(),
         settingDesc: 'AI对话模型名称'
       })
-    ])
+    ]
+    if (aiApiKey.value.trim()) {
+      requests.push(saveSetting({
+        settingKey: AI_API_KEY_SETTING,
+        settingValue: aiApiKey.value.trim(),
+        settingDesc: 'AI服务的API Key（配置后立即生效，无需重启）'
+      }))
+    }
+    const results = await Promise.all(requests)
 
     if (results.every(item => item.code === 200)) {
+      if (aiApiKey.value.trim()) aiApiKeyConfigured.value = true
+      aiApiKey.value = ''
+      showApiKey.value = false
       toast.success('AI 配置保存成功，已立即生效')
       await loadAIStatus()
     }
@@ -744,7 +772,7 @@ function handleResetAIConfig() {
 
 async function handleSaveEmbeddingConfig() {
   if (embeddingEnabled.value) {
-    if (!embeddingApiKey.value.trim() || !embeddingBaseUrl.value.trim() || !embeddingModel.value.trim()) {
+    if ((!embeddingApiKey.value.trim() && !embeddingApiKeyConfigured.value) || !embeddingBaseUrl.value.trim() || !embeddingModel.value.trim()) {
       toast.warning('启用 Embedding 后需要填写 API Key、Base URL 和模型名称')
       return
     }
@@ -762,14 +790,19 @@ async function handleSaveEmbeddingConfig() {
     })]
     if (embeddingEnabled.value) {
       requests.push(
-        saveSetting({ settingKey: EMBEDDING_API_KEY_SETTING, settingValue: embeddingApiKey.value.trim(), settingDesc: 'Embedding模型API Key' }),
         saveSetting({ settingKey: EMBEDDING_BASE_URL_SETTING, settingValue: embeddingBaseUrl.value.trim(), settingDesc: 'Embedding模型API Base URL' }),
         saveSetting({ settingKey: EMBEDDING_MODEL_SETTING, settingValue: embeddingModel.value.trim(), settingDesc: 'Embedding模型名称' })
       )
+      if (embeddingApiKey.value.trim()) {
+        requests.push(saveSetting({ settingKey: EMBEDDING_API_KEY_SETTING, settingValue: embeddingApiKey.value.trim(), settingDesc: 'Embedding模型API Key' }))
+      }
     }
     const results = await Promise.all(requests)
 
     if (results.every(item => item.code === 200)) {
+      if (embeddingApiKey.value.trim()) embeddingApiKeyConfigured.value = true
+      embeddingApiKey.value = ''
+      showEmbeddingApiKey.value = false
       toast.success('Embedding 配置保存成功，已立即生效')
     }
   } catch (e) {
@@ -786,7 +819,7 @@ function handleResetEmbeddingConfig() {
 
 async function handleSaveImageConfig() {
   if (imageEnabled.value) {
-    if (!imageApiKey.value.trim() || !imageBaseUrl.value.trim() || !imageModel.value.trim()) {
+    if ((!imageApiKey.value.trim() && !imageApiKeyConfigured.value) || !imageBaseUrl.value.trim() || !imageModel.value.trim()) {
       toast.warning('启用 AI 商品图后需要填写 API Key、Base URL 和模型名称')
       return
     }
@@ -800,13 +833,20 @@ async function handleSaveImageConfig() {
     const requests = [saveSetting({ settingKey: IMAGE_ENABLED_SETTING, settingValue: imageEnabled.value ? 'true' : 'false', settingDesc: '是否启用AI商品图' })]
     if (imageEnabled.value) {
       requests.push(
-        saveSetting({ settingKey: IMAGE_API_KEY_SETTING, settingValue: imageApiKey.value.trim(), settingDesc: 'AI商品图API Key' }),
         saveSetting({ settingKey: IMAGE_BASE_URL_SETTING, settingValue: imageBaseUrl.value.trim(), settingDesc: 'AI商品图API Base URL' }),
         saveSetting({ settingKey: IMAGE_MODEL_SETTING, settingValue: imageModel.value.trim(), settingDesc: 'AI商品图生成模型名称' })
       )
+      if (imageApiKey.value.trim()) {
+        requests.push(saveSetting({ settingKey: IMAGE_API_KEY_SETTING, settingValue: imageApiKey.value.trim(), settingDesc: 'AI商品图API Key' }))
+      }
     }
     const results = await Promise.all(requests)
-    if (results.every(item => item.code === 200)) toast.success('AI 商品图配置保存成功')
+    if (results.every(item => item.code === 200)) {
+      if (imageApiKey.value.trim()) imageApiKeyConfigured.value = true
+      imageApiKey.value = ''
+      showImageApiKey.value = false
+      toast.success('AI 商品图配置保存成功')
+    }
   } catch (e) {
     console.error('保存AI商品图配置失败:', e)
     toast.error('保存AI商品图配置失败')
@@ -835,7 +875,8 @@ async function loadEmailConfig() {
     if (hostRes.code === 200 && hostRes.data) emailSmtpHost.value = hostRes.data.settingValue || ''
     if (portRes.code === 200 && portRes.data && portRes.data.settingValue) emailSmtpPort.value = portRes.data.settingValue
     if (userRes.code === 200 && userRes.data) emailSmtpUsername.value = userRes.data.settingValue || ''
-    if (passRes.code === 200 && passRes.data) emailSmtpPassword.value = passRes.data.settingValue || ''
+    emailSmtpPassword.value = ''
+    emailPasswordConfigured.value = passRes.code === 200 && passRes.data?.configured === true
     if (fromRes.code === 200 && fromRes.data) emailSmtpFrom.value = fromRes.data.settingValue || ''
     if (sslRes.code === 200 && sslRes.data && sslRes.data.settingValue !== undefined) {
       emailSmtpSsl.value = sslRes.data.settingValue === '1' || sslRes.data.settingValue === 'true'
@@ -849,7 +890,7 @@ async function loadEmailConfig() {
       cookieExpireNotifyEnabled.value = cookieExpireRes.data.settingValue === '1' || cookieExpireRes.data.settingValue === 'true'
     }
 
-    emailConfigured.value = !!(emailSmtpHost.value && emailSmtpPort.value && emailSmtpUsername.value && emailSmtpPassword.value && emailSmtpFrom.value)
+    emailConfigured.value = !!(emailSmtpHost.value && emailSmtpPort.value && emailSmtpUsername.value && emailPasswordConfigured.value && emailSmtpFrom.value)
     emailConfigExpanded.value = !emailConfigured.value
   } catch (e) {
     console.error('加载邮箱配置失败:', e)
@@ -857,20 +898,30 @@ async function loadEmailConfig() {
 }
 
 async function handleSaveEmailConfig() {
+  if (!emailSmtpPassword.value.trim() && !emailPasswordConfigured.value) {
+    toast.warning('首次配置必须填写 SMTP 密码或授权码')
+    return
+  }
   emailSaving.value = true
   try {
-    const [hostRes, portRes, userRes, passRes, fromRes, sslRes] = await Promise.all([
+    const requests = [
       saveSetting({ settingKey: EMAIL_SMTP_HOST_KEY, settingValue: emailSmtpHost.value.trim(), settingDesc: 'SMTP服务器地址' }),
       saveSetting({ settingKey: EMAIL_SMTP_PORT_KEY, settingValue: emailSmtpPort.value.trim(), settingDesc: 'SMTP服务器端口' }),
       saveSetting({ settingKey: EMAIL_SMTP_USERNAME_KEY, settingValue: emailSmtpUsername.value.trim(), settingDesc: 'SMTP登录用户名' }),
-      saveSetting({ settingKey: EMAIL_SMTP_PASSWORD_KEY, settingValue: emailSmtpPassword.value.trim(), settingDesc: 'SMTP登录密码/授权码' }),
       saveSetting({ settingKey: EMAIL_SMTP_FROM_KEY, settingValue: emailSmtpFrom.value.trim(), settingDesc: '接收通知的收件人邮箱地址' }),
       saveSetting({ settingKey: EMAIL_SMTP_SSL_KEY, settingValue: emailSmtpSsl.value ? '1' : '0', settingDesc: '是否启用SSL（1启用，0关闭）' })
-    ])
+    ]
+    if (emailSmtpPassword.value.trim()) {
+      requests.push(saveSetting({ settingKey: EMAIL_SMTP_PASSWORD_KEY, settingValue: emailSmtpPassword.value.trim(), settingDesc: 'SMTP登录密码/授权码' }))
+    }
+    const results = await Promise.all(requests)
 
-    if (hostRes.code === 200 && portRes.code === 200 && userRes.code === 200 && passRes.code === 200 && fromRes.code === 200 && sslRes.code === 200) {
+    if (results.every(item => item.code === 200)) {
+      if (emailSmtpPassword.value.trim()) emailPasswordConfigured.value = true
+      emailSmtpPassword.value = ''
+      showEmailPassword.value = false
       toast.success('邮箱配置保存成功')
-      emailConfigured.value = !!(emailSmtpHost.value && emailSmtpPort.value && emailSmtpUsername.value && emailSmtpPassword.value && emailSmtpFrom.value)
+      emailConfigured.value = !!(emailSmtpHost.value && emailSmtpPort.value && emailSmtpUsername.value && emailPasswordConfigured.value && emailSmtpFrom.value)
       emailConfigExpanded.value = !emailConfigured.value
     }
   } catch (e) {
@@ -1291,11 +1342,13 @@ async function saveMenuLayout() {
     const response = await saveSetting({
       settingKey: MENU_LAYOUT_SETTING_KEY,
       settingValue,
-      settingDesc: '租户菜单布局'
+      settingDesc: '租户菜单布局',
+      requestId: newRequestId('menu-layout')
     })
     if (response.code === 200) {
       updateMenuLayout(settingValue)
       menuLayout.value = normalizeMenuLayout(settingValue)
+      savedMenuLayout.value = normalizeMenuLayout(settingValue)
       toast.success('菜单排序已保存')
     } else {
       toast.error(response.msg || '菜单排序保存失败')
@@ -1426,13 +1479,13 @@ async function saveMenuLayout() {
         <div class="settings__section">
           <div class="settings__section-header">
             <div><div class="settings__section-title">两步验证</div><p class="settings__desc">使用认证器动态验证码保护平台账号。</p></div>
-            <span :class="twoFactorEnabled ? 'security-state enabled' : 'security-state'">{{ twoFactorEnabled ? '已启用' : '未启用' }}</span>
+            <span :class="twoFactorEnabled ? 'security-state enabled' : 'security-state'">{{ twoFactorEnabled ? `已启用 · 剩余 ${recoveryCodeCount} 个恢复码` : '未启用' }}</span>
           </div>
           <div v-if="twoFactorSetup" class="two-factor-setup">
             <img :src="twoFactorSetup.qrCode" alt="两步验证二维码" />
-            <div><p>使用 Microsoft Authenticator、Google Authenticator 等应用扫码。</p><code>{{ twoFactorSetup.secret }}</code><input v-model="twoFactorCode" class="settings__input" maxlength="6" inputmode="numeric" placeholder="输入 6 位验证码" /><button class="settings__btn settings__btn--primary" :disabled="securitySaving" @click="enableTwoFactor">确认启用</button></div>
+            <div><p>使用 Microsoft Authenticator、Google Authenticator 等应用扫码。</p><code>{{ twoFactorSetup.secret }}</code><input v-model="twoFactorCode" class="settings__input" name="two-factor-confirm-code" autocomplete="one-time-code" maxlength="6" inputmode="numeric" placeholder="输入 6 位验证码" /><button class="settings__btn settings__btn--primary" :disabled="securitySaving" @click="enableTwoFactor">确认启用</button></div>
           </div>
-          <div v-else-if="twoFactorEnabled" class="security-action"><input v-model="twoFactorCode" class="settings__input" maxlength="11" placeholder="验证码或恢复码" /><button class="settings__btn settings__btn--danger" :disabled="securitySaving" @click="turnOffTwoFactor">关闭两步验证</button></div>
+          <div v-else-if="twoFactorEnabled" class="security-action"><input v-model="twoFactorCode" class="settings__input" name="two-factor-disable-code" autocomplete="one-time-code" maxlength="11" placeholder="验证码或恢复码" /><button class="settings__btn settings__btn--danger" :disabled="securitySaving" @click="turnOffTwoFactor">关闭两步验证</button></div>
           <button v-else class="settings__btn settings__btn--primary" :disabled="securitySaving" @click="startTwoFactor">绑定认证器</button>
           <div v-if="recoveryCodes.length" class="recovery-codes"><strong>恢复码仅显示一次</strong><p>每个恢复码只能使用一次，请离线保存。</p><code v-for="code in recoveryCodes" :key="code">{{ code }}</code></div>
         </div>
@@ -1517,9 +1570,10 @@ async function saveMenuLayout() {
             <div class="settings__field">
               <label class="settings__label">API Key</label>
               <div class="settings__input-wrap">
-                <input v-model="aiApiKey" :type="showApiKey ? 'text' : 'password'" class="settings__input" placeholder="请输入 API Key" :disabled="aiApiKeySaving" />
+                <input v-model="aiApiKey" :type="showApiKey ? 'text' : 'password'" name="ai-service-api-key" autocomplete="new-password" class="settings__input" :placeholder="aiApiKeyConfigured ? '已配置；留空保持不变' : '请输入 API Key'" :disabled="aiApiKeySaving" />
                 <button class="settings__eye-btn" @click="showApiKey = !showApiKey" tabindex="-1">{{ showApiKey ? '隐藏' : '显示' }}</button>
               </div>
+              <p class="settings__hint">{{ aiApiKeyConfigured ? '密钥已安全保存，页面不会回显；输入新值可替换。' : '密钥仅写入，保存后不会再次显示。' }}</p>
             </div>
 
             <div class="settings__ai-preset-summary">
@@ -1604,7 +1658,7 @@ async function saveMenuLayout() {
               <label class="settings__switch"><input v-model="embeddingEnabled" type="checkbox" :disabled="embeddingSaving" /><span class="settings__switch-track"></span><span class="settings__switch-thumb"></span></label>
             </div>
             <template v-if="embeddingEnabled">
-              <div class="settings__field"><label class="settings__label">API Key</label><div class="settings__input-wrap"><input v-model="embeddingApiKey" :type="showEmbeddingApiKey ? 'text' : 'password'" class="settings__input" placeholder="Embedding 专用 API Key" :disabled="embeddingSaving" /><button class="settings__eye-btn" @click="showEmbeddingApiKey = !showEmbeddingApiKey" tabindex="-1">{{ showEmbeddingApiKey ? '隐藏' : '显示' }}</button></div></div>
+              <div class="settings__field"><label class="settings__label">API Key</label><div class="settings__input-wrap"><input v-model="embeddingApiKey" :type="showEmbeddingApiKey ? 'text' : 'password'" name="embedding-api-key" autocomplete="new-password" class="settings__input" :placeholder="embeddingApiKeyConfigured ? '已配置；留空保持不变' : 'Embedding 专用 API Key'" :disabled="embeddingSaving" /><button class="settings__eye-btn" @click="showEmbeddingApiKey = !showEmbeddingApiKey" tabindex="-1">{{ showEmbeddingApiKey ? '隐藏' : '显示' }}</button></div><p class="settings__hint">{{ embeddingApiKeyConfigured ? '已配置且不回显；输入新值可替换。' : '保存后仅返回已配置状态。' }}</p></div>
               <div class="settings__field"><label class="settings__label">API Base URL</label><input v-model="embeddingBaseUrl" type="text" class="settings__input" placeholder="Embedding 服务地址" :disabled="embeddingSaving" /></div>
               <div class="settings__field"><label class="settings__label">模型名称</label><input v-model="embeddingModel" type="text" class="settings__input" placeholder="例如 text-embedding-v3" :disabled="embeddingSaving" /></div>
             </template>
@@ -1624,7 +1678,7 @@ async function saveMenuLayout() {
               <label class="settings__switch"><input v-model="imageEnabled" type="checkbox" :disabled="imageSaving" /><span class="settings__switch-track"></span><span class="settings__switch-thumb"></span></label>
             </div>
             <template v-if="imageEnabled">
-              <div class="settings__field"><label class="settings__label">API Key</label><div class="settings__input-wrap"><input v-model="imageApiKey" :type="showImageApiKey ? 'text' : 'password'" class="settings__input" placeholder="商品图专用 API Key" :disabled="imageSaving" /><button class="settings__eye-btn" @click="showImageApiKey = !showImageApiKey" tabindex="-1">{{ showImageApiKey ? '隐藏' : '显示' }}</button></div></div>
+              <div class="settings__field"><label class="settings__label">API Key</label><div class="settings__input-wrap"><input v-model="imageApiKey" :type="showImageApiKey ? 'text' : 'password'" name="image-generation-api-key" autocomplete="new-password" class="settings__input" :placeholder="imageApiKeyConfigured ? '已配置；留空保持不变' : '商品图专用 API Key'" :disabled="imageSaving" /><button class="settings__eye-btn" @click="showImageApiKey = !showImageApiKey" tabindex="-1">{{ showImageApiKey ? '隐藏' : '显示' }}</button></div><p class="settings__hint">{{ imageApiKeyConfigured ? '已配置且不回显；输入新值可替换。' : '保存后仅返回已配置状态。' }}</p></div>
               <div class="settings__field"><label class="settings__label">API Base URL</label><input v-model="imageBaseUrl" type="text" class="settings__input" placeholder="图片生成服务地址" :disabled="imageSaving" /></div>
               <div class="settings__field"><label class="settings__label">模型名称</label><input v-model="imageModel" type="text" class="settings__input" placeholder="例如 wanx2.1-t2i-turbo" :disabled="imageSaving" /></div>
             </template>
@@ -1790,14 +1844,14 @@ async function saveMenuLayout() {
                   name="notification-smtp-credential"
                   autocomplete="new-password"
                   class="settings__input"
-                  placeholder="邮箱密码或SMTP授权码"
+                  :placeholder="emailPasswordConfigured ? '已配置；留空保持不变' : '邮箱密码或SMTP授权码'"
                   :disabled="emailSaving"
                 />
                 <button class="settings__eye-btn" @click="showEmailPassword = !showEmailPassword" tabindex="-1">
                   {{ showEmailPassword ? '隐藏' : '显示' }}
                 </button>
               </div>
-              <p class="settings__hint">QQ邮箱需使用授权码，非登录密码</p>
+              <p class="settings__hint">{{ emailPasswordConfigured ? '授权码已安全保存，页面不会回显；输入新值可替换。' : 'QQ邮箱需使用授权码，非登录密码；保存后不会回显。' }}</p>
             </div>
             <div class="settings__field">
               <label class="settings__label">收件人邮箱</label>
@@ -1890,6 +1944,18 @@ async function saveMenuLayout() {
         <div class="settings__panel-title">菜单管理</div>
         <p class="settings__desc">拖动模块或模块内菜单调整顺序，保存后当前租户的所有终端同步生效。</p>
         <div v-if="!canSaveMenuLayout" class="settings__menu-sort-notice">当前账号可查看排序，但没有保存系统设置的权限。</div>
+
+        <section class="settings__menu-preview" :class="{ 'settings__menu-preview--changed': menuLayoutChanged }" aria-live="polite">
+          <header>
+            <div><strong>保存前后预览</strong><span>{{ menuLayoutChanged ? '存在尚未保存的排序变更' : '当前草稿与已保存布局一致' }}</span></div>
+            <em>{{ menuLayoutChanged ? '待保存' : '无变更' }}</em>
+          </header>
+          <div class="settings__menu-preview-grid">
+            <article><h3>当前已保存</h3><ol><li v-for="group in savedMenuPreview" :key="`saved-${group.id}`"><strong>{{ group.group }}</strong><span>{{ group.items.join(' → ') }}</span></li></ol></article>
+            <article><h3>保存后</h3><ol><li v-for="group in draftMenuPreview" :key="`draft-${group.id}`"><strong>{{ group.group }}</strong><span>{{ group.items.join(' → ') }}</span></li></ol></article>
+          </div>
+          <p>只调整菜单呈现顺序，不会增加成员权限，也不会改变后端接口授权。</p>
+        </section>
 
         <TransitionGroup name="menu-sort" tag="div" class="settings__menu-sort-groups">
           <section
@@ -2623,6 +2689,31 @@ async function saveMenuLayout() {
   color: #93370d;
   background: #fffaeb;
   font-size: 13px;
+}
+
+.settings__menu-preview {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #fcfcfd;
+}
+
+.settings__menu-preview--changed { border-color: #efc852; background: #fffcf0; }
+.settings__menu-preview > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings__menu-preview > header div { display: flex; flex-direction: column; gap: 2px; }
+.settings__menu-preview > header span,.settings__menu-preview > p { color: #667085; font-size: 12px; }
+.settings__menu-preview > header em { padding: 4px 9px; border-radius: 999px; color: #694b00; background: #fff1b8; font-size: 12px; font-style: normal; }
+.settings__menu-preview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.settings__menu-preview article { min-width: 0; padding: 11px; border: 1px solid #eaecf0; border-radius: 8px; background: #fff; }
+.settings__menu-preview h3 { margin: 0 0 8px; color: #344054; font-size: 13px; }
+.settings__menu-preview ol { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.settings__menu-preview li { display: grid; grid-template-columns: 80px minmax(0,1fr); gap: 8px; font-size: 11px; }
+.settings__menu-preview li span { overflow: hidden; color: #667085; text-overflow: ellipsis; white-space: nowrap; }
+.settings__menu-preview > p { margin: 10px 0 0; }
+
+@media (max-width: 720px) {
+  .settings__menu-preview-grid { grid-template-columns: 1fr; }
 }
 
 .settings__menu-sort-groups {

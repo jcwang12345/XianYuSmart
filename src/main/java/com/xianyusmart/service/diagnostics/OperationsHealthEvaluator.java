@@ -9,9 +9,16 @@ public final class OperationsHealthEvaluator {
     }
 
     public static String overallStatus(long criticalCount, long warningCount) {
+        return overallStatus(criticalCount, warningCount, 0);
+    }
+
+    public static String overallStatus(long criticalCount, long warningCount, long unknownCount) {
         if (criticalCount > 0) {
             return "CRITICAL";
         }
-        return warningCount > 0 ? "WARNING" : "HEALTHY";
+        if (warningCount > 0) {
+            return "WARNING";
+        }
+        return unknownCount > 0 ? "UNKNOWN" : "HEALTHY";
     }
 }

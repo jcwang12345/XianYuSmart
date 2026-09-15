@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 import { getAccountList } from '@/api/account'
 import {
   activateGrowthWorkflowVersion,
@@ -64,6 +65,7 @@ const runPage = ref(1)
 const runStatus = ref<'' | WorkflowRunStatus>('')
 const runDetail = ref<WorkflowRunDetail>()
 const runDialogOpen = ref(false)
+const runDialog = ref<HTMLElement | null>(null)
 const actioning = ref(false)
 const unknownEvidence = ref('')
 
@@ -91,6 +93,9 @@ const statusClass = (status?: string) => ({
 })
 const time = (value?: string) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '未记录'
 const requestId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`.slice(0, 64)
+const closeRunDialog = () => { runDialogOpen.value = false }
+
+useModalFocusTrap(runDialogOpen, runDialog, closeRunDialog)
 
 const defaultDefinition = () => {
   nodes.value = [
@@ -385,13 +390,13 @@ onMounted(load)
       <footer><span>共 {{ runTotal }} 条，第 {{ runPage }}/{{ pageCount }} 页</span><div><button class="workbench__btn" :disabled="runPage<=1" @click="runPage--; loadRuns()">上一页</button><button class="workbench__btn" :disabled="runPage>=pageCount" @click="runPage++; loadRuns()">下一页</button></div></footer>
     </section>
 
-    <div v-if="runDialogOpen" class="run-dialog" @click.self="runDialogOpen=false">
-      <article><header><div><small>工作流运行 360 档案 · #{{ runDetail?.id || '-' }}</small><h2>{{ runDetail?.workflowName || '读取中…' }}</h2></div><button aria-label="关闭" @click="runDialogOpen=false">×</button></header>
+    <div v-if="runDialogOpen" class="run-dialog" @click.self="closeRunDialog">
+      <article ref="runDialog" role="dialog" aria-modal="true" aria-labelledby="workflow-run-dialog-title" tabindex="-1"><header><div><small>工作流运行 360 档案 · #{{ runDetail?.id || '-' }}</small><h2 id="workflow-run-dialog-title">{{ runDetail?.workflowName || '读取中…' }}</h2></div><button aria-label="关闭工作流运行档案" @click="closeRunDialog">×</button></header>
         <main><template v-if="runDetail"><section class="run-summary"><div><span>状态</span><strong>{{ statusLabel(runDetail.status) }}</strong></div><div><span>版本</span><strong>v{{ runDetail.version }}</strong></div><div><span>执行模式</span><strong>{{ runDetail.executionMode }}</strong></div><div><span>平台写入</span><strong>{{ runDetail.platformWrite }}</strong></div></section>
           <section><h3>节点执行</h3><div class="run-nodes"><article v-for="node in runDetail.nodes" :key="node.id"><span>{{ node.sequence }}</span><div><strong>{{ node.nodeName }}</strong><small>{{ node.nodeType }} · 尝试 {{ node.attemptCount }} 次</small><em v-if="node.error">{{ node.error }}</em></div><span class="workbench__tag" :class="statusClass(node.status)">{{ statusLabel(node.status) }}</span><small>补偿 {{ statusLabel(node.compensationStatus) }}</small><div v-if="node.status==='UNKNOWN'" class="run-node__resolve"><input v-model="unknownEvidence" class="workbench__input" placeholder="填写平台回执或人工核对证据"><button class="workbench__btn" @click="resolveUnknown(node.nodeId,'SUCCEEDED')">确认成功</button><button class="workbench__btn" @click="resolveUnknown(node.nodeId,'FAILED')">确认失败</button></div></article></div></section>
           <section><h3>事件时间线</h3><div class="run-events"><article v-for="event in runDetail.events" :key="event.id"><i></i><div><strong>{{ event.summary }}</strong><span>{{ event.eventType }} · {{ event.fromState || '—' }} → {{ event.toState }}</span><small>{{ time(event.createdTime) }} · {{ event.operatorUsername || 'system' }} · {{ event.requestId || '无请求 ID' }}</small></div></article></div></section>
         </template><div v-else class="workbench__empty">正在读取节点和事件证据…</div></main>
-        <footer><span>{{ runDetail?.error || '所有动作均以独立请求 ID 记录审计。' }}</span><div><button v-if="runDetail && ['QUEUED','RUNNING'].includes(runDetail.status)" class="workbench__btn" :disabled="actioning" @click="performAction('cancel')">安全取消</button><button v-if="runDetail?.nodes.some(node=>node.status==='FAILED')" class="workbench__btn" :disabled="actioning" @click="performAction('retry')">仅重试失败节点</button><button v-if="runDetail && ['SUCCEEDED','PARTIAL','FAILED','CANCELLED'].includes(runDetail.status)" class="workbench__btn" :disabled="actioning" @click="performAction('compensate')">安全补偿</button><button class="workbench__btn workbench__btn--primary" @click="runDialogOpen=false">关闭</button></div></footer>
+        <footer><span>{{ runDetail?.error || '所有动作均以独立请求 ID 记录审计。' }}</span><div><button v-if="runDetail && ['QUEUED','RUNNING'].includes(runDetail.status)" class="workbench__btn" :disabled="actioning" @click="performAction('cancel')">安全取消</button><button v-if="runDetail?.nodes.some(node=>node.status==='FAILED')" class="workbench__btn" :disabled="actioning" @click="performAction('retry')">仅重试失败节点</button><button v-if="runDetail && ['SUCCEEDED','PARTIAL','FAILED','CANCELLED'].includes(runDetail.status)" class="workbench__btn" :disabled="actioning" @click="performAction('compensate')">安全补偿</button><button class="workbench__btn workbench__btn--primary" @click="closeRunDialog">关闭</button></div></footer>
       </article>
     </div>
   </section>

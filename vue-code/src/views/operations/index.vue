@@ -16,6 +16,7 @@ import MediaUploader from '@/components/MediaUploader.vue'
 import type { Account } from '@/types'
 import { showConfirm, showError, showSuccess } from '@/utils'
 import { useAsyncResourceState } from '@/composables/useAsyncResourceState'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 type OperationsView = 'overview' | 'resources' | 'tasks'
 
@@ -65,6 +66,7 @@ const publishAccountIds = ref<number[]>([])
 const showEditor = ref(false)
 const materialDetail = ref<GrowthResource>()
 const materialDetailOpen = ref(false)
+const materialDetailDialog = ref<HTMLElement | null>(null)
 const overviewCounts = reactive<Record<string, number>>({})
 const overviewTaskCount = ref(0)
 const overviewFailedCount = ref(0)
@@ -78,6 +80,8 @@ const resourcePage = ref(1)
 const taskPage = ref(1)
 
 const form = reactive<any>({})
+const closeMaterialDetail = () => { materialDetailOpen.value = false }
+useModalFocusTrap(materialDetailOpen, materialDetailDialog, closeMaterialDetail)
 const formDefaults = () => ({
   id: undefined, resourceType: activeType.value, name: '', status: 1, xianyuAccountId: undefined, xianyuAccountIds: [] as number[],
   xyGoodsId: '', stock: 0, amount: undefined, scheduledTime: '', description: '', images: '', videos: '', sourceUrl: '',
@@ -592,16 +596,16 @@ onMounted(async () => {
       </form>
     </div>
 
-    <div v-if="materialDetailOpen" class="dialog-mask" @click.self="materialDetailOpen = false">
-      <article class="material-detail">
-        <header><div><small>素材 360 档案 · #{{ materialDetail?.id || '-' }}</small><h2>{{ materialDetail?.name || '读取中…' }}</h2></div><button aria-label="关闭" @click="materialDetailOpen = false">×</button></header>
+    <div v-if="materialDetailOpen" class="dialog-mask" @click.self="closeMaterialDetail">
+      <article ref="materialDetailDialog" class="material-detail" role="dialog" aria-modal="true" aria-labelledby="material-detail-dialog-title" tabindex="-1">
+        <header><div><small>素材 360 档案 · #{{ materialDetail?.id || '-' }}</small><h2 id="material-detail-dialog-title">{{ materialDetail?.name || '读取中…' }}</h2></div><button aria-label="关闭素材档案" @click="closeMaterialDetail">×</button></header>
         <main v-if="materialDetail">
           <section class="material-detail__metrics"><div><span>当前版本</span><strong>{{ materialDetail.version ? `v${materialDetail.version.version}` : '未建立' }}</strong></div><div><span>来源授权</span><strong>{{ materialDetail.version?.source?.authorizationStatus || '未知' }}</strong></div><div><span>素材许可</span><strong>{{ materialDetail.version?.license?.type || '未知' }}</strong></div><div><span>引用次数</span><strong>{{ materialDetail.version?.referenceCount ?? '未同步' }}</strong></div></section>
           <section><h3>来源证据</h3><dl><div><dt>来源类型</dt><dd>{{ materialDetail.version?.source?.type || '未记录' }}</dd></div><div><dt>来源链接</dt><dd>{{ materialDetail.version?.source?.url || '未记录' }}</dd></div><div><dt>采集时间</dt><dd>{{ formatTime(materialDetail.version?.source?.capturedAt) }}</dd></div><div><dt>适用账号</dt><dd>{{ materialDetail.accountIds.map(id => accountName(id)).join('、') }}</dd></div></dl></section>
           <section><h3>不可变版本</h3><div class="material-detail__versions"><article v-for="version in materialDetail.versions" :key="version.id"><div><strong>v{{ version.version }}</strong><span>{{ version.lifecycleState }} · {{ formatTime(version.createdTime) }}</span><small>内容指纹 {{ version.payloadFingerprint.slice(0, 12) }}… · {{ version.operatorUsername || 'system' }}</small></div><div><em v-if="version.readiness.blockers.length">{{ version.readiness.blockers.join('；') }}</em><button v-if="version.lifecycleState !== 'ACTIVE'" class="secondary-btn" @click="activateMaterialVersion(version.version)">启用版本</button></div></article></div></section>
         </main>
         <main v-else class="empty">正在读取完整档案…</main>
-        <footer><span>详情保留列表上下文；不提供无审计删除或直接发布入口。</span><div><button class="secondary-btn" @click="materialDetailOpen = false">关闭</button></div></footer>
+        <footer><span>详情保留列表上下文；不提供无审计删除或直接发布入口。</span><div><button class="secondary-btn" @click="closeMaterialDetail">关闭</button></div></footer>
       </article>
     </div>
   </div>

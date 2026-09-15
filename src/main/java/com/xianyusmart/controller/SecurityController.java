@@ -33,22 +33,24 @@ public class SecurityController {
     @GetMapping("/2fa/status")
     public ResultObject<Map<String, Object>> status() {
         SysUser user = authService.getCurrentUser(UserContext.getUserId());
-        return ResultObject.success(Map.of("enabled", user != null && Integer.valueOf(1).equals(user.getTotpEnabled())));
+        return ResultObject.success(Map.of(
+                "enabled", user != null && Integer.valueOf(1).equals(user.getTotpEnabled()),
+                "recoveryCodeCount", totpService.recoveryCodeCount(user)));
     }
 
     @PostMapping("/2fa/begin")
-    public ResultObject<Map<String, Object>> begin() {
-        return ResultObject.success(totpService.begin(UserContext.getUserId()));
+    public ResultObject<Map<String, Object>> begin(@RequestBody(required = false) RequestMetadata request) {
+        return ResultObject.success(totpService.begin(UserContext.getUserId(), request == null ? null : request.requestId()));
     }
 
     @PostMapping("/2fa/confirm")
     public ResultObject<List<String>> confirm(@Valid @RequestBody CodeRequest request) {
-        return ResultObject.success(totpService.confirm(UserContext.getUserId(), request.code()));
+        return ResultObject.success(totpService.confirm(UserContext.getUserId(), request.code(), request.requestId()));
     }
 
     @PostMapping("/2fa/disable")
     public ResultObject<Void> disable(@Valid @RequestBody CodeRequest request) {
-        totpService.disable(UserContext.getUserId(), request.code());
+        totpService.disable(UserContext.getUserId(), request.code(), request.requestId());
         return ResultObject.success(null);
     }
 
@@ -69,6 +71,7 @@ public class SecurityController {
         return ResultObject.success(Map.of("revokedCount", revoked, "keptSessionId", request.keepSessionId()));
     }
 
-    public record CodeRequest(@NotBlank String code) { }
+    public record RequestMetadata(String requestId) { }
+    public record CodeRequest(@NotBlank String code, String requestId) { }
     public record RevokeOthersRequest(@NotNull @Positive Long keepSessionId) { }
 }

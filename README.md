@@ -347,7 +347,7 @@ scripts/local-toolchain.sh ./mvnw spring-boot:run
 scripts/local-toolchain.sh npm --prefix vue-code run dev
 ```
 
-日常类型检查、编译、单元测试、打包和 3000 QA 应用均可直接在 macOS 执行；Docker 只运行隔离 MySQL 5.7，并复用原 QA 数据卷。启停、端口和安全边界见 [`NATIVE_QA_RUNBOOK.md`](NATIVE_QA_RUNBOOK.md)。
+日常类型检查、编译、单元测试、打包和 3000 QA 应用均可直接在 macOS 执行；Docker 只运行隔离 MySQL 5.7，并复用原 QA 数据卷。启停、端口和安全边界见 [`NATIVE_QA_RUNBOOK.md`](NATIVE_QA_RUNBOOK.md)，两种部署方式的备份、升级与回滚见 [`V6_OPERATIONS_RUNBOOK.md`](V6_OPERATIONS_RUNBOOK.md)。
 
 ### Windows 本地开发
 

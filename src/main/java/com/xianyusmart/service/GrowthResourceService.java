@@ -113,9 +113,19 @@ public class GrowthResourceService {
 
     public Map<String, Object> detail(Long resourceId) {
         Map<String, Object> resource = requireResource(resourceId, false);
-        resource.put("versions", versions(resourceId));
+        List<Map<String, Object>> versionHistory = versions(resourceId);
+        resource.put("version", activeVersion(versionHistory));
+        resource.put("versions", versionHistory);
         resource.put("goodsMappings", goodsMappings(resourceId));
         return resource;
+    }
+
+    Map<String, Object> activeVersion(List<Map<String, Object>> versionHistory) {
+        if (versionHistory == null) return null;
+        return versionHistory.stream()
+                .filter(version -> "ACTIVE".equals(text(version.get("lifecycleState"))))
+                .findFirst()
+                .orElse(null);
     }
 
     public List<Map<String, Object>> versions(Long resourceId) {
