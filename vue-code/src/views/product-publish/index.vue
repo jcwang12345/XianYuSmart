@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { getAccountList } from '@/api/account'
 import { getResources, type MerchantResource } from '@/api/merchant'
-import { createListingDraft, executePublish, getListingDrafts, getListingFormSchema, getPublishingRequestStatus, preflightPublish, updateListingDraft, validateListingDraft, type ListingFormSchema } from '@/api/matrix'
+import { createListingDraft, executePublish, getListingDrafts, getListingDraftVersions, getListingFormSchema, getPublishingRequestStatus, newRequestId, preflightPublish, updateListingDraft, validateListingDraft, type ListingFormSchema } from '@/api/matrix'
 import PublishAddressFields from '@/components/PublishAddressFields.vue'
 import MediaUploader from '@/components/MediaUploader.vue'
 import ListingSkuEditor from '@/components/product/ListingSkuEditor.vue'
@@ -23,9 +23,15 @@ const schema = ref<ListingFormSchema | null>(null)
 const accounts = ref<Account[]>([])
 const materials = ref<MerchantResource[]>([])
 const drafts = ref<Array<Record<string, any>>>([])
+const draftVersions = ref<Array<Record<string, any>>>([])
 const activeSection = ref('identity')
+const mobilePane = ref<'FORM' | 'PREVIEW'>('FORM')
 const draftId = ref<number | null>(null)
 const draftRevision = ref(0)
+const draftSaveState = ref<'IDLE' | 'SAVING' | 'SAVED' | 'ERROR'>('IDLE')
+const draftSavedAt = ref<Date | null>(null)
+const hydratingDraft = ref(false)
+const readyForAutosave = ref(false)
 const localValidation = ref<Record<string, any> | null>(null)
 const preflightResult = ref<Record<string, any> | null>(null)
 const publishResult = ref<Record<string, any> | null>(null)
@@ -39,7 +45,9 @@ const form = reactive<Record<string, any>>({
   conditionCode: 'DIGITAL', industryCode: '', leafCategoryCode: '', leafCategoryName: '', categoryAttributes: {},
   shippingMode: 'ONLINE_DELIVERY', shippingFee: undefined, freightTemplateId: '',
   province: '北京市', city: '北京市', district: '', divisionId: '', gps: '', poiId: '', poiName: '',
-  imagesText: '', videoUrl: '', skuDimensions: [] as Dimension[], skus: [] as Sku[], serviceProtocols: [] as string[]
+  imagesText: '', videoUrl: '', skuDimensions: [] as Dimension[], skus: [] as Sku[], serviceProtocols: [] as string[],
+  fulfillmentMode: 'AUTO_DELIVERY', validityDays: 7, supportPolicy: '', afterSalesPolicy: '',
+  serviceDurationMinutes: 60, appointmentLeadHours: 2, serviceArea: '', catalogVersion: ''
 })
 
 const sections = [
@@ -55,6 +63,10 @@ const images = computed<string[]>({
   get: () => String(form.imagesText || '').split('\n').map(value => value.trim()).filter(Boolean),
   set: value => { form.imagesText = value.join('\n') }
 })
+const videos = computed<string[]>({
+  get: () => form.videoUrl ? [String(form.videoUrl)] : [],
+  set: value => { form.videoUrl = value[0] || '' }
+})
 const channels = computed<Array<Record<string, any>>>(() => schema.value?.channelCapabilities?.channels || [])
 const selectedChannel = computed(() => channels.value.find(item => item.channelCode === form.publishChannel) || null)
 const selectedAccount = computed(() => accounts.value.find(item => item.id === form.xianyuAccountId) || null)
@@ -63,7 +75,7 @@ const selectedIndustry = computed(() => industries.value.find(item => item.code 
 const leafCategories = computed(() => selectedIndustry.value?.leafCategories || [])
 const selectedLeaf = computed(() => leafCategories.value.find(item => item.code === form.leafCategoryCode) || null)
 const attributes = computed(() => selectedLeaf.value?.attributes || [])
-const formFingerprint = computed(() => JSON.stringify(command(false)))
+const formFingerprint = computed(() => JSON.stringify(baseCommand()))
 const canExecute = computed(() => Boolean(preflightRequestId.value && preflightRequestId.value === publishRequestId.value && publishFingerprint.value === formFingerprint.value && preflightResult.value?.valid !== false))
 const adapterWarnings = computed(() => {
   const warnings: string[] = []
@@ -93,8 +105,18 @@ const publishAddress = computed<PublishAddress>({
   set: value => Object.assign(form, value)
 })
 
-const deliveryMethod = () => ({ ONLINE_DELIVERY: '线上交付', FACE_TO_FACE: '当面交易', FREE_SHIPPING: '快递发货', FREIGHT_TEMPLATE: '快递发货', SELF_PICKUP: '当面交易' }[String(form.shippingMode)] || '线上交付')
-const command = (withRequest = true) => ({ ...form, images: images.value, deliveryMethod: deliveryMethod(), freeShipping: form.shippingMode === 'FREE_SHIPPING', requestId: withRequest ? currentRequestId() : undefined })
+const deliveryMethod = () => ({ ONLINE_DELIVERY: '线上交付', FACE_TO_FACE: '当面交易', FREE_SHIPPING: '快递发货', FREIGHT_TEMPLATE: '快递发货', SELF_PICKUP: '当面交易', REMOTE_SERVICE: '远程服务', ON_SITE_SERVICE: '上门服务', STORE_SERVICE: '到店服务' }[String(form.shippingMode)] || '待选择')
+const baseCommand = () => {
+  const { imagesText: _imagesText, ...fields } = form
+  return { ...fields, images: images.value, deliveryMethod: deliveryMethod(), freeShipping: form.shippingMode === 'FREE_SHIPPING' }
+}
+const command = (withRequest = true, withPreviewToken = false) => ({
+  ...baseCommand(),
+  requestId: withRequest ? currentRequestId() : undefined,
+  draftId: withRequest ? (draftId.value || undefined) : undefined,
+  draftRevision: withRequest && draftId.value ? draftRevision.value : undefined,
+  previewToken: withPreviewToken ? preflightResult.value?.previewToken : undefined
+})
 
 const loadBase = async () => {
   const [accountResult, materialResult] = await Promise.all([getAccountList(), getResources('MATERIAL', 1)])
@@ -116,6 +138,7 @@ const loadSchema = async () => {
     if (serial !== schemaSerial) return
     schema.value = response.data || null
     if (!schema.value) throw new Error('发布字段目录为空')
+    form.catalogVersion = schema.value.catalogVersion
     const available = channels.value.find(item => item.available)
     if (!channels.value.some(item => item.channelCode === form.publishChannel && item.available)) form.publishChannel = String(available?.channelCode || '')
     if (!schema.value.conditions.some(item => item.value === form.conditionCode)) form.conditionCode = schema.value.conditions[0]?.value || ''
@@ -129,6 +152,7 @@ const refreshDrafts = async () => { if (form.xianyuAccountId) drafts.value = (aw
 
 watch(() => form.xianyuAccountId, () => { invalidatePreflight(); void loadSchema() })
 watch(() => form.productType, () => {
+  if (hydratingDraft.value) return
   form.skuDimensions = []; form.skus = []; form.industryCode = ''; form.leafCategoryCode = ''; form.categoryAttributes = {}
   invalidatePreflight(); void loadSchema()
 })
@@ -152,25 +176,55 @@ const useMaterial = (event: Event) => {
   form.imagesText = Array.isArray(material.data?.images) ? material.data.images.join('\n') : ''
   invalidatePreflight()
 }
-const loadDraft = (event: Event) => {
+const loadDraft = async (event: Event) => {
   const draft = drafts.value.find(item => Number(item.id) === Number((event.target as HTMLSelectElement).value))
   if (!draft) return
+  hydratingDraft.value = true
   Object.assign(form, draft.payload || {})
   if (Array.isArray(draft.payload?.images)) form.imagesText = draft.payload.images.join('\n')
   draftId.value = Number(draft.id); draftRevision.value = Number(draft.revision || 1)
+  draftSaveState.value = 'SAVED'; draftSavedAt.value = draft.updatedAt ? new Date(draft.updatedAt) : new Date()
+  await nextTick()
+  hydratingDraft.value = false
+  await loadSchema()
+  draftVersions.value = (await getListingDraftVersions(draftId.value)).data || []
   invalidatePreflight(); toast.success('商品草稿已载入')
 }
-const saveDraft = async () => {
-  loading.value = true
+const saveDraft = async (source: 'AUTO_SAVE' | 'MANUAL_SAVE' = 'MANUAL_SAVE') => {
+  if (draftSaveState.value === 'SAVING' || !form.xianyuAccountId) return
+  draftSaveState.value = 'SAVING'
+  if (source === 'MANUAL_SAVE') loading.value = true
   try {
     const payload = command(false)
-    const result = draftId.value ? await updateListingDraft(draftId.value, draftRevision.value, payload) : await createListingDraft(payload)
+    const requestId = newRequestId(source === 'AUTO_SAVE' ? 'listing-auto' : 'listing-save')
+    const result = draftId.value
+      ? await updateListingDraft(draftId.value, draftRevision.value, payload, requestId, source)
+      : await createListingDraft(payload, requestId, source)
     draftId.value = Number(result.data?.id || draftId.value); draftRevision.value = Number(result.data?.revision || draftRevision.value || 1)
-    await refreshDrafts(); toast.success('草稿已保存；尚未向闲鱼提交')
-  } catch (error: any) { toast.error(error?.message || '草稿保存失败') } finally { loading.value = false }
+    if (preflightRequestId.value) invalidatePreflight()
+    draftSavedAt.value = new Date(); draftSaveState.value = 'SAVED'
+    await refreshDrafts()
+    if (draftId.value) draftVersions.value = (await getListingDraftVersions(draftId.value)).data || []
+    if (source === 'MANUAL_SAVE') toast.success('草稿已保存；尚未向闲鱼提交')
+  } catch (error: any) {
+    draftSaveState.value = 'ERROR'
+    if (source === 'MANUAL_SAVE') toast.error(error?.message || '草稿保存失败')
+  } finally { if (source === 'MANUAL_SAVE') loading.value = false }
 }
 
-const invalidatePreflight = () => { preflightResult.value = null; preflightRequestId.value = ''; publishResult.value = null }
+let autosaveTimer: ReturnType<typeof setTimeout> | undefined
+watch(form, () => {
+  if (!readyForAutosave.value || hydratingDraft.value) return
+  invalidatePreflight()
+  clearTimeout(autosaveTimer)
+  if (!String(form.name || '').trim() && !String(form.description || '').trim()) return
+  autosaveTimer = setTimeout(() => { void saveDraft('AUTO_SAVE') }, 1600)
+}, { deep: true })
+
+const invalidatePreflight = () => {
+  preflightResult.value = null; preflightRequestId.value = ''; publishResult.value = null
+  publishRequestId.value = ''; publishFingerprint.value = ''
+}
 const currentRequestId = () => {
   const fingerprint = formFingerprint.value
   if (!publishRequestId.value || publishFingerprint.value !== fingerprint) {
@@ -201,7 +255,7 @@ const publish = async () => {
   } catch { return }
   loading.value = true
   try {
-    const response = await executePublish(command(true)); publishResult.value = response.data || null
+    const response = await executePublish(command(true, true)); publishResult.value = response.data || null
     toast.success(response.data?.platform?.executionChannel === 'QA_MOCK' ? '隔离任务执行成功，未写入闲鱼' : '平台已确认发布结果')
   } catch (error: any) { toast.error(error?.message || '发布请求失败') } finally { loading.value = false }
 }
@@ -209,17 +263,19 @@ const refreshStatus = async () => { if (publishRequestId.value) publishResult.va
 const statusText = (value: unknown) => ({ READY: '可用', SUPPORTED: '支持', PARTIAL: '部分能力', MOCK_ONLY: '隔离模拟', NOT_VERIFIED: '未验证', UNKNOWN: '未知', UNAVAILABLE: '不可用', REQUIRES_PLATFORM_PERMISSION: '需平台权限', NOT_CONNECTED: '未接入', AUTHORIZED: '已授权', NOT_APPLICABLE: '无需授权' }[String(value)] || String(value || '未同步'))
 const channelTone = (channel: Record<string, any>) => channel.available ? 'ready' : channel.authorizationStatus === 'NOT_CONNECTED' ? 'missing' : 'blocked'
 const scrollTo = (id: string) => { activeSection.value = id; document.getElementById(`publish-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
-onMounted(loadBase)
+onMounted(async () => { await loadBase(); readyForAutosave.value = true })
+onBeforeUnmount(() => clearTimeout(autosaveTimer))
 </script>
 
 <template>
   <main class="workbench publish-studio">
     <header class="workbench__header publish-studio__header">
       <div><span class="publish-studio__eyebrow">LISTING STUDIO</span><h1>商品发布工作台</h1><p>店铺身份、类目属性、内容媒体、规格库存与交付承诺共用一份结构化草稿，右侧实时还原买家视角。</p></div>
-      <div class="publish-studio__header-actions"><select class="workbench__select" aria-label="打开商品草稿" @change="loadDraft"><option value="">打开草稿（{{ drafts.length }}）</option><option v-for="item in drafts" :key="item.id" :value="item.id">{{ item.draftName }} · r{{ item.revision }}</option></select><button class="workbench__btn" type="button" :disabled="loading" @click="saveDraft">{{ draftId ? '更新草稿' : '保存草稿' }}</button><button class="workbench__btn workbench__btn--primary" type="button" :disabled="loading" @click="preflight">发布前校验</button></div>
+      <div class="publish-studio__header-actions"><span class="draft-state" :class="`draft-state--${draftSaveState.toLowerCase()}`">{{ draftSaveState === 'SAVING' ? '自动保存中…' : draftSaveState === 'SAVED' ? `已保存 r${draftRevision}` : draftSaveState === 'ERROR' ? '自动保存失败' : '尚未保存' }}</span><select class="workbench__select" aria-label="打开商品草稿" @change="loadDraft"><option value="">打开草稿（{{ drafts.length }}）</option><option v-for="item in drafts" :key="item.id" :value="item.id">{{ item.draftName }} · r{{ item.revision }}</option></select><button class="workbench__btn" type="button" :disabled="loading" @click="saveDraft('MANUAL_SAVE')">{{ draftId ? '更新草稿' : '保存草稿' }}</button><button class="workbench__btn workbench__btn--primary" type="button" :disabled="loading" @click="preflight">发布前校验</button></div>
     </header>
+    <div class="publish-studio__mobile-switch" role="tablist" aria-label="发布编辑视图"><button type="button" :class="{ active: mobilePane === 'FORM' }" @click="mobilePane = 'FORM'">填写表单</button><button type="button" :class="{ active: mobilePane === 'PREVIEW' }" @click="mobilePane = 'PREVIEW'">买家预览</button></div>
     <div v-if="schemaError" class="publish-studio__error" role="alert"><span>{{ schemaError }}</span><button class="workbench__btn" @click="loadSchema">重试当前账号</button></div>
-    <div class="publish-studio__shell">
+    <div class="publish-studio__shell" :class="`publish-studio__shell--${mobilePane.toLowerCase()}`">
       <nav class="publish-studio__nav" aria-label="发布表单章节"><button v-for="(item, index) in sections" :key="item.id" :class="{ active: activeSection === item.id }" @click="scrollTo(item.id)"><span>{{ index + 1 }}</span><div><strong>{{ item.label }}</strong><small>{{ item.hint }}</small></div></button></nav>
       <form class="publish-studio__form" @submit.prevent>
         <section id="publish-identity" class="publish-card" @focusin="activeSection = 'identity'">
@@ -232,7 +288,7 @@ onMounted(loadBase)
 
         <section id="publish-category" class="publish-card" @focusin="activeSection = 'category'">
           <header><div><span>02</span><h2>商品类型与类目属性</h2></div><p>{{ schema?.notice || '平台目录读取中' }}</p></header>
-          <div class="product-type-grid"><label :class="{ selected: form.productType === 'PHYSICAL' }"><input v-model="form.productType" type="radio" value="PHYSICAL"><strong>实物商品</strong><small>快递、包邮/运费模板、成色和所在地</small></label><label :class="{ selected: form.productType === 'VIRTUAL' }"><input v-model="form.productType" type="radio" value="VIRTUAL"><strong>虚拟 / 服务商品</strong><small>软件、卡密、在线服务与数字内容</small></label></div>
+          <div class="product-type-grid"><label :class="{ selected: form.productType === 'PHYSICAL' }"><input v-model="form.productType" type="radio" value="PHYSICAL"><strong>实物商品</strong><small>快递、包邮/运费模板、成色和所在地</small></label><label :class="{ selected: form.productType === 'VIRTUAL' }"><input v-model="form.productType" type="radio" value="VIRTUAL"><strong>虚拟商品</strong><small>软件、卡密与数字内容，记录有效期和交付方式</small></label><label :class="{ selected: form.productType === 'SERVICE' }"><input v-model="form.productType" type="radio" value="SERVICE"><strong>服务商品</strong><small>远程、上门或到店，记录时长、预约和服务范围</small></label></div>
           <div class="publish-grid publish-grid--three"><label class="workbench__field">行业<select v-model="form.industryCode" class="workbench__select"><option value="">请选择行业</option><option v-for="item in industries" :key="item.code" :value="item.code">{{ item.name }}</option></select></label><label class="workbench__field">叶子类目<select v-model="form.leafCategoryCode" class="workbench__select" :disabled="!selectedIndustry"><option value="">请选择最末级类目</option><option v-for="item in leafCategories" :key="item.code" :value="item.code">{{ item.name }}</option></select><small>本地参考目录 · 平台预检回读确认</small></label><label class="workbench__field">成色 / 交付性质<select v-model="form.conditionCode" class="workbench__select"><option v-for="item in schema?.conditions || []" :key="item.value" :value="item.value">{{ item.label }}</option></select></label></div>
           <div v-if="attributes.length" class="attribute-panel"><header><strong>类目属性</strong><span>标记 * 的字段用于预检完整性</span></header><div class="publish-grid publish-grid--two"><label v-for="item in attributes" :key="item.code" class="workbench__field">{{ item.name }}{{ item.required ? ' *' : '' }}<select v-if="item.options.length" v-model="form.categoryAttributes[item.code]" class="workbench__select"><option value="">请选择</option><option v-for="option in item.options" :key="option" :value="option">{{ option }}</option></select><input v-else v-model="form.categoryAttributes[item.code]" class="workbench__input" maxlength="100" placeholder="请输入"></label></div></div>
         </section>
@@ -244,7 +300,7 @@ onMounted(loadBase)
           <label class="workbench__field">商品详情<textarea v-model="form.description" class="workbench__textarea publish-studio__description" maxlength="3000" placeholder="建议依次说明：功能价值、适用范围、交付方式、使用教程、售后方式与有效期"></textarea><small>{{ form.description.length }} / 3000</small></label>
           <label class="workbench__field">商品图片（1–{{ schema?.limits.images || 9 }} 张）<MediaUploader v-model="images" :account-id="form.xianyuAccountId" :max="schema?.limits.images || 9" label="上传商品图片" /><small>支持排序、删除、失败重试；第一张作为封面并同步到右侧预览。</small></label>
           <label class="workbench__field">图片地址（每行一张）<textarea v-model="form.imagesText" class="workbench__textarea" maxlength="6000" placeholder="支持 HTTPS 或本地媒体地址"></textarea></label>
-          <label class="workbench__field">商品视频<input v-model="form.videoUrl" class="workbench__input" placeholder="当前真实通道未验证，保存到草稿但不会静默提交"><small class="publish-studio__degraded">安全降级：只有通道能力返回视频已验证后才可发布。</small></label>
+          <label class="workbench__field">商品视频（可选）<MediaUploader v-model="videos" :account-id="form.xianyuAccountId" :max="1" accept="video" label="上传商品视频" /><small class="publish-studio__degraded">安全降级：视频可保存到草稿和素材版本，只有通道能力验证后才会提交平台。</small></label>
         </section>
 
         <section id="publish-price" class="publish-card" @focusin="activeSection = 'price'">
@@ -256,6 +312,10 @@ onMounted(loadBase)
         <section id="publish-trade" class="publish-card" @focusin="activeSection = 'trade'">
           <header><div><span>05</span><h2>交易、位置与服务承诺</h2></div><p>只承诺真实可履约的服务，协议、余额和类目资格仍需平台预检。</p></header>
           <div class="publish-grid publish-grid--two"><label class="workbench__field">交付 / 运费方式<select v-model="form.shippingMode" class="workbench__select"><option v-for="item in schema?.shippingModes || []" :key="item.value" :value="item.value">{{ item.label }} · {{ item.description }}</option></select></label><label v-if="form.shippingMode === 'FREIGHT_TEMPLATE'" class="workbench__field">运费模板 ID<input v-model="form.freightTemplateId" class="workbench__input" placeholder="平台运费模板 ID"></label></div>
+          <div v-if="form.productType === 'VIRTUAL'" class="publish-grid publish-grid--three publish-type-fields"><label class="workbench__field">数字履约方式<select v-model="form.fulfillmentMode" class="workbench__select"><option value="AUTO_DELIVERY">自动发货</option><option value="MANUAL_DIGITAL">人工线上交付</option><option value="GROUP_SUPPORT">售后群内交付</option></select></label><label class="workbench__field">有效期（天）<input v-model.number="form.validityDays" class="workbench__input" type="number" min="1" step="1"></label><label class="workbench__field">售后与安装说明<input v-model="form.supportPolicy" class="workbench__input" maxlength="500" placeholder="如：群内提供视频教程与人工指导"></label></div>
+          <div v-else-if="form.productType === 'SERVICE'" class="publish-grid publish-grid--four publish-type-fields"><label class="workbench__field">服务时长（分钟）<input v-model.number="form.serviceDurationMinutes" class="workbench__input" type="number" min="1" step="1"></label><label class="workbench__field">至少提前预约（小时）<input v-model.number="form.appointmentLeadHours" class="workbench__input" type="number" min="0" step="1"></label><label class="workbench__field">服务范围<input v-model="form.serviceArea" class="workbench__input" maxlength="200" :placeholder="form.shippingMode === 'ON_SITE_SERVICE' ? '上门服务必填' : '可填写城市或线上范围'"></label><label class="workbench__field">改期 / 售后说明<input v-model="form.supportPolicy" class="workbench__input" maxlength="500" placeholder="说明改期、取消和售后规则"></label></div>
+          <label v-else class="workbench__field publish-type-fields">实物售后说明<textarea v-model="form.afterSalesPolicy" class="workbench__textarea" maxlength="500" placeholder="说明退换、保修、瑕疵和签收注意事项"></textarea></label>
+          <p class="type-requirement-note">{{ schema?.typeRequirements?.notice }}</p>
           <div class="publish-address"><PublishAddressFields v-model="publishAddress" /></div>
           <div class="service-grid"><label v-for="service in schema?.serviceProtocols || []" :key="service.code" :class="{ selected: form.serviceProtocols.includes(service.code) }"><input v-model="form.serviceProtocols" type="checkbox" :value="service.code"><span><strong>{{ service.label }}</strong><small>{{ service.description }}</small></span><em>{{ statusText(service.status) }}</em></label></div>
         </section>
@@ -264,10 +324,11 @@ onMounted(loadBase)
           <header><div><span>06</span><h2>风险校验与最终发布</h2></div><p>草稿预览、平台预检和发布结果是三个不同状态。</p></header>
           <div v-if="adapterWarnings.length" class="publish-studio__warnings"><strong>能力边界</strong><ul><li v-for="item in adapterWarnings" :key="item">{{ item }}</li></ul></div>
           <div v-if="executionBlockers.length" class="publish-studio__warnings"><strong>真实提交阻断项</strong><ul><li v-for="item in executionBlockers" :key="item">{{ item }}：可保存草稿与执行平台预检，真实提交需等待通道能力验证。</li></ul></div>
-          <div v-if="localValidation" class="validation-result" :class="{ invalid: !localValidation.valid }"><header><strong>{{ localValidation.valid ? '本地结构校验通过' : '需要修正表单' }}</strong><span>{{ localValidation.source }}</span></header><ul v-if="localValidation.errors?.length"><li v-for="item in localValidation.errors" :key="item">{{ item }}</li></ul><ul v-if="localValidation.warnings?.length"><li v-for="item in localValidation.warnings" :key="item">{{ item }}</li></ul></div>
-          <div v-if="preflightResult" class="publish-evidence"><header><strong>{{ preflightResult.platform?.executionChannel === 'QA_MOCK' ? '隔离平台预检' : '真实平台预检' }}</strong><span>{{ preflightResult.outcomeState }}</span></header><dl><div><dt>请求 ID</dt><dd>{{ preflightResult.requestId }}</dd></div><div><dt>发布通道</dt><dd>{{ preflightResult.platform?.publishChannel || form.publishChannel }}</dd></div><div><dt>平台类目</dt><dd>{{ preflightResult.platform?.category?.catName || preflightResult.platform?.category?.categoryName || '未返回' }}</dd></div><div><dt>载荷指纹</dt><dd>{{ preflightResult.payloadFingerprint }}</dd></div></dl><p>{{ preflightResult.platform?.previewUsesProductionBuilder ? '预览与提交共用生产请求构造器。' : '隔离预检未调用生产构造器，也不会访问闲鱼网络。' }}</p></div>
+          <div v-if="localValidation" class="validation-result" :class="{ invalid: !localValidation.valid }"><header><strong>{{ localValidation.valid ? '本地结构校验通过' : '需要修正表单' }}</strong><span>{{ localValidation.catalogVersion }} · {{ localValidation.source }}</span></header><ul v-if="localValidation.fieldErrors?.length"><li v-for="item in localValidation.fieldErrors" :key="`${item.field}-${item.code}`"><button type="button" @click="scrollTo(item.field.startsWith('category') || item.field.includes('Category') || item.field === 'industryCode' ? 'category' : item.field.startsWith('sku') || ['amount','originalPrice','stock','outerId'].includes(item.field) ? 'price' : ['shippingMode','supportPolicy','afterSalesPolicy','validityDays','serviceArea','serviceDurationMinutes','appointmentLeadHours'].includes(item.field) ? 'trade' : 'content')">{{ item.message }}</button><code>{{ item.field }}</code></li></ul><ul v-if="localValidation.warnings?.length"><li v-for="item in localValidation.warnings" :key="item">{{ item }}</li></ul></div>
+          <div v-if="preflightResult" class="publish-evidence"><header><strong>{{ preflightResult.platform?.executionChannel === 'QA_MOCK' ? '隔离平台预检' : '真实平台预检' }}</strong><span>{{ preflightResult.outcomeState }}</span></header><dl><div><dt>请求 ID</dt><dd>{{ preflightResult.requestId }}</dd></div><div><dt>发布通道</dt><dd>{{ preflightResult.platform?.publishChannel || form.publishChannel }}</dd></div><div><dt>平台类目</dt><dd>{{ preflightResult.platform?.category?.catName || preflightResult.platform?.category?.categoryName || '未返回' }}</dd></div><div><dt>目录版本</dt><dd>{{ preflightResult.catalogVersion }}</dd></div><div><dt>预检凭证</dt><dd>{{ preflightResult.previewToken }}</dd></div><div><dt>有效期至</dt><dd>{{ preflightResult.expiresAt ? new Date(preflightResult.expiresAt).toLocaleString('zh-CN') : '未返回' }}</dd></div><div><dt>载荷指纹</dt><dd>{{ preflightResult.payloadFingerprint }}</dd></div><div><dt>平台差异</dt><dd>{{ preflightResult.platformDifferences?.status || '未比对' }}</dd></div></dl><ul v-if="preflightResult.platformDifferences?.items?.length" class="publish-evidence__diff"><li v-for="item in preflightResult.platformDifferences.items" :key="item.field"><strong>{{ item.field }}</strong><span>{{ item.message }}</span></li></ul><p>{{ preflightResult.platform?.previewUsesProductionBuilder ? '预览与提交共用生产请求构造器。' : '隔离预检未调用生产构造器，也不会访问闲鱼网络。' }}</p></div>
           <div v-if="publishResult" class="publish-evidence publish-evidence--result"><header><strong>发布结果证据</strong><span>{{ publishResult.outcomeState || publishResult.status }}</span></header><dl><div><dt>任务 ID</dt><dd>{{ publishResult.taskId || '未生成' }}</dd></div><div><dt>商品 ID</dt><dd>{{ publishResult.platform?.itemId || publishResult.material?.xyGoodsId || '未确认' }}</dd></div><div><dt>数据来源</dt><dd>{{ publishResult.dataSource || publishResult.platform?.dataSource || publishResult.task?.dataSource || (form.publishChannel === 'QA_LOCAL' ? 'QA_FIXTURE' : '未同步') }}</dd></div><div><dt>平台写入</dt><dd>{{ publishResult.platform?.platformWrite || (form.publishChannel === 'QA_LOCAL' ? 'NOT_PERFORMED' : '待回读') }}</dd></div></dl><p>{{ publishResult.idempotentReplay ? '同一请求已执行过，本次返回持久化结果，没有重复创建任务。' : (publishResult.recoveryHint || publishResult.error || '结果已持久化，可按请求 ID 查询。') }}</p><button class="workbench__btn" type="button" @click="refreshStatus">按请求 ID 查询</button></div>
-          <footer class="publish-studio__review-actions"><button class="workbench__btn" type="button" :disabled="loading" @click="saveDraft">保存草稿</button><button class="workbench__btn" type="button" :disabled="loading" @click="preflight">{{ preflightResult ? '重新预检' : '发布前校验' }}</button><button class="workbench__btn workbench__btn--primary" type="button" :disabled="loading || !canExecute" @click="publish">确认发布</button></footer>
+          <details v-if="draftVersions.length" class="draft-versions"><summary>草稿版本历史（{{ draftVersions.length }}）</summary><ol><li v-for="version in draftVersions" :key="version.revision"><strong>r{{ version.revision }}</strong><span>{{ version.changeSource === 'AUTO_SAVE' ? '自动保存' : '手动保存' }}</span><time>{{ new Date(version.createdTime).toLocaleString('zh-CN') }}</time><code>{{ version.payloadFingerprint?.slice(0, 12) }}</code></li></ol></details>
+          <footer class="publish-studio__review-actions"><button class="workbench__btn" type="button" :disabled="loading" @click="saveDraft('MANUAL_SAVE')">保存草稿</button><button class="workbench__btn" type="button" :disabled="loading" @click="preflight">{{ preflightResult ? '重新预检' : '发布前校验' }}</button><button class="workbench__btn workbench__btn--primary" type="button" :disabled="loading || !canExecute" @click="publish">确认发布</button></footer>
         </section>
       </form>
       <ListingPhonePreview :form="{ ...form, images }" :account-name="selectedAccount?.accountNote || selectedAccount?.unb" :channel-name="selectedChannel?.channelName" :category-name="form.leafCategoryName" />
@@ -281,4 +342,6 @@ onMounted(loadBase)
 @media(max-width:1100px){.publish-studio__shell{grid-template-columns:130px minmax(0,1fr)}.publish-studio__shell>.listing-preview{grid-column:2}.publish-studio__header{align-items:flex-start;flex-direction:column}.publish-studio__header-actions{width:100%;flex-wrap:wrap}}
 @media(max-width:767px){.publish-studio{padding:14px 12px 48px}.publish-studio__shell{grid-template-columns:1fr}.publish-studio__nav{position:static;display:flex;overflow-x:auto;padding-bottom:4px}.publish-studio__nav button{min-width:132px}.publish-studio__form,.publish-studio__shell>.listing-preview{grid-column:1}.publish-card{padding:15px;border-radius:13px}.publish-card>header{align-items:flex-start;flex-direction:column;gap:6px}.publish-card>header p{max-width:none;text-align:left}.publish-grid--two,.publish-grid--three,.publish-grid--four,.product-type-grid,.service-grid{grid-template-columns:1fr}.publish-studio__header-actions .workbench__select{width:100%}.publish-studio__header-actions .workbench__btn{flex:1}.publish-studio__review-actions{margin:14px -15px -15px;padding:11px 15px max(11px,env(safe-area-inset-bottom))}.publish-studio__review-actions .workbench__btn{flex:1;padding-inline:8px}.publish-evidence dl{grid-template-columns:1fr}}
 .publish-card>header>div{flex:1 1 auto;min-width:0}.publish-card h2{word-break:keep-all}.publish-card>header p{flex:0 1 46%;max-width:46%}
+.draft-state{padding:5px 8px;border-radius:999px;color:#6c675f;background:#f0eee8;font-size:10px;white-space:nowrap}.draft-state--saving{color:#7a5600;background:#fff3c4}.draft-state--saved{color:#17603d;background:#e7f7ed}.draft-state--error{color:#922f28;background:#ffefed}.publish-studio__mobile-switch{display:none}.product-type-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.publish-type-fields{margin-top:14px}.type-requirement-note{margin:10px 0 0;color:#7b7469;font-size:11px}.validation-result li button{padding:0;border:0;color:inherit;background:transparent;text-align:left;text-decoration:underline;cursor:pointer}.validation-result li code{margin-left:7px;color:#8c8379;font-size:9px}.draft-versions{margin-top:12px;padding:12px;border:1px solid #e1ddd4;border-radius:11px;background:#faf9f6}.draft-versions summary{cursor:pointer;font-weight:700}.draft-versions ol{display:grid;gap:6px;margin:10px 0 0;padding:0;list-style:none}.draft-versions li{display:grid;grid-template-columns:42px 72px 1fr auto;gap:8px;align-items:center;font-size:10px}.draft-versions time{color:#77736b}.draft-versions code{color:#8a6500}
+@media(max-width:767px){.publish-studio__mobile-switch{display:grid;grid-template-columns:1fr 1fr;margin-top:14px;padding:3px;border-radius:10px;background:#ece9e2}.publish-studio__mobile-switch button{padding:9px;border:0;border-radius:8px;background:transparent;font-weight:700}.publish-studio__mobile-switch button.active{background:#fff;box-shadow:0 2px 8px rgba(50,44,32,.1)}.publish-studio__shell{margin-top:10px}.publish-studio__shell--preview .publish-studio__nav,.publish-studio__shell--preview .publish-studio__form{display:none}.publish-studio__shell--form>.listing-preview{display:none}.draft-state{width:100%;text-align:center}.draft-versions li{grid-template-columns:36px 64px 1fr}.draft-versions code{display:none}}
 </style>

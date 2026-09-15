@@ -6,6 +6,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -15,8 +19,8 @@ class ListingDraftServiceTest {
     @Test
     void acceptsCompleteVirtualListingAndKeepsAdvancedFieldsAsWarnings() {
         Map<String, Object> payload = validVirtual();
-        payload.put("leafCategoryCode", "OFFICE_PLUGIN");
-        payload.put("skus", List.of(Map.of("key", "Office", "price", 9.9, "stock", 10)));
+        payload.put("skuDimensions", List.of(Map.of("name", "平台", "values", List.of("Office"))));
+        payload.put("skus", List.of(Map.of("key", "Office", "values", Map.of("平台", "Office"), "price", 9.9, "stock", 10)));
         payload.put("videoUrl", "https://example.test/demo.mp4");
 
         ListingDraftService.Validation result = ListingDraftService.validatePayload(payload);
@@ -36,6 +40,57 @@ class ListingDraftServiceTest {
 
         assertTrue(result.errors().stream().anyMatch(value -> value.contains("两位小数")));
         assertTrue(result.errors().stream().anyMatch(value -> value.contains("原价")));
+    }
+
+    @Test
+    void acceptsTwoDecimalPriceAndUpperBoundButRejectsThreeDecimals() {
+        for (String accepted : List.of("0.01", "12.34", "99999999.99")) {
+            Map<String, Object> payload = validVirtual();
+            payload.put("amount", accepted);
+            assertTrue(ListingDraftService.validatePayload(payload).errors().stream()
+                    .noneMatch(value -> value.contains("售价必须")), accepted);
+        }
+        for (String rejected : List.of("0.001", "1.234", "100000000.00")) {
+            Map<String, Object> payload = validVirtual();
+            payload.put("amount", rejected);
+            assertTrue(ListingDraftService.validatePayload(payload).errors().stream()
+                    .anyMatch(value -> value.contains("售价必须")), rejected);
+        }
+    }
+
+    @Test
+    void rejectsDuplicateMediaAndInvalidSkuRowsWithFieldPaths() {
+        Map<String, Object> payload = validVirtual();
+        payload.put("images", List.of("https://example.test/item.jpg", "https://example.test/item.jpg"));
+        payload.put("skuDimensions", List.of(Map.of("name", "版本", "values", List.of("标准", "专业"))));
+        payload.put("skus", List.of(
+                Map.of("key", "标准", "price", "1.234", "stock", 1, "merchantCode", "SAME"),
+                Map.of("key", "专业", "price", "2.00", "stock", -1, "merchantCode", "SAME")));
+
+        ListingDraftService.Validation result = ListingDraftService.validatePayload(payload);
+
+        assertTrue(result.fieldErrors().stream().anyMatch(item -> "images[1]".equals(item.get("field"))));
+        assertTrue(result.fieldErrors().stream().anyMatch(item -> "skus[0].price".equals(item.get("field"))));
+        assertTrue(result.fieldErrors().stream().anyMatch(item -> "skus[1].stock".equals(item.get("field"))));
+        assertTrue(result.fieldErrors().stream().anyMatch(item -> "skus[1].merchantCode".equals(item.get("field"))));
+    }
+
+    @Test
+    void enforcesDistinctVirtualPhysicalAndServiceFulfillment() {
+        Map<String, Object> service = validVirtual();
+        service.put("productType", "SERVICE");
+        service.put("shippingMode", "ONLINE_DELIVERY");
+        service.put("serviceDurationMinutes", 0);
+        service.put("appointmentLeadHours", -1);
+        assertTrue(ListingDraftService.validatePayload(service).fieldErrors().stream()
+                .anyMatch(item -> "shippingMode".equals(item.get("field"))));
+
+        Map<String, Object> physical = validVirtual();
+        physical.put("productType", "PHYSICAL");
+        physical.put("shippingMode", "FREE_SHIPPING");
+        physical.remove("afterSalesPolicy");
+        assertTrue(ListingDraftService.validatePayload(physical).fieldErrors().stream()
+                .anyMatch(item -> "afterSalesPolicy".equals(item.get("field"))));
     }
 
     @Test
@@ -78,6 +133,15 @@ class ListingDraftServiceTest {
         assertTrue(result.errors().stream().anyMatch(value -> value.contains("图片")));
     }
 
+    @Test
+    void readsMysqlDatetimeAsEitherLocalDateTimeOrTimestamp() {
+        LocalDateTime local = LocalDateTime.of(2026, 9, 15, 16, 30, 0);
+        Instant expected = local.atZone(ZoneId.systemDefault()).toInstant();
+
+        assertTrue(expected.equals(ListingDraftService.databaseInstant(local)));
+        assertTrue(expected.equals(ListingDraftService.databaseInstant(Timestamp.from(expected))));
+    }
+
     private Map<String, Object> validVirtual() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("productType", "VIRTUAL");
@@ -87,6 +151,12 @@ class ListingDraftServiceTest {
         payload.put("stock", 100);
         payload.put("images", List.of("https://example.test/item.jpg"));
         payload.put("shippingMode", "ONLINE_DELIVERY");
+        payload.put("fulfillmentMode", "AUTO_DELIVERY");
+        payload.put("validityDays", 7);
+        payload.put("supportPolicy", "通过售后群提供安装与使用支持。");
+        payload.put("afterSalesPolicy", "按商品描述与平台规则处理售后。");
+        payload.put("industryCode", "SOFTWARE");
+        payload.put("leafCategoryCode", "OFFICE_PLUGIN");
         return payload;
     }
 }

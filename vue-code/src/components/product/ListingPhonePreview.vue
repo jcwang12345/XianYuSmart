@@ -9,9 +9,12 @@ const imageLoadFailed = ref(false)
 watch(firstImage, () => { imageLoadFailed.value = false })
 const shipping = computed(() => ({
   FREE_SHIPPING: '包邮', FREIGHT_TEMPLATE: '按运费模板', SELF_PICKUP: '当面交易',
-  ONLINE_DELIVERY: '线上交付', FACE_TO_FACE: '当面交易'
+  ONLINE_DELIVERY: '线上交付', FACE_TO_FACE: '当面交易', REMOTE_SERVICE: '远程服务',
+  ON_SITE_SERVICE: '上门服务', STORE_SERVICE: '到店服务'
 }[String(props.form.shippingMode)] || '交付方式待选择'))
-const condition = computed(() => ({ NEW: '全新', LIKE_NEW: '几乎全新', GOOD: '成色良好', FAIR: '明显使用痕迹', DIGITAL: '数字交付' }[String(props.form.conditionCode)] || '成色待选择'))
+const condition = computed(() => ({ NEW: '全新', LIKE_NEW: '几乎全新', GOOD: '成色良好', FAIR: '明显使用痕迹', DIGITAL: '数字交付', SERVICE: '预约服务' }[String(props.form.conditionCode)] || '交付性质待选择'))
+const productType = computed(() => ({ PHYSICAL: '实物', VIRTUAL: '虚拟', SERVICE: '服务' }[String(props.form.productType)] || '类型待选择'))
+const support = computed(() => props.form.productType === 'PHYSICAL' ? props.form.afterSalesPolicy : props.form.supportPolicy)
 </script>
 
 <template>
@@ -27,10 +30,11 @@ const condition = computed(() => ({ NEW: '全新', LIKE_NEW: '几乎全新', GOO
       <div class="listing-preview__body">
         <div class="listing-preview__price"><small>¥</small><strong>{{ price }}</strong><del v-if="originalPrice > Number(form.amount || 0)">¥{{ originalPrice.toFixed(2) }}</del></div>
         <h3>{{ form.name || '填写标题后在这里预览买家看到的商品名称' }}</h3>
-        <div class="listing-preview__tags"><span>{{ condition }}</span><span>{{ shipping }}</span><span v-if="categoryName">{{ categoryName }}</span></div>
+        <div class="listing-preview__tags"><span>{{ productType }}</span><span>{{ condition }}</span><span>{{ shipping }}</span><span v-if="categoryName">{{ categoryName }}</span></div>
         <p>{{ form.description || '商品详情、交付说明和售后说明将在这里展示。' }}</p>
         <div v-if="form.skus?.length" class="listing-preview__sku"><strong>选择规格</strong><span v-for="sku in form.skus.slice(0, 3)" :key="sku.key">{{ sku.key }}</span><small v-if="form.skus.length > 3">+{{ form.skus.length - 3 }}</small></div>
         <div v-if="form.serviceProtocols?.length" class="listing-preview__services"><strong>服务保障</strong><span v-for="service in form.serviceProtocols" :key="service">✓ {{ service }}</span></div>
+        <div v-if="support" class="listing-preview__services"><strong>交付与售后</strong><span>{{ support }}</span><span v-if="form.productType === 'VIRTUAL'">有效期 {{ form.validityDays || '—' }} 天</span><span v-if="form.productType === 'SERVICE'">服务 {{ form.serviceDurationMinutes || '—' }} 分钟 · 提前 {{ form.appointmentLeadHours ?? '—' }} 小时预约</span></div>
       </div>
       <div class="listing-preview__seller"><div class="listing-preview__avatar">闲</div><div><strong>{{ accountName || '发布账号' }}</strong><small>{{ channelName || '通道待选择' }}</small></div><button type="button">想要</button></div>
       <div class="listing-preview__bar"><span>聊一聊</span><strong>我想要</strong></div>

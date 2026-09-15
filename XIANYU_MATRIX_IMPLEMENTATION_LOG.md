@@ -904,3 +904,16 @@
 - 独立测试在 `v3.0.5-rc.1 / a6ebf80` 上确认 `V6-REAL-001/002` 均 Pass，无未决 P0/P1；桌面、390×844、首载、Escape 回焦、实时只读 API、敏感字段、控制台和工程门禁全部通过。
 - `V6-REAL-BLK-001` 已关闭为受限终端无法观察 launchd/Docker/本机端口导致的环境误报；开发侧同一时刻的 PID、Docker 状态和定期保活日志证明实例持续运行。
 - 独立报告由测试任务保存为 `V6_REAL_001_002_INDEPENDENT_REGRESSION_REPORT.md`；正式标签升级为 `v3.0.5`，V6 长期目标继续保持 active。
+
+## 批次 23：Wave 4 商品发布工作台候选（v3.1.0-rc.1）
+
+- 需求：`V6-PUB-01～08`，并回归 `V6-PRD-01～06`、`V6-TASK-01～06` 的租户、幂等、审计和状态证据边界。
+- 数据模型：新增 `V52__listing_catalog_versions_and_preflight.sql`，落地版本化行业/叶子类目/动态属性目录、草稿载荷指纹、不可变草稿版本和 15 分钟发布预检快照；MySQL 5.7 已从 v51 成功迁移到 v52，重启校验通过。
+- API：表单 schema 返回目录版本、三种商品类型及履约要求；新增 `GET /api/publishing/drafts/{id}/versions`；预检返回并持久化 `previewToken/expiresAt/catalogVersion/payloadFingerprint/capabilityFingerprint/platformDifferences`；执行必须消费同账号、同请求、同载荷、同目录和同能力快照。
+- 后端：完整校验实物/虚拟/服务分型、标题详情、1～9 图、视频、两位小数、原价、库存、outerId、最多 2 维/50 SKU、逐 SKU 价格/库存/编码/图片和动态必填属性；真实通道未适配的高级字段继续安全阻断。
+- 前端：三种商品类型、行业→叶子类目→动态属性、分型履约字段、图片封面/排序、视频上传、批量 SKU 填充、自动保存、版本历史、字段错误定位、同源手机预览、预检凭证和平台差异证据、手机表单/预览切换。
+- QA 修复：商家运营租户解析由操作者 ID 改为认证租户 ID；MySQL `DATETIME` 同时兼容 `LocalDateTime/Timestamp`；载入草稿同步显示已保存版本。
+- 安全 E2E：仅 Tenant 1 / 账号 101 / `QA-PUBLISH-*` / `QA_LOCAL`。库存变更使旧凭证失效；重新预检后生成任务 20、`QA-PUBLISHED-20`、`QA_CONFIRMED`，平台写入 `NOT_PERFORMED`；同请求重放仍返回任务 20。
+- 测试：`./mvnw -q test` 为 227/227 通过；前端 `vue-tsc --build` 通过；Vite 357 modules 生产构建通过；Flyway 校验 52 个迁移并确认 schema v52；`git diff --check` 通过。
+- 设计 QA：1920×1080、390×844、3840×2160；空草稿、错误、已保存、预检、令牌失效、发布成功、图片失败和重复提交均已检查；滚轮不回顶。详情见 `design-qa.md`。
+- 残余降级：目录是本地版本化参考子集，不是官方完整类目库；真实平台高级字段适配证据不足时禁止真实提交；50 SKU 长表与只读角色留给独立测试回归。

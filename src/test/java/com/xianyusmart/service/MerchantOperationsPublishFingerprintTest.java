@@ -1,6 +1,7 @@
 package com.xianyusmart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xianyusmart.context.UserContext;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -33,6 +34,7 @@ class MerchantOperationsPublishFingerprintTest {
         replay.put("requestId", "publish-two");
         replay.put("dryRun", false);
         replay.put("payloadFingerprint", "stale");
+        replay.put("previewToken", "transport-only-token");
 
         assertEquals(MerchantOperationsService.publishPayloadFingerprint(mapper, first),
                 MerchantOperationsService.publishPayloadFingerprint(mapper, replay));
@@ -86,5 +88,15 @@ class MerchantOperationsPublishFingerprintTest {
         assertFalse((Boolean) evidence.get("platformNetworkCalls"));
         assertEquals("NOT_PERFORMED", evidence.get("platformWrite"));
         assertEquals("UNKNOWN", evidence.get("outcomeState"));
+    }
+
+    @Test
+    void merchantOperationsUseTenantContextInsteadOfOperatorId() {
+        UserContext.set(91L, "qa-member", 1L);
+        try {
+            assertEquals(1L, MerchantOperationsService.currentTenantId());
+        } finally {
+            UserContext.clear();
+        }
     }
 }

@@ -251,8 +251,9 @@ export function getProductMatrixDetail(accountId: number, goodsId: string) {
 
 export interface ListingFormSchema {
   accountId: number
-  listingType: 'VIRTUAL' | 'PHYSICAL'
+  listingType: 'VIRTUAL' | 'PHYSICAL' | 'SERVICE'
   source: string
+  catalogVersion: string
   verificationStatus: string
   limits: { title: number; description: number; images: number; skuDimensions: number; skuCombinations: number }
   businessModes: Array<{ value: string; label: string; description: string }>
@@ -269,11 +270,12 @@ export interface ListingFormSchema {
     }>
   }>
   serviceProtocols: Array<{ code: string; label: string; description: string; status: string }>
+  typeRequirements: { fulfillmentFields: string[]; afterSalesFields: string[]; notice: string }
   channelCapabilities: Record<string, any>
   notice: string
 }
 
-export function getListingFormSchema(accountId: number, listingType: 'VIRTUAL' | 'PHYSICAL') {
+export function getListingFormSchema(accountId: number, listingType: 'VIRTUAL' | 'PHYSICAL' | 'SERVICE') {
   return request<ListingFormSchema>({ url: `/publishing/accounts/${accountId}/form-schema`, method: 'GET', params: { listingType } })
 }
 
@@ -281,12 +283,16 @@ export function getListingDrafts(accountId: number) {
   return request<Array<Record<string, any>>>({ url: `/publishing/accounts/${accountId}/drafts`, method: 'GET' })
 }
 
-export function createListingDraft(payload: Record<string, unknown>) {
-  return request<Record<string, any>>({ url: '/publishing/drafts', method: 'POST', data: { payload } })
+export function createListingDraft(payload: Record<string, unknown>, requestId: string, changeSource: 'AUTO_SAVE' | 'MANUAL_SAVE' = 'MANUAL_SAVE') {
+  return request<Record<string, any>>({ url: '/publishing/drafts', method: 'POST', data: { payload, requestId, changeSource } })
 }
 
-export function updateListingDraft(id: number, revision: number, payload: Record<string, unknown>) {
-  return request<Record<string, any>>({ url: `/publishing/drafts/${id}`, method: 'PUT', data: { revision, payload } })
+export function updateListingDraft(id: number, revision: number, payload: Record<string, unknown>, requestId: string, changeSource: 'AUTO_SAVE' | 'MANUAL_SAVE' = 'MANUAL_SAVE') {
+  return request<Record<string, any>>({ url: `/publishing/drafts/${id}`, method: 'PUT', data: { revision, payload, requestId, changeSource } })
+}
+
+export function getListingDraftVersions(id: number) {
+  return request<Array<Record<string, any>>>({ url: `/publishing/drafts/${id}/versions`, method: 'GET' })
 }
 
 export function validateListingDraft(payload: Record<string, unknown>) {

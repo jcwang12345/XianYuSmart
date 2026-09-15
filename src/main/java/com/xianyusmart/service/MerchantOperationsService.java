@@ -549,7 +549,7 @@ public class MerchantOperationsService {
             Map<String, Object> sorted = new TreeMap<>();
             map.forEach((key, item) -> {
                 String name = String.valueOf(key);
-                if (!Set.of("dryRun", "payloadFingerprint", "requestId").contains(name)) {
+                if (!Set.of("dryRun", "payloadFingerprint", "requestId", "previewToken").contains(name)) {
                     sorted.put(name, normalizePublishValue(item));
                 }
             });
@@ -1530,11 +1530,18 @@ public class MerchantOperationsService {
     }
 
     private Long requireTenantId() {
-        Long tenantId = UserContext.getUserId();
+        // 用户 ID 与租户 ID 只有在租户所有者账号上才可能相同。成员账号和
+        // 平台管理员必须沿用认证拦截器写入的租户上下文，否则 QA 白名单、
+        // 幂等查询和资源归属都会被错误地按“操作者 ID”分区。
+        Long tenantId = currentTenantId();
         if (tenantId == null) {
             throw new IllegalStateException("缺少租户上下文");
         }
         return tenantId;
+    }
+
+    static Long currentTenantId() {
+        return TenantContext.get();
     }
 
     private void requireResourceType(String type) {

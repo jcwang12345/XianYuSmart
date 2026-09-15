@@ -53,6 +53,11 @@ public class PublishingController {
         return ResultObject.success(listingDraftService.get(id));
     }
 
+    @GetMapping("/drafts/{id}/versions")
+    public ResultObject<java.util.List<Map<String, Object>>> draftVersions(@PathVariable Long id) {
+        return ResultObject.success(listingDraftService.versions(id));
+    }
+
     @PostMapping("/drafts")
     public ResultObject<Map<String, Object>> createDraft(@RequestBody Map<String, Object> request) {
         return ResultObject.success(listingDraftService.create(request));
@@ -76,16 +81,21 @@ public class PublishingController {
         dryRun.put("dryRun", true);
         Map<String, Object> result = new java.util.LinkedHashMap<>(operationsService.createPublishPlan(dryRun));
         result.put("listingValidation", listingValidation);
+        result.put("platformDifferences", listingDraftService.platformDifferences(request, result));
+        Map<String, Object> snapshot = listingDraftService.recordPreflight(request, listingValidation, result);
+        result.putAll(snapshot);
         return ResultObject.success(result);
     }
 
     @PostMapping("/execute")
     public ResultObject<Map<String, Object>> execute(@RequestBody Map<String, Object> request) {
         Map<String, Object> listingValidation = listingDraftService.requireExecutable(request);
+        Map<String, Object> preflightSnapshot = listingDraftService.consumePreflight(request);
         Map<String, Object> command = new java.util.LinkedHashMap<>(request);
         command.put("dryRun", false);
         Map<String, Object> result = new java.util.LinkedHashMap<>(operationsService.createPublishPlan(command));
         result.put("listingValidation", listingValidation);
+        result.put("preflightSnapshotId", preflightSnapshot.get("id"));
         return ResultObject.success(result);
     }
 

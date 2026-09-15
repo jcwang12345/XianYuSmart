@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.context.UserContext;
+import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -14,11 +15,17 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 /** 商品发布结构化草稿与本地参考目录。平台真值在预检阶段单独核对。 */
 @Service
@@ -28,24 +35,32 @@ public class ListingDraftService {
     private final ObjectMapper objectMapper;
     private final AccountAccessService accountAccessService;
     private final PublishCapabilityService capabilityService;
+    private final ListingCatalogService catalogService;
+    private final OperationLogService operationLogService;
 
     public ListingDraftService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper,
                                AccountAccessService accountAccessService,
-                               PublishCapabilityService capabilityService) {
+                               PublishCapabilityService capabilityService,
+                               ListingCatalogService catalogService,
+                               OperationLogService operationLogService) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
         this.accountAccessService = accountAccessService;
         this.capabilityService = capabilityService;
+        this.catalogService = catalogService;
+        this.operationLogService = operationLogService;
     }
 
     public Map<String, Object> formSchema(Long accountId, String listingType) {
         accountAccessService.requireAccess(accountId);
         String type = normalizeType(listingType);
+        ListingCatalogService.Catalog catalog = catalogService.active(type);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("accountId", accountId);
         response.put("listingType", type);
-        response.put("source", "LOCAL_REFERENCE");
-        response.put("verificationStatus", "PENDING_PLATFORM_PREFLIGHT");
+        response.put("source", catalog.source());
+        response.put("catalogVersion", catalog.version());
+        response.put("verificationStatus", catalog.verificationStatus());
         response.put("limits", Map.of(
                 "title", 120, "description", 3000, "images", 9,
                 "skuDimensions", 2, "skuCombinations", 50));
@@ -57,22 +72,27 @@ public class ListingDraftService {
                 option("NEW", "全新", "未拆封或未使用"),
                 option("LIKE_NEW", "几乎全新", "轻微使用痕迹"),
                 option("GOOD", "成色良好", "正常使用痕迹"),
-                option("FAIR", "明显使用痕迹", "需在描述中如实说明")) : List.of(
-                option("DIGITAL", "数字交付", "以授权、卡密或在线服务交付")));
-        response.put("industries", type.equals("PHYSICAL") ? physicalIndustries() : virtualIndustries());
+                option("FAIR", "明显使用痕迹", "需在描述中如实说明")) : type.equals("SERVICE") ? List.of(
+                option("SERVICE", "服务交付", "按约定时段远程、到店或上门履约")) : List.of(
+                option("DIGITAL", "数字交付", "以授权、卡密或在线内容交付")));
+        response.put("industries", catalog.industries());
         response.put("shippingModes", type.equals("PHYSICAL") ? List.of(
                 option("FREE_SHIPPING", "卖家包邮", "运费由卖家承担"),
                 option("FREIGHT_TEMPLATE", "运费模板", "使用平台已配置的模板"),
-                option("SELF_PICKUP", "当面交易/自提", "买卖双方线下交付")) : List.of(
-                option("ONLINE_DELIVERY", "线上交付", "适合软件、卡密与数字服务"),
+                option("SELF_PICKUP", "当面交易/自提", "买卖双方线下交付")) : type.equals("SERVICE") ? List.of(
+                option("REMOTE_SERVICE", "远程服务", "在线预约后远程履约"),
+                option("ON_SITE_SERVICE", "上门服务", "按服务范围预约上门"),
+                option("STORE_SERVICE", "到店服务", "买家预约后到店履约")) : List.of(
+                option("ONLINE_DELIVERY", "线上交付", "适合软件、卡密与数字内容"),
                 option("FACE_TO_FACE", "当面交易", "需要双方线下确认")));
+        response.put("typeRequirements", typeRequirements(type));
         response.put("serviceProtocols", List.of(
                 protocol("FAST_DELIVERY_24_HOUR", "24 小时发货", "需平台资格", "NOT_VERIFIED"),
                 protocol("FAST_DELIVERY_48_HOUR", "48 小时发货", "需平台资格", "NOT_VERIFIED"),
                 protocol("SEVEN_DAY_RETURN", "七天退货", "实物商品需核对类目与协议", "NOT_VERIFIED"),
                 protocol("VIRTUAL_SUPPORT", "虚拟商品售后保障", "按实际服务能力承诺", "LOCAL_ONLY")));
         response.put("channelCapabilities", capabilityService.capabilities(accountId));
-        response.put("notice", "类目和属性来自本地参考目录；平台最终类目、协议和可发布性以预检回读为准。");
+        response.put("notice", "目录版本 " + catalog.version() + " 来自本地参考目录；平台最终类目、协议和可发布性以预检回读为准。");
         return response;
     }
 
@@ -80,7 +100,7 @@ public class ListingDraftService {
         accountAccessService.requireAccess(accountId);
         return jdbcTemplate.query("""
                 SELECT id,xianyu_account_id,draft_name,listing_type,publish_channel,status,revision,
-                       payload_json,data_source,operator_username,created_time,updated_time
+                       catalog_version,payload_fingerprint,payload_json,data_source,operator_username,created_time,updated_time
                   FROM xianyu_listing_draft
                  WHERE tenant_id=? AND xianyu_account_id=?
                  ORDER BY updated_time DESC,id DESC LIMIT 100
@@ -90,7 +110,7 @@ public class ListingDraftService {
     public Map<String, Object> get(Long id) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 SELECT id,xianyu_account_id,draft_name,listing_type,publish_channel,status,revision,
-                       payload_json,data_source,operator_username,created_time,updated_time
+                       catalog_version,payload_fingerprint,payload_json,data_source,operator_username,created_time,updated_time
                   FROM xianyu_listing_draft WHERE tenant_id=? AND id=?
                 """, (rs, rowNum) -> row(rs), tenant(), id);
         if (rows.isEmpty()) throw new BusinessException(404, "商品草稿不存在");
@@ -104,16 +124,22 @@ public class ListingDraftService {
         Map<String, Object> payload = payload(request);
         Long accountId = number(payload.get("xianyuAccountId"));
         accountAccessService.requireAccess(accountId);
+        String catalogVersion = requireCurrentCatalog(payload);
+        payload.put("catalogVersion", catalogVersion);
+        String fingerprint = fingerprint(payload);
         jdbcTemplate.update("""
                 INSERT INTO xianyu_listing_draft
                 (tenant_id,xianyu_account_id,draft_name,listing_type,publish_channel,status,revision,
-                 payload_json,data_source,operator_user_id,operator_username)
-                VALUES (?,?,?,?,?,'DRAFT',1,?,'LOCAL_DRAFT',?,?)
+                 catalog_version,payload_fingerprint,payload_json,data_source,operator_user_id,operator_username)
+                VALUES (?,?,?,?,?,'DRAFT',1,?,?,?,'LOCAL_DRAFT',?,?)
                 """, tenant(), accountId, draftName(payload), normalizeType(text(payload.get("productType"))),
-                blank(text(payload.get("publishChannel"))), json(payload),
+                blank(text(payload.get("publishChannel"))), catalogVersion, fingerprint, json(payload),
                 UserContext.getUserId(), UserContext.getUsername());
         Long id = jdbcTemplate.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
-        return get(id);
+        insertVersion(id, 1, changeSource(request), catalogVersion, fingerprint, payload);
+        Map<String, Object> result = get(id);
+        auditDraft(accountId, id, "LISTING_DRAFT_CREATE", requestId(request), null, result, payload);
+        return result;
     }
 
     @Transactional
@@ -122,30 +148,68 @@ public class ListingDraftService {
         Map<String, Object> payload = payload(request);
         Long accountId = number(payload.get("xianyuAccountId"));
         accountAccessService.requireAccess(accountId);
+        String catalogVersion = requireCurrentCatalog(payload);
+        payload.put("catalogVersion", catalogVersion);
+        String fingerprint = fingerprint(payload);
         int expectedRevision = intValue(request.get("revision"), intValue(current.get("revision"), 1));
         int changed = jdbcTemplate.update("""
                 UPDATE xianyu_listing_draft
                    SET xianyu_account_id=?,draft_name=?,listing_type=?,publish_channel=?,
-                       payload_json=?,revision=revision+1,operator_user_id=?,operator_username=?
+                       catalog_version=?,payload_fingerprint=?,payload_json=?,revision=revision+1,
+                       operator_user_id=?,operator_username=?
                  WHERE tenant_id=? AND id=? AND revision=? AND status='DRAFT'
                 """, accountId, draftName(payload), normalizeType(text(payload.get("productType"))),
-                blank(text(payload.get("publishChannel"))), json(payload), UserContext.getUserId(),
+                blank(text(payload.get("publishChannel"))), catalogVersion, fingerprint, json(payload), UserContext.getUserId(),
                 UserContext.getUsername(), tenant(), id, expectedRevision);
         if (changed == 0) throw new BusinessException(409, "草稿已被其他页面更新，请刷新后合并修改");
-        return get(id);
+        Map<String, Object> result = get(id);
+        int revision = intValue(result.get("revision"), expectedRevision + 1);
+        insertVersion(id, revision, changeSource(request), catalogVersion, fingerprint, payload);
+        Map<String, Object> diff = new LinkedHashMap<>();
+        diff.put("beforeFingerprint", current.get("payloadFingerprint"));
+        diff.put("afterFingerprint", fingerprint);
+        diff.put("beforeRevision", expectedRevision);
+        diff.put("afterRevision", revision);
+        auditDraft(accountId, id, "LISTING_DRAFT_UPDATE", requestId(request), current, result, diff);
+        return result;
+    }
+
+    public List<Map<String, Object>> versions(Long id) {
+        Map<String, Object> draft = get(id);
+        Long accountId = ((Number) draft.get("accountId")).longValue();
+        accountAccessService.requireAccess(accountId);
+        return jdbcTemplate.query("""
+                SELECT revision,change_source,catalog_version,payload_fingerprint,payload_json,
+                       operator_username,created_time
+                  FROM xianyu_listing_draft_version
+                 WHERE tenant_id=? AND draft_id=? ORDER BY revision DESC
+                """, (rs, rowNum) -> {
+            Map<String, Object> version = new LinkedHashMap<>();
+            version.put("revision", rs.getInt("revision"));
+            version.put("changeSource", rs.getString("change_source"));
+            version.put("catalogVersion", rs.getString("catalog_version"));
+            version.put("payloadFingerprint", rs.getString("payload_fingerprint"));
+            version.put("payload", readJson(rs.getString("payload_json")));
+            version.put("operatorUsername", rs.getString("operator_username"));
+            version.put("createdTime", instant(rs.getTimestamp("created_time")));
+            return version;
+        }, tenant(), id);
     }
 
     public Map<String, Object> validate(Map<String, Object> request) {
         Map<String, Object> payload = payload(request);
         Long accountId = number(payload.get("xianyuAccountId"));
         accountAccessService.requireAccess(accountId);
-        Validation result = validatePayload(payload);
+        ListingCatalogService.Catalog catalog = catalogService.active(normalizeType(text(payload.get("productType"))));
+        Validation result = validatePayload(payload, catalog);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("valid", result.errors().isEmpty());
         response.put("errors", result.errors());
+        response.put("fieldErrors", result.fieldErrors());
         response.put("warnings", result.warnings());
         response.put("preview", preview(payload));
         response.put("fieldReadiness", fieldReadiness(payload));
+        response.put("catalogVersion", catalog.version());
         response.put("source", "LOCAL_DRAFT");
         return response;
     }
@@ -157,6 +221,117 @@ public class ListingDraftService {
         List<String> errors = (List<String>) result.get("errors");
         if (!errors.isEmpty()) throw new BusinessException(400, errors.get(0));
         return result;
+    }
+
+    @Transactional
+    public Map<String, Object> recordPreflight(Map<String, Object> request,
+                                               Map<String, Object> validation,
+                                               Map<String, Object> platformResult) {
+        Map<String, Object> payload = payload(request);
+        Long accountId = number(payload.get("xianyuAccountId"));
+        accountAccessService.requireAccess(accountId);
+        String requestId = text(request.get("requestId"));
+        if (requestId.isBlank() || requestId.length() > 64) {
+            throw new BusinessException(400, "发布预检必须提供不超过64个字符的requestId");
+        }
+        String payloadFingerprint = text(platformResult.get("payloadFingerprint"));
+        if (payloadFingerprint.isBlank()) payloadFingerprint = fingerprint(request);
+        String catalogVersion = text(validation.get("catalogVersion"));
+        String capabilityFingerprint = fingerprint(capabilityService.capabilities(accountId));
+
+        List<Map<String, Object>> existing = jdbcTemplate.queryForList("""
+                SELECT preview_token,payload_fingerprint,expires_time
+                  FROM xianyu_listing_preflight_snapshot
+                 WHERE tenant_id=? AND request_id=? FOR UPDATE
+                """, tenant(), requestId);
+        String token;
+        Instant expiresAt = Instant.now().plus(15, ChronoUnit.MINUTES);
+        if (!existing.isEmpty()) {
+            Map<String, Object> row = existing.get(0);
+            if (!payloadFingerprint.equals(text(row.get("payload_fingerprint")))) {
+                throw new BusinessException(409, "requestId 已用于不同的预检载荷，请生成新的请求 ID");
+            }
+            Instant expiry = databaseInstant(row.get("expires_time"));
+            if (expiry != null && expiry.isAfter(Instant.now())) {
+                token = text(row.get("preview_token"));
+                expiresAt = expiry;
+            } else {
+                token = UUID.randomUUID().toString().replace("-", "");
+                jdbcTemplate.update("""
+                        UPDATE xianyu_listing_preflight_snapshot
+                           SET preview_token=?,catalog_version=?,capability_fingerprint=?,validation_json=?,
+                               platform_result_json=?,status='READY',expires_time=?,consumed_time=NULL,
+                               operator_user_id=?,operator_username=?
+                         WHERE tenant_id=? AND request_id=?
+                        """, token, catalogVersion, capabilityFingerprint, json(validation), json(platformResult),
+                        Timestamp.from(expiresAt), UserContext.getUserId(), UserContext.getUsername(), tenant(), requestId);
+            }
+        } else {
+            token = UUID.randomUUID().toString().replace("-", "");
+            jdbcTemplate.update("""
+                    INSERT INTO xianyu_listing_preflight_snapshot
+                    (tenant_id,xianyu_account_id,request_id,preview_token,draft_id,draft_revision,catalog_version,
+                     payload_fingerprint,capability_fingerprint,validation_json,platform_result_json,status,
+                     expires_time,operator_user_id,operator_username)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,'READY',?,?,?)
+                    """, tenant(), accountId, requestId, token, nullableLong(request.get("draftId")),
+                    nullableInteger(request.get("draftRevision")), catalogVersion, payloadFingerprint,
+                    capabilityFingerprint, json(validation), json(platformResult), Timestamp.from(expiresAt),
+                    UserContext.getUserId(), UserContext.getUsername());
+        }
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("previewToken", token);
+        evidence.put("expiresAt", expiresAt);
+        evidence.put("catalogVersion", catalogVersion);
+        evidence.put("payloadFingerprint", payloadFingerprint);
+        evidence.put("capabilityFingerprint", capabilityFingerprint);
+        return evidence;
+    }
+
+    @Transactional
+    public Map<String, Object> consumePreflight(Map<String, Object> request) {
+        Map<String, Object> payload = payload(request);
+        Long accountId = number(payload.get("xianyuAccountId"));
+        accountAccessService.requireAccess(accountId);
+        String token = text(request.get("previewToken"));
+        if (token.isBlank()) throw new BusinessException(409, "缺少发布预检凭证，请重新执行发布前校验");
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id,xianyu_account_id,request_id,catalog_version,payload_fingerprint,
+                       capability_fingerprint,status,expires_time,consumed_time
+                  FROM xianyu_listing_preflight_snapshot
+                 WHERE tenant_id=? AND preview_token=? FOR UPDATE
+                """, tenant(), token);
+        if (rows.isEmpty()) throw new BusinessException(409, "发布预检凭证不存在，请重新预检");
+        Map<String, Object> row = rows.get(0);
+        if (((Number) row.get("xianyu_account_id")).longValue() != accountId) {
+            throw new BusinessException(409, "发布账号已变化，请重新预检");
+        }
+        if (!text(row.get("request_id")).equals(text(request.get("requestId")))) {
+            throw new BusinessException(409, "发布请求 ID 与预检不一致，请重新预检");
+        }
+        Instant expiry = databaseInstant(row.get("expires_time"));
+        if (expiry == null || !expiry.isAfter(Instant.now())) {
+            jdbcTemplate.update("UPDATE xianyu_listing_preflight_snapshot SET status='EXPIRED' WHERE id=?", row.get("id"));
+            throw new BusinessException(409, "发布预检已过期，请重新预检");
+        }
+        String incomingFingerprint = fingerprint(request);
+        if (!text(row.get("payload_fingerprint")).equals(incomingFingerprint)) {
+            throw new BusinessException(409, "商品内容已变化，原预检失效，请重新预检");
+        }
+        String currentCatalog = catalogService.active(normalizeType(text(payload.get("productType")))).version();
+        if (!currentCatalog.equals(text(row.get("catalog_version")))) {
+            throw new BusinessException(409, "类目目录版本已变化，请重新预检");
+        }
+        String currentCapability = fingerprint(capabilityService.capabilities(accountId));
+        if (!currentCapability.equals(text(row.get("capability_fingerprint")))) {
+            throw new BusinessException(409, "店铺通道能力已变化，请重新预检");
+        }
+        jdbcTemplate.update("""
+                UPDATE xianyu_listing_preflight_snapshot
+                   SET status='CONSUMED',consumed_time=COALESCE(consumed_time,CURRENT_TIMESTAMP(3))
+                 WHERE id=?
+                """, row.get("id"));
+        return row;
     }
 
     /**
@@ -196,44 +371,234 @@ public class ListingDraftService {
         return validation;
     }
 
+    public Map<String, Object> platformDifferences(Map<String, Object> request, Map<String, Object> result) {
+        Map<String, Object> payload = payload(request);
+        Map<?, ?> platform = result.get("platform") instanceof Map<?, ?> map ? map : Map.of();
+        Map<?, ?> category = platform.get("category") instanceof Map<?, ?> map ? map : Map.of();
+        List<Map<String, Object>> differences = new ArrayList<>();
+        String requestedCategory = text(payload.get("leafCategoryCode"));
+        String returnedCategory = firstText(category, "categoryCode", "catId", "categoryId");
+        if (returnedCategory.isBlank()) {
+            differences.add(difference("leafCategoryCode", requestedCategory, null, "UNAVAILABLE",
+                    "平台预检未返回可比对的类目编码"));
+        } else if (!requestedCategory.equals(returnedCategory)) {
+            differences.add(difference("leafCategoryCode", requestedCategory, returnedCategory, "DIFFERENT",
+                    "平台返回类目与本地参考目录不同，执行前需人工确认"));
+        }
+        Object finalRequest = platform.get("finalRequest");
+        if (!(finalRequest instanceof Map<?, ?>)) {
+            differences.add(difference("finalRequest", "结构化草稿", null, "UNAVAILABLE",
+                    "当前通道未返回最终请求构造结果"));
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", differences.stream().anyMatch(item -> "DIFFERENT".equals(item.get("status")))
+                ? "DIFFERENT" : differences.isEmpty() ? "SAME" : "PARTIAL");
+        response.put("items", differences);
+        response.put("requestedCatalogVersion", payload.get("catalogVersion"));
+        response.put("dataSource", platform.get("dataSource"));
+        return response;
+    }
+
     static Validation validatePayload(Map<String, Object> payload) {
+        return validatePayload(payload, null);
+    }
+
+    private static Validation validatePayload(Map<String, Object> payload, ListingCatalogService.Catalog catalog) {
         List<String> errors = new ArrayList<>();
+        List<Map<String, Object>> fieldErrors = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         String type = normalizeType(text(payload.get("productType")));
         String title = text(payload.get("name"));
         String description = text(payload.get("description"));
-        if (title.isBlank()) errors.add("商品标题不能为空");
-        if (title.length() > 120) errors.add("商品标题不能超过120个字符");
-        if (description.isBlank()) errors.add("商品详情不能为空");
-        if (description.length() > 3000) errors.add("商品详情不能超过3000个字符");
+        if (title.isBlank()) addError(errors, fieldErrors, "name", "REQUIRED", "商品标题不能为空");
+        if (title.length() > 120) addError(errors, fieldErrors, "name", "MAX_LENGTH", "商品标题不能超过120个字符");
+        if (description.isBlank()) addError(errors, fieldErrors, "description", "REQUIRED", "商品详情不能为空");
+        if (description.length() > 3000) addError(errors, fieldErrors, "description", "MAX_LENGTH", "商品详情不能超过3000个字符");
+
         BigDecimal price = decimal(payload.get("amount"));
         BigDecimal original = decimal(payload.get("originalPrice"));
-        if (price == null || price.signum() <= 0 || price.stripTrailingZeros().scale() > 2) {
-            errors.add("售价必须大于0且最多保留两位小数");
+        if (price == null || price.signum() <= 0 || price.stripTrailingZeros().scale() > 2
+                || price.compareTo(new BigDecimal("99999999.99")) > 0) {
+            addError(errors, fieldErrors, "amount", "PRICE_RANGE", "售价必须大于0、不超过99999999.99且最多保留两位小数");
         }
-        if (original != null && price != null && original.compareTo(price) < 0) {
-            errors.add("原价不能低于售价");
+        if (original != null && (original.signum() <= 0 || original.stripTrailingZeros().scale() > 2
+                || original.compareTo(new BigDecimal("99999999.99")) > 0)) {
+            addError(errors, fieldErrors, "originalPrice", "PRICE_RANGE", "原价必须大于0、不超过99999999.99且最多保留两位小数");
+        } else if (original != null && price != null && original.compareTo(price) < 0) {
+            addError(errors, fieldErrors, "originalPrice", "LOWER_THAN_PRICE", "原价不能低于售价");
         }
-        int stock = intValue(payload.get("stock"), 0);
-        if (stock < 1) errors.add("库存必须为正整数");
+        BigDecimal stockValue = decimal(payload.get("stock"));
+        if (stockValue == null || stockValue.stripTrailingZeros().scale() > 0
+                || stockValue.compareTo(BigDecimal.ONE) < 0
+                || stockValue.compareTo(new BigDecimal("999999999")) > 0) {
+            addError(errors, fieldErrors, "stock", "INTEGER_RANGE", "库存必须为1至999999999的整数");
+        }
+        if (text(payload.get("outerId")).length() > 64) {
+            addError(errors, fieldErrors, "outerId", "MAX_LENGTH", "商家编码不能超过64个字符");
+        }
+
         List<?> images = payload.get("images") instanceof List<?> list ? list : List.of();
-        if (images.isEmpty() || images.size() > 9) errors.add("商品图片必须为1至9张");
+        if (images.isEmpty() || images.size() > 9) {
+            addError(errors, fieldErrors, "images", "COUNT_RANGE", "商品图片必须为1至9张");
+        }
+        Set<String> imageSet = new HashSet<>();
+        for (int index = 0; index < images.size(); index++) {
+            String image = text(images.get(index));
+            if (!(image.startsWith("https://") || image.startsWith("/media/"))) {
+                addError(errors, fieldErrors, "images[" + index + "]", "INVALID_URL", "商品图片必须使用 HTTPS 地址或本地媒体地址");
+            } else if (!imageSet.add(image)) {
+                addError(errors, fieldErrors, "images[" + index + "]", "DUPLICATE", "商品图片不能重复");
+            }
+        }
+        String video = text(payload.get("videoUrl"));
+        if (!video.isBlank() && !(video.startsWith("https://") || video.startsWith("/media/"))) {
+            addError(errors, fieldErrors, "videoUrl", "INVALID_URL", "商品视频必须使用 HTTPS 地址或本地媒体地址");
+        }
+
         String shipping = text(payload.get("shippingMode"));
-        if ("PHYSICAL".equals(type) && "ONLINE_DELIVERY".equals(shipping)) errors.add("实物商品不能使用线上交付");
-        if ("VIRTUAL".equals(type) && ("FREE_SHIPPING".equals(shipping) || "FREIGHT_TEMPLATE".equals(shipping))) {
-            errors.add("虚拟商品不能使用快递运费方式");
+        if (shipping.isBlank()) addError(errors, fieldErrors, "shippingMode", "REQUIRED", "请选择交付或运费方式");
+        if ("PHYSICAL".equals(type) && Set.of("ONLINE_DELIVERY", "REMOTE_SERVICE", "ON_SITE_SERVICE", "STORE_SERVICE").contains(shipping)) {
+            addError(errors, fieldErrors, "shippingMode", "TYPE_MISMATCH", "实物商品不能使用线上或服务交付");
+        }
+        if ("VIRTUAL".equals(type) && Set.of("FREE_SHIPPING", "FREIGHT_TEMPLATE", "SELF_PICKUP", "ON_SITE_SERVICE", "STORE_SERVICE").contains(shipping)) {
+            addError(errors, fieldErrors, "shippingMode", "TYPE_MISMATCH", "虚拟商品不能使用快递、到店或上门方式");
+        }
+        if ("SERVICE".equals(type) && !Set.of("REMOTE_SERVICE", "ON_SITE_SERVICE", "STORE_SERVICE").contains(shipping)) {
+            addError(errors, fieldErrors, "shippingMode", "TYPE_MISMATCH", "服务商品必须选择远程、上门或到店履约");
         }
         if ("FREIGHT_TEMPLATE".equals(shipping) && text(payload.get("freightTemplateId")).isBlank()) {
-            errors.add("使用运费模板时必须填写模板ID");
+            addError(errors, fieldErrors, "freightTemplateId", "REQUIRED", "使用运费模板时必须填写模板ID");
         }
-        if (text(payload.get("leafCategoryCode")).isBlank()) warnings.add("尚未选择叶子类目，平台预检可能改写类目");
+        if ("VIRTUAL".equals(type)) {
+            if (text(payload.get("fulfillmentMode")).isBlank()) addError(errors, fieldErrors, "fulfillmentMode", "REQUIRED", "请选择虚拟商品履约方式");
+            if (intValue(payload.get("validityDays"), 0) < 1) addError(errors, fieldErrors, "validityDays", "INTEGER_RANGE", "虚拟商品有效期必须至少1天");
+            if (text(payload.get("supportPolicy")).isBlank()) addError(errors, fieldErrors, "supportPolicy", "REQUIRED", "请填写虚拟商品售后说明");
+        } else if ("SERVICE".equals(type)) {
+            if (intValue(payload.get("serviceDurationMinutes"), 0) < 1) addError(errors, fieldErrors, "serviceDurationMinutes", "INTEGER_RANGE", "请填写服务时长");
+            if (intValue(payload.get("appointmentLeadHours"), -1) < 0) addError(errors, fieldErrors, "appointmentLeadHours", "INTEGER_RANGE", "预约提前时间不能为负数");
+            if (text(payload.get("supportPolicy")).isBlank()) addError(errors, fieldErrors, "supportPolicy", "REQUIRED", "请填写服务改期或售后说明");
+            if ("ON_SITE_SERVICE".equals(shipping) && text(payload.get("serviceArea")).isBlank()) addError(errors, fieldErrors, "serviceArea", "REQUIRED", "上门服务必须填写服务范围");
+        } else if (text(payload.get("afterSalesPolicy")).isBlank()) {
+            addError(errors, fieldErrors, "afterSalesPolicy", "REQUIRED", "请填写实物商品售后说明");
+        }
+
+        validateCatalog(payload, catalog, errors, fieldErrors, warnings);
+        validateSkus(payload, errors, fieldErrors, warnings);
+        if (!video.isBlank()) warnings.add("视频已保存到草稿；当前真实发布适配器尚未验证视频提交");
+        return new Validation(List.copyOf(errors), List.copyOf(warnings), List.copyOf(fieldErrors));
+    }
+
+    private static void validateCatalog(Map<String, Object> payload, ListingCatalogService.Catalog catalog,
+                                        List<String> errors, List<Map<String, Object>> fieldErrors,
+                                        List<String> warnings) {
+        String industry = text(payload.get("industryCode"));
+        String leafCode = text(payload.get("leafCategoryCode"));
+        if (industry.isBlank()) addError(errors, fieldErrors, "industryCode", "REQUIRED", "请选择商品行业");
+        if (leafCode.isBlank()) {
+            addError(errors, fieldErrors, "leafCategoryCode", "REQUIRED", "请选择叶子类目");
+            return;
+        }
+        if (catalog == null) {
+            warnings.add("叶子类目将在目录版本校验时再次核对");
+            return;
+        }
+        Map<String, Object> leaf = catalog.leaf(leafCode);
+        if (leaf == null) {
+            addError(errors, fieldErrors, "leafCategoryCode", "CATALOG_MISMATCH", "叶子类目不属于当前目录版本");
+            return;
+        }
+        boolean belongs = catalog.industries().stream().anyMatch(item -> industry.equals(text(item.get("code")))
+                && item.get("leafCategories") instanceof List<?> list
+                && list.stream().anyMatch(candidate -> candidate instanceof Map<?, ?> map && leafCode.equals(text(map.get("code")))));
+        if (!belongs) addError(errors, fieldErrors, "leafCategoryCode", "INDUSTRY_MISMATCH", "叶子类目不属于所选行业");
+        Map<?, ?> values = payload.get("categoryAttributes") instanceof Map<?, ?> map ? map : Map.of();
+        if (leaf.get("attributes") instanceof List<?> attributes) {
+            for (Object value : attributes) {
+                if (!(value instanceof Map<?, ?> attribute)) continue;
+                String code = text(attribute.get("code"));
+                String field = "categoryAttributes." + code;
+                String selected = text(values.get(code));
+                if (Boolean.TRUE.equals(attribute.get("required")) && selected.isBlank()) {
+                    addError(errors, fieldErrors, field, "REQUIRED", text(attribute.get("name")) + "为当前类目必填属性");
+                }
+                if (!selected.isBlank() && attribute.get("options") instanceof List<?> options && !options.isEmpty()
+                        && options.stream().noneMatch(option -> selected.equals(text(option)))) {
+                    addError(errors, fieldErrors, field, "INVALID_OPTION", text(attribute.get("name")) + "不在目录允许值中");
+                }
+            }
+        }
+    }
+
+    private static void validateSkus(Map<String, Object> payload, List<String> errors,
+                                     List<Map<String, Object>> fieldErrors, List<String> warnings) {
         List<?> dimensions = payload.get("skuDimensions") instanceof List<?> list ? list : List.of();
         List<?> skus = payload.get("skus") instanceof List<?> list ? list : List.of();
-        if (dimensions.size() > 2) errors.add("SKU最多支持2个规格维度");
-        if (skus.size() > 50) errors.add("SKU组合不能超过50个");
+        if (dimensions.size() > 2) addError(errors, fieldErrors, "skuDimensions", "MAX_COUNT", "SKU最多支持2个规格维度");
+        if (skus.size() > 50) addError(errors, fieldErrors, "skus", "MAX_COUNT", "SKU组合不能超过50个");
+        Set<String> dimensionNames = new HashSet<>();
+        long expected = dimensions.isEmpty() ? 0 : 1;
+        for (int index = 0; index < dimensions.size(); index++) {
+            if (!(dimensions.get(index) instanceof Map<?, ?> dimension)) {
+                addError(errors, fieldErrors, "skuDimensions[" + index + "]", "INVALID", "规格维度格式无效");
+                continue;
+            }
+            String name = text(dimension.get("name"));
+            if (name.isBlank()) addError(errors, fieldErrors, "skuDimensions[" + index + "].name", "REQUIRED", "规格名称不能为空");
+            else if (!dimensionNames.add(name)) addError(errors, fieldErrors, "skuDimensions[" + index + "].name", "DUPLICATE", "规格名称不能重复");
+            List<?> values = dimension.get("values") instanceof List<?> list ? list : List.of();
+            if (values.isEmpty()) addError(errors, fieldErrors, "skuDimensions[" + index + "].values", "REQUIRED", "每个规格至少需要一个规格值");
+            Set<String> distinctValues = new HashSet<>();
+            for (Object value : values) {
+                String normalized = text(value);
+                if (normalized.isBlank() || !distinctValues.add(normalized)) {
+                    addError(errors, fieldErrors, "skuDimensions[" + index + "].values", "DUPLICATE", "规格值不能为空且不能重复");
+                    break;
+                }
+            }
+            expected *= values.size();
+        }
+        if (!dimensions.isEmpty() && expected != skus.size()) addError(errors, fieldErrors, "skus", "INCOMPLETE_MATRIX", "SKU组合未完整生成，应为" + expected + "项");
+        if (dimensions.isEmpty() && !skus.isEmpty()) addError(errors, fieldErrors, "skus", "MISSING_DIMENSION", "存在SKU时必须先配置规格维度");
+        Set<String> keys = new HashSet<>();
+        Set<String> merchantCodes = new HashSet<>();
+        for (int index = 0; index < skus.size(); index++) {
+            if (!(skus.get(index) instanceof Map<?, ?> sku)) {
+                addError(errors, fieldErrors, "skus[" + index + "]", "INVALID", "SKU格式无效");
+                continue;
+            }
+            String key = text(sku.get("key"));
+            if (key.isBlank() || !keys.add(key)) addError(errors, fieldErrors, "skus[" + index + "].key", "DUPLICATE", "SKU组合名称不能为空且不能重复");
+            BigDecimal skuPrice = decimal(sku.get("price"));
+            if (skuPrice == null || skuPrice.signum() <= 0 || skuPrice.stripTrailingZeros().scale() > 2
+                    || skuPrice.compareTo(new BigDecimal("99999999.99")) > 0) {
+                addError(errors, fieldErrors, "skus[" + index + "].price", "PRICE_RANGE", "SKU售价必须大于0且最多两位小数");
+            }
+            BigDecimal skuOriginal = decimal(sku.get("originalPrice"));
+            if (skuOriginal != null && (skuOriginal.stripTrailingZeros().scale() > 2 || skuOriginal.signum() <= 0
+                    || (skuPrice != null && skuOriginal.compareTo(skuPrice) < 0))) {
+                addError(errors, fieldErrors, "skus[" + index + "].originalPrice", "PRICE_RANGE", "SKU原价必须不低于售价且最多两位小数");
+            }
+            BigDecimal skuStock = decimal(sku.get("stock"));
+            if (skuStock == null || skuStock.stripTrailingZeros().scale() > 0 || skuStock.compareTo(BigDecimal.ZERO) < 0
+                    || skuStock.compareTo(new BigDecimal("999999999")) > 0) {
+                addError(errors, fieldErrors, "skus[" + index + "].stock", "INTEGER_RANGE", "SKU库存必须为0至999999999的整数");
+            }
+            String merchantCode = text(sku.get("merchantCode"));
+            if (!merchantCode.isBlank() && !merchantCodes.add(merchantCode)) {
+                addError(errors, fieldErrors, "skus[" + index + "].merchantCode", "DUPLICATE", "SKU商家编码不能重复");
+            }
+            String image = text(sku.get("image"));
+            if (!image.isBlank() && !(image.startsWith("https://") || image.startsWith("/media/"))) {
+                addError(errors, fieldErrors, "skus[" + index + "].image", "INVALID_URL", "SKU图片必须使用 HTTPS 地址或本地媒体地址");
+            }
+        }
         if (!skus.isEmpty()) warnings.add("多SKU已保存到草稿；仅通道能力验证通过后才会提交平台");
-        if (!text(payload.get("videoUrl")).isBlank()) warnings.add("视频已保存到草稿；当前真实发布适配器尚未验证视频提交");
-        return new Validation(errors, warnings);
+    }
+
+    private static void addError(List<String> errors, List<Map<String, Object>> fieldErrors,
+                                 String field, String code, String message) {
+        errors.add(message);
+        fieldErrors.add(Map.of("field", field, "code", code, "message", message));
     }
 
     private Map<String, Object> preview(Map<String, Object> payload) {
@@ -241,7 +606,10 @@ public class ListingDraftService {
         for (String key : List.of("name", "description", "amount", "originalPrice", "stock", "productType",
                 "conditionCode", "businessMode", "industryCode", "leafCategoryCode", "leafCategoryName",
                 "shippingMode", "shippingFee", "province", "city", "district", "images", "skus",
-                "serviceProtocols", "outerId")) preview.put(key, payload.get(key));
+                "serviceProtocols", "outerId", "fulfillmentMode", "validityDays", "supportPolicy",
+                "afterSalesPolicy", "serviceDurationMinutes", "appointmentLeadHours", "serviceArea")) {
+            preview.put(key, payload.get(key));
+        }
         return preview;
     }
 
@@ -266,6 +634,8 @@ public class ListingDraftService {
         result.put("publishChannel", rs.getString("publish_channel"));
         result.put("status", rs.getString("status"));
         result.put("revision", rs.getInt("revision"));
+        result.put("catalogVersion", rs.getString("catalog_version"));
+        result.put("payloadFingerprint", rs.getString("payload_fingerprint"));
         result.put("payload", readJson(rs.getString("payload_json")));
         result.put("dataSource", rs.getString("data_source"));
         result.put("operatorUsername", rs.getString("operator_username"));
@@ -310,9 +680,7 @@ public class ListingDraftService {
         catch (Exception e) { throw new BusinessException(400, "请选择发布账号"); }
     }
 
-    private static String normalizeType(String value) {
-        return "PHYSICAL".equalsIgnoreCase(value) ? "PHYSICAL" : "VIRTUAL";
-    }
+    private static String normalizeType(String value) { return ListingCatalogService.normalizeType(value); }
 
     private static String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
     private static String blank(String value) { return value == null || value.isBlank() ? null : value; }
@@ -326,6 +694,16 @@ public class ListingDraftService {
         catch (Exception e) { return null; }
     }
     private static Instant instant(Timestamp value) { return value == null ? null : value.toInstant(); }
+    private static Long nullableLong(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) return null;
+        try { return Long.valueOf(String.valueOf(value)); }
+        catch (Exception e) { throw new BusinessException(400, "草稿ID无效"); }
+    }
+    private static Integer nullableInteger(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) return null;
+        try { return new BigDecimal(String.valueOf(value)).intValueExact(); }
+        catch (Exception e) { throw new BusinessException(400, "草稿版本无效"); }
+    }
     private static boolean supported(Object value) {
         String status = text(value).toUpperCase(Locale.ROOT);
         return "READY".equals(status) || "SUPPORTED".equals(status);
@@ -336,6 +714,115 @@ public class ListingDraftService {
     }
     private static Map<String, Object> protocol(String code, String label, String description, String status) {
         return Map.of("code", code, "label", label, "description", description, "status", status);
+    }
+
+    private static String firstText(Map<?, ?> values, String... keys) {
+        for (String key : keys) {
+            String value = text(values.get(key));
+            if (!value.isBlank()) return value;
+        }
+        return "";
+    }
+
+    private static Map<String, Object> difference(String field, Object requested, Object returned,
+                                                   String status, String message) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("field", field);
+        item.put("requested", requested);
+        item.put("returned", returned);
+        item.put("status", status);
+        item.put("message", message);
+        return item;
+    }
+
+    private static Map<String, Object> typeRequirements(String type) {
+        if ("PHYSICAL".equals(type)) return Map.of(
+                "fulfillmentFields", List.of("shippingMode", "freightTemplateId", "province", "city"),
+                "afterSalesFields", List.of("afterSalesPolicy"),
+                "notice", "实物商品必须说明成色、物流与售后，不可切换为线上交付");
+        if ("SERVICE".equals(type)) return Map.of(
+                "fulfillmentFields", List.of("shippingMode", "serviceDurationMinutes", "appointmentLeadHours", "serviceArea"),
+                "afterSalesFields", List.of("supportPolicy"),
+                "notice", "服务商品必须说明时长、预约规则和服务范围，不生成快递物流");
+        return Map.of(
+                "fulfillmentFields", List.of("fulfillmentMode", "validityDays"),
+                "afterSalesFields", List.of("supportPolicy"),
+                "notice", "虚拟商品必须说明交付方式、有效期和售后，不生成快递物流");
+    }
+
+    private String requireCurrentCatalog(Map<String, Object> payload) {
+        ListingCatalogService.Catalog current = catalogService.active(normalizeType(text(payload.get("productType"))));
+        String requested = text(payload.get("catalogVersion"));
+        if (!requested.isBlank() && !requested.equals(current.version())) {
+            throw new BusinessException(409, "商品类目目录已更新，请刷新类目后再保存");
+        }
+        return current.version();
+    }
+
+    private String fingerprint(Object value) {
+        Map<String, Object> map = value instanceof Map<?, ?> raw ? normalizeMap(raw) : Map.of("value", value);
+        return MerchantOperationsService.publishPayloadFingerprint(objectMapper, map);
+    }
+
+    static Instant databaseInstant(Object value) {
+        if (value == null) return null;
+        if (value instanceof Timestamp timestamp) return timestamp.toInstant();
+        if (value instanceof LocalDateTime dateTime) {
+            return dateTime.atZone(ZoneId.systemDefault()).toInstant();
+        }
+        if (value instanceof java.util.Date date) return date.toInstant();
+        throw new IllegalArgumentException("不支持的数据库时间类型：" + value.getClass().getName());
+    }
+
+    private Map<String, Object> normalizeMap(Map<?, ?> raw) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        raw.forEach((key, value) -> map.put(String.valueOf(key), value));
+        return map;
+    }
+
+    private void insertVersion(Long draftId, int revision, String source, String catalogVersion,
+                               String fingerprint, Map<String, Object> payload) {
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_listing_draft_version
+                (tenant_id,draft_id,revision,change_source,catalog_version,payload_fingerprint,payload_json,
+                 operator_user_id,operator_username)
+                VALUES (?,?,?,?,?,?,?,?,?)
+                """, tenant(), draftId, revision, source, catalogVersion, fingerprint, json(payload),
+                UserContext.getUserId(), UserContext.getUsername());
+    }
+
+    private String changeSource(Map<String, Object> request) {
+        String source = text(request.get("changeSource")).toUpperCase(Locale.ROOT);
+        return Set.of("AUTO_SAVE", "MANUAL_SAVE", "RESTORE").contains(source) ? source : "MANUAL_SAVE";
+    }
+
+    private String requestId(Map<String, Object> request) {
+        String requestId = text(request.get("requestId"));
+        if (requestId.length() > 64) throw new BusinessException(400, "requestId不能超过64个字符");
+        return requestId.isBlank() ? UUID.randomUUID().toString() : requestId;
+    }
+
+    private void auditDraft(Long accountId, Long draftId, String operation, String requestId,
+                            Object before, Object after, Object diff) {
+        XianyuOperationLog log = new XianyuOperationLog();
+        log.setXianyuAccountId(accountId);
+        log.setOperationType("UPDATE");
+        log.setOperationModule("PRODUCT_PUBLISHING");
+        log.setOperationDesc(operation);
+        log.setOperationStatus(1);
+        log.setTargetType("LISTING_DRAFT");
+        log.setTargetId(String.valueOf(draftId));
+        log.setRequestId(requestId);
+        log.setIdempotencyKey(requestId);
+        log.setOutcomeState("LOCAL_SUCCESS");
+        log.setDataSource("LOCAL_DRAFT");
+        log.setRequestParams(json(Map.of("operation", operation)));
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("before", before);
+        response.put("after", after);
+        log.setResponseResult(json(response));
+        log.setFieldDiffJson(json(diff));
+        operationLogService.logRequired(log);
     }
     private static List<Map<String, Object>> virtualIndustries() {
         return List.of(
@@ -373,5 +860,5 @@ public class ListingDraftService {
         return Map.of("code", code, "name", name, "required", required, "options", options);
     }
 
-    record Validation(List<String> errors, List<String> warnings) { }
+    record Validation(List<String> errors, List<String> warnings, List<Map<String, Object>> fieldErrors) { }
 }

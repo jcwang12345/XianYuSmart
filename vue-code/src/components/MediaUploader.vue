@@ -30,6 +30,17 @@ const uploadHint = computed(() => props.accept === 'video'
 
 const selectFiles = () => input.value?.click()
 const remove = (index: number) => emit('update:modelValue', props.modelValue.filter((_, itemIndex) => itemIndex !== index))
+const move = (index: number, direction: -1 | 1) => {
+  const target = index + direction
+  if (target < 0 || target >= props.modelValue.length) return
+  const next = [...props.modelValue]
+  const current = next[index]
+  const replacement = next[target]
+  if (current === undefined || replacement === undefined) return
+  next[index] = replacement
+  next[target] = current
+  emit('update:modelValue', next)
+}
 
 const validateFile = (file: File) => {
   if (props.accept === 'image' && !file.type.startsWith('image/')) throw new Error('这里只能上传图片')
@@ -100,7 +111,9 @@ const upload = async (event: Event) => {
       <article v-for="(url, index) in modelValue" :key="url" class="media-uploader__card">
         <video v-if="isVideo(url)" :src="url" controls preload="metadata"></video>
         <img v-else :src="url" alt="已上传素材" />
-        <button type="button" aria-label="删除素材" @click="remove(index)">×</button>
+        <button type="button" class="media-uploader__delete" aria-label="删除素材" @click="remove(index)">×</button>
+        <div v-if="accept !== 'video' && modelValue.length > 1" class="media-uploader__order"><button type="button" :disabled="index === 0" :aria-label="`将第${index + 1}张图片前移`" @click="move(index, -1)">←</button><button type="button" :disabled="index === modelValue.length - 1" :aria-label="`将第${index + 1}张图片后移`" @click="move(index, 1)">→</button></div>
+        <b v-if="accept !== 'video' && index === 0" class="media-uploader__cover">封面</b>
         <small>{{ isVideo(url) ? '视频（本地）' : url.startsWith('/media/') ? '图片（本地暂存）' : '图片（闲鱼）' }}</small>
       </article>
       <button v-if="modelValue.length < max" type="button" class="media-uploader__add" :disabled="uploading" @click="selectFiles">
@@ -124,7 +137,8 @@ const upload = async (event: Event) => {
 .media-uploader__list { display:flex; flex-wrap:wrap; gap:10px; }
 .media-uploader__card, .media-uploader__add { position:relative; width:124px; height:124px; border:1px solid #dfe4ed; border-radius:10px; overflow:hidden; background:#f7f9fc; }
 .media-uploader__card img, .media-uploader__card video { width:100%; height:100%; object-fit:cover; display:block; }
-.media-uploader__card button { position:absolute; top:5px; right:5px; width:24px; height:24px; border:0; border-radius:50%; background:rgba(0,0,0,.65); color:#fff; font-size:18px; line-height:20px; cursor:pointer; }
+.media-uploader__card>.media-uploader__delete { position:absolute; top:5px; right:5px; width:24px; height:24px; border:0; border-radius:50%; background:rgba(0,0,0,.65); color:#fff; font-size:18px; line-height:20px; cursor:pointer; }
+.media-uploader__order{position:absolute;left:5px;bottom:24px;display:flex;gap:3px}.media-uploader__order button{display:grid;width:24px;height:24px;place-items:center;border:0;border-radius:50%;color:#fff;background:rgba(0,0,0,.65);cursor:pointer}.media-uploader__order button:disabled{opacity:.35;cursor:not-allowed}.media-uploader__cover{position:absolute;top:6px;left:6px;padding:3px 6px;border-radius:999px;color:#443400;background:#ffd733;font-size:10px}
 .media-uploader__card small { position:absolute; bottom:0; left:0; right:0; padding:3px 5px; color:#fff; font-size:11px; background:rgba(0,0,0,.58); }
 .media-uploader__add { display:flex; flex-direction:column; justify-content:center; align-items:center; gap:7px; color:#3977e8; cursor:pointer; font:inherit; }
 .media-uploader__add:disabled { cursor:wait; opacity:.6; }.media-uploader__add small { color:#8993a4; }.media-uploader__input { display:none; }
