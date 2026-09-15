@@ -32,6 +32,11 @@ public class AutoReplyBackupHandler implements DataBackupHandler {
     }
 
     @Override
+    public List<String> getDependencies() {
+        return List.of("account", "goods");
+    }
+
+    @Override
     public Map<String, Object> exportData() {
         List<Map<String, Object>> configs = jdbcTemplate.queryForList(
                 "SELECT c.xy_goods_id, c.xianyu_auto_reply_on, c.xianyu_auto_reply_context_on, c.fixed_material, a.unb " +
@@ -126,15 +131,18 @@ public class AutoReplyBackupHandler implements DataBackupHandler {
                 }
             } catch (Exception e) {
                 log.warn("[AutoReplyBackup] 导入单条自动回复配置失败: {}", e.getMessage());
+                DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
             }
         }
         if (skippedCount > 0) {
             log.warn("[AutoReplyBackup] 共跳过 {} 条数据（账号不存在）", skippedCount);
+            DataBackupHandler.recordImportError(context, getModuleKey(), "有 " + skippedCount + " 条配置因账号不存在被跳过");
         }
-        importKeywordRules(data, unbToAccountId);
+        importKeywordRules(data, unbToAccountId, context);
     }
 
-    private void importKeywordRules(Map<String, Object> data, Map<String, Long> unbToAccountId) {
+    private void importKeywordRules(Map<String, Object> data, Map<String, Long> unbToAccountId,
+                                    Map<String, Object> context) {
         if (!(data.get("keywordReplyRules") instanceof List<?> rules)) return;
         for (Object value : rules) {
             if (!(value instanceof Map<?, ?> raw)) continue;
@@ -162,6 +170,7 @@ public class AutoReplyBackupHandler implements DataBackupHandler {
                 }
             } catch (Exception e) {
                 log.warn("[AutoReplyBackup] 导入关键词共享模板失败: {}", e.getMessage());
+                DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
             }
         }
     }

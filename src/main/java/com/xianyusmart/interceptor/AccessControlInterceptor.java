@@ -99,6 +99,8 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveMenuPermission(String uri) {
+        if (uri.startsWith("/api/qa/backup")) return PermissionCatalog.MENU_SETTINGS;
+        if (uri.startsWith("/api/qa/notification-trace")) return PermissionCatalog.MENU_HEALTH;
         if (uri.startsWith("/api/qa/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
         if (uri.startsWith("/api/qa/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
@@ -179,6 +181,12 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (uri.startsWith("/api/qa/backup") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
+        if (uri.startsWith("/api/qa/notification-trace") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
         if (uri.startsWith("/api/qa/message-workspace") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
@@ -320,7 +328,8 @@ public class AccessControlInterceptor implements HandlerInterceptor {
                 || (uri.startsWith("/api/notifications") && !"GET".equalsIgnoreCase(method))
                 || (uri.startsWith("/api/setting") && !uri.endsWith("/get") && !uri.endsWith("/list"))
                 || (uri.startsWith("/api/security") && !"GET".equalsIgnoreCase(method))
-                || uri.equals("/api/backup/import")) {
+                || uri.equals("/api/backup/import")
+                || (uri.startsWith("/api/backup/restore") && !"GET".equalsIgnoreCase(method))) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
         return null;

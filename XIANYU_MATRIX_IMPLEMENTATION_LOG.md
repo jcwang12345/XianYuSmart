@@ -672,3 +672,34 @@
 - `V6-BUG-005`：延迟等待后确认六个模块真实存在，原“完全空白”是无加载反馈导致的稳定态前误判；加载/错误态、依赖/数量/范围/大小、manifest、dry-run、恢复点、回滚和强确认仍需完整开发。
 - `V6-BUG-006` 已完成：复用后端真实分页，前端默认每页 20 条，增加通知状态、店铺和关键字筛选、总量/范围说明与跨页控件；真实 88 条数据为 5 页，第二页加载通过，390×844 单列设计 QA 通过。
 - 因此当前只声明 V6 证据基线、Wave 2 增量和五项 Gate 0 缺陷闭环，不宣称 V6 或 Gate 0 全部完成。
+
+## 批次 16：V6 Gate 0 安全备份恢复（v2.8.1 候选）
+
+### 需求与缺陷
+
+- `V6-BUG-005 / V6-BACKUP-01`：模块稳定态之前增加明确加载、错误和重试；每个模块展示依赖、真实记录数、当前经营主体范围、预计大小和敏感数据标志。
+- `V6-BACKUP-02`：备份格式升级为 2.0 manifest，包含应用版本、Flyway schema、租户、导出时间/操作者、加密标志、模块依赖、数量、大小、逐模块及总 payload SHA-256。
+- `V6-BACKUP-03`：停用旧直接导入，新增 20 分钟持久化预检令牌；版本、跨租户、payload/模块篡改、依赖缺失和文件变化均在任何业务写入之前拒绝，并输出保守新增/覆盖估算。
+- `V6-BACKUP-04`：V49 新增恢复主任务和逐模块恢复点；执行领取、业务写入与成功状态使用事务，处理器单行失败会使整次事务失败；任务、站内事件和统一审计可追踪，成功后可使用强确认从恢复点回滚。
+- `V6-BACKUP-05`：预检、执行和回滚均要求系统写权限；执行要求精确输入“恢复 N 个模块”，回滚要求精确输入“回滚恢复任务 ID”；无权限界面不能选择文件或进入写链路。
+
+### 隔离验收能力
+
+- 默认关闭 `BACKUP_QA_MOCK_ENABLED`；裸机 QA 仅对明确白名单租户开启 `qaRestoreProbe`，只写 `xianyu_backup_restore_probe` 专用表，可验证同一正式恢复编排的预检、执行、幂等、恢复点和回滚，平台网络调用为零。
+- `/api/qa/notification-trace/fixture` 生成终态 `FAILED / NOT_SENT_QA` 的持久化通知链。通道为禁用状态，调度器不会领取；inbox、outbox、delivery log 使用同一 eventId，外部网络调用为零。
+- 本批没有对账号、商品、卡密、订单、消息或任何闲鱼平台对象执行恢复，也没有发送真实外部通知。
+
+### 变更、迁移与 API
+
+- 迁移：`V49__safe_backup_restore_jobs.sql`，新增恢复主任务、逐模块 LONGTEXT 恢复点和隔离 QA 探针表；没有修改已发布迁移。
+- API：`POST /api/backup/restore/preview`、`POST /api/backup/restore/execute`、`GET /api/backup/restore/jobs/{jobId}`、`POST /api/backup/restore/jobs/{jobId}/rollback`；旧 `POST /api/backup/import` 明确拒绝直接导入。
+- QA：`POST /api/qa/backup/fixture`、`GET /api/qa/backup/probe`、`POST /api/qa/notification-trace/fixture`，均受 QA 开关、租户白名单、菜单和系统写权限保护。
+- 前端：设置页安全恢复工作台、模块依赖选择、manifest/冲突结果、精确确认、持久任务状态、逐模块恢复点和手机布局；最终静态资源只由本批最终源码生成。
+
+### 当前测试结果与待验收项
+
+- 后端完整回归：211 项通过，0 失败、0 错误、0 跳过（增加通知追踪夹具后将在提交前再跑一次完整回归）。
+- 备份与权限定向回归：21 项通过；覆盖 manifest、跨租户、旧包、篡改、缺依赖、强确认、吞错和越权。
+- 前端类型检查通过；Vite 生产构建 355 模块通过；`zsh -n scripts/native-qa.sh` 与 `git diff --check` 通过。
+- 待提交前完成：MySQL 5.7 从 V48→V49、隔离探针 API/DB 执行与回滚、通知 eventId 三表链、桌面/390 窄屏设计 QA、最终全量回归和不可变 3000 部署。
+- 本批代码尚待独立测试回归，因此不声明整个 V6 长期目标完成。

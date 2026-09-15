@@ -3,6 +3,11 @@ import { request } from '@/utils/request'
 export interface BackupModule {
   moduleKey: string
   moduleName: string
+  dependencies: string[]
+  recordCount: number | null
+  estimatedSizeBytes: number | null
+  scope: string
+  containsSensitiveSecrets: boolean
 }
 
 export interface BackupExportResult {
@@ -13,6 +18,69 @@ export interface BackupImportResult {
   totalCount: number
   successCount: number
   failedModules: string[]
+}
+
+export interface BackupRestoreModulePreview {
+  moduleKey: string
+  moduleName: string
+  dependencies: string[]
+  incomingCount: number
+  currentCount: number
+  potentialCreateCount: number
+  potentialOverwriteCount: number
+  incomingSizeBytes: number
+  estimated: boolean
+}
+
+export interface BackupManifest {
+  formatVersion: string
+  applicationVersion: string
+  schemaVersion: string
+  tenantId: number
+  exportedAt: string
+  exportedBy?: number
+  encrypted: boolean
+  containsSensitiveSecrets: boolean
+  payloadChecksum: string
+  modules: Array<Record<string, unknown>>
+}
+
+export interface BackupRestorePreview {
+  jobId: number
+  status?: string
+  executable?: boolean
+  writePerformed: boolean
+  previewToken: string
+  requiredConfirmation: string
+  expiresAt: string
+  scope?: string
+  modules?: BackupRestoreModulePreview[]
+  warnings?: string[]
+  manifest: BackupManifest
+  preview?: {
+    executable: boolean
+    writePerformed: boolean
+    scope: string
+    modules: BackupRestoreModulePreview[]
+    warnings: string[]
+  }
+  idempotentReplay?: boolean
+}
+
+export interface BackupRestoreJob extends BackupRestorePreview {
+  status: 'PREVIEWED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'ROLLED_BACK'
+  selectedModules: string[]
+  startedAt?: string
+  finishedAt?: string
+  rolledBackAt?: string
+  errorMessage?: string
+  restorePoints?: Array<{
+    moduleKey: string
+    moduleName: string
+    recordCount: number
+    snapshotChecksum: string
+    createdTime: string
+  }>
 }
 
 export function getBackupModules() {
@@ -31,9 +99,38 @@ export function exportBackup(data: { modules: string[] }) {
   })
 }
 
-export function importBackup(data: { jsonData: string; modules: string[] }) {
-  return request<BackupImportResult>({
-    url: '/backup/import',
+export function previewBackupRestore(data: { jsonData: string; modules: string[]; requestId: string }) {
+  return request<BackupRestorePreview>({
+    url: '/backup/restore/preview',
+    method: 'post',
+    data
+  })
+}
+
+export function executeBackupRestore(data: {
+  jsonData: string
+  modules: string[]
+  requestId: string
+  previewToken: string
+  confirmationText: string
+}) {
+  return request<BackupRestoreJob>({
+    url: '/backup/restore/execute',
+    method: 'post',
+    data
+  })
+}
+
+export function getBackupRestoreJob(jobId: number) {
+  return request<BackupRestoreJob>({
+    url: `/backup/restore/jobs/${jobId}`,
+    method: 'get'
+  })
+}
+
+export function rollbackBackupRestore(jobId: number, data: { requestId: string; confirmationText: string }) {
+  return request<BackupRestoreJob>({
+    url: `/backup/restore/jobs/${jobId}/rollback`,
     method: 'post',
     data
   })

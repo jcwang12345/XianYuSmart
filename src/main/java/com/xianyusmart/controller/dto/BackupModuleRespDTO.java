@@ -8,4 +8,9 @@ import java.util.List;
 public class BackupModuleRespDTO {
     private String moduleKey;
     private String moduleName;
+    private List<String> dependencies;
+    private Long recordCount;
+    private Long estimatedSizeBytes;
+    private String scope;
+    private Boolean containsSensitiveSecrets;
 }

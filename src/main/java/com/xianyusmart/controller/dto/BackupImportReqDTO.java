@@ -8,4 +8,7 @@ import java.util.List;
 public class BackupImportReqDTO {
     private String jsonData;
     private List<String> modules;
+    private String requestId;
+    private String previewToken;
+    private String confirmationText;
 }

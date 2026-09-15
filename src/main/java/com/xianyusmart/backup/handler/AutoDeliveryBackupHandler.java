@@ -48,6 +48,11 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
     }
 
     @Override
+    public List<String> getDependencies() {
+        return List.of("account", "kami");
+    }
+
+    @Override
     public Map<String, Object> exportData() {
         List<XianyuGoodsAutoDeliveryConfig> configs = autoDeliveryConfigMapper.selectList(null);
         List<XianyuFixedDeliveryTemplate> fixedTemplates = fixedTemplateMapper.selectList(null);
@@ -184,10 +189,12 @@ public class AutoDeliveryBackupHandler implements DataBackupHandler {
                 }
             } catch (Exception e) {
                 log.warn("[AutoDeliveryBackup] 导入单条自动发货配置失败: {}", e.getMessage());
+                DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
             }
         }
         if (skippedCount > 0) {
             log.warn("[AutoDeliveryBackup] 共跳过 {} 条数据（账号不存在）", skippedCount);
+            DataBackupHandler.recordImportError(context, getModuleKey(), "有 " + skippedCount + " 条配置因账号不存在被跳过");
         }
     }
 

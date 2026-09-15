@@ -211,6 +211,27 @@ class AccessControlInterceptorTest {
                 new MockHttpServletResponse(), new Object()));
     }
 
+    @Test
+    void backupPreviewExecuteAndRollbackRequireSettingsAndSystemWrite() throws Exception {
+        SysUser user = user("OWNER");
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_SETTINGS));
+
+        MockHttpServletResponse previewDenied = new MockHttpServletResponse();
+        assertFalse(interceptor.preHandle(request("POST", "/api/backup/restore/preview", user), previewDenied, new Object()));
+        assertEquals(403, previewDenied.getStatus());
+        assertTrue(interceptor.preHandle(request("GET", "/api/backup/restore/jobs/73", user),
+                new MockHttpServletResponse(), new Object()));
+
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_SETTINGS, PermissionCatalog.ACTION_SYSTEM_WRITE));
+        assertTrue(interceptor.preHandle(request("POST", "/api/backup/restore/preview", user),
+                new MockHttpServletResponse(), new Object()));
+        assertTrue(interceptor.preHandle(request("POST", "/api/backup/restore/execute", user),
+                new MockHttpServletResponse(), new Object()));
+        assertTrue(interceptor.preHandle(request("POST", "/api/backup/restore/jobs/73/rollback", user),
+                new MockHttpServletResponse(), new Object()));
+    }
+
     private SysUser user(String memberRole) {
         SysUser user = new SysUser();
         user.setId(11L);

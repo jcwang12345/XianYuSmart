@@ -33,6 +33,11 @@ public class GoodsBackupHandler implements DataBackupHandler {
     }
 
     @Override
+    public List<String> getDependencies() {
+        return List.of("account");
+    }
+
+    @Override
     public Map<String, Object> exportData() {
         List<XianyuGoodsInfo> goodsList = goodsInfoMapper.selectList(null);
 
@@ -109,10 +114,12 @@ public class GoodsBackupHandler implements DataBackupHandler {
                 }
             } catch (Exception e) {
                 log.warn("[GoodsBackup] 导入单条商品数据失败: {}", e.getMessage());
+                DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
             }
         }
         if (skippedCount > 0) {
             log.warn("[GoodsBackup] 共跳过 {} 条数据（账号不存在）", skippedCount);
+            DataBackupHandler.recordImportError(context, getModuleKey(), "有 " + skippedCount + " 条商品因账号不存在被跳过");
         }
     }
 }

@@ -81,6 +81,7 @@ public class SystemSettingBackupHandler implements DataBackupHandler {
                 }
             } catch (Exception e) {
                 log.warn("[SystemSettingBackup] 导入单条系统设置失败: {}", e.getMessage());
+                DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
             }
         }
     }

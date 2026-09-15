@@ -49,6 +49,16 @@ public class KamiBackupHandler implements DataBackupHandler {
     }
 
     @Override
+    public List<String> getDependencies() {
+        return List.of("account");
+    }
+
+    @Override
+    public boolean containsSensitiveSecrets() {
+        return true;
+    }
+
+    @Override
     public Map<String, Object> exportData() {
         List<XianyuKamiConfig> kamiConfigs = kamiConfigMapper.selectList(null);
 
@@ -168,10 +178,12 @@ public class KamiBackupHandler implements DataBackupHandler {
                     }
                 } catch (Exception e) {
                     log.warn("[KamiBackup] 导入单条卡密配置失败: {}", e.getMessage());
+                    DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
                 }
             }
             if (skippedCount > 0) {
                 log.warn("[KamiBackup] 共跳过 {} 条配置数据（账号不存在）", skippedCount);
+                DataBackupHandler.recordImportError(context, getModuleKey(), "有 " + skippedCount + " 条仓库配置因账号不存在被跳过");
             }
         }
         context.put("kamiConfigIdMap", sourceIdToId);
@@ -207,10 +219,12 @@ public class KamiBackupHandler implements DataBackupHandler {
                     kamiItemMapper.insert(item);
                 } catch (Exception e) {
                     log.warn("[KamiBackup] 导入单条卡密项失败: {}", e.getMessage());
+                    DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
                 }
             }
             if (skippedCount > 0) {
                 log.warn("[KamiBackup] 共跳过 {} 条卡密项数据（配置不存在）", skippedCount);
+                DataBackupHandler.recordImportError(context, getModuleKey(), "有 " + skippedCount + " 条卡密因仓库配置不存在被跳过");
             }
         }
     }

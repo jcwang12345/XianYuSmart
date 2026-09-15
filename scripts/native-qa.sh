@@ -60,7 +60,8 @@ import_qa_environment() {
     PRODUCT_BATCH_QA_MOCK_TENANT_ID PRODUCT_BATCH_QA_MOCK_ACCOUNT_IDS
     PRODUCT_BATCH_QA_MOCK_GOODS_PREFIX PUBLISH_QA_MOCK_ENABLED
     PUBLISH_QA_MOCK_TENANT_ID PUBLISH_QA_MOCK_ACCOUNT_IDS
-    PUBLISH_QA_MOCK_TITLE_PREFIX AI_ENABLED PRINT_RAW_MESSAGE
+    PUBLISH_QA_MOCK_TITLE_PREFIX BACKUP_QA_MOCK_ENABLED
+    BACKUP_QA_MOCK_TENANT_ID AI_ENABLED PRINT_RAW_MESSAGE
   )
   for key in $keys; do
     value="$(container_env "$key")"
@@ -75,6 +76,8 @@ import_qa_environment() {
   export DB_URL="jdbc:mysql://127.0.0.1:${MYSQL_PORT}/xianyusmart?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true&sslMode=DISABLED"
   export SERVER_PORT="$APP_PORT"
   export SPRING_PROFILES_ACTIVE="qa"
+  export BACKUP_QA_MOCK_ENABLED="${BACKUP_QA_MOCK_ENABLED:-true}"
+  export BACKUP_QA_MOCK_TENANT_ID="${BACKUP_QA_MOCK_TENANT_ID:-${PRODUCT_BATCH_QA_MOCK_TENANT_ID:--1}}"
   export ALLOWED_ORIGINS="http://localhost:${APP_PORT},http://127.0.0.1:${APP_PORT}"
   export MEDIA_STORAGE_DIR="$RUNTIME_DIR/data/media"
   export VECTOR_STORE_FILE="$RUNTIME_DIR/data/vectorstore.json"

@@ -93,6 +93,7 @@ public class AccountBackupHandler implements DataBackupHandler {
                     unbToAccountId.put(unb, account.getId());
                 } catch (Exception e) {
                     log.warn("[AccountBackup] 导入单条账号数据失败: {}", e.getMessage());
+                    DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
                 }
             }
         }
@@ -129,6 +130,7 @@ public class AccountBackupHandler implements DataBackupHandler {
                     }
                 } catch (Exception e) {
                     log.warn("[AccountBackup] 导入单条Cookie数据失败: {}", e.getMessage());
+                    DataBackupHandler.recordImportError(context, getModuleKey(), e.getMessage());
                 }
             }
         }

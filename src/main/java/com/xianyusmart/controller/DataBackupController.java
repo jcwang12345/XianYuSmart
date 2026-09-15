@@ -36,61 +36,68 @@ public class DataBackupController {
 
     @PostMapping("/modules")
     public ResultObject<List<BackupModuleRespDTO>> getModules() {
-        try {
-            List<BackupModuleRespBO> boList = dataBackupService.getModules();
-            List<BackupModuleRespDTO> result = new ArrayList<>();
-            for (BackupModuleRespBO bo : boList) {
-                BackupModuleRespDTO dto = new BackupModuleRespDTO();
-                dto.setModuleKey(bo.getModuleKey());
-                dto.setModuleName(bo.getModuleName());
-                result.add(dto);
-            }
-            return ResultObject.success(result);
-        } catch (Exception e) {
-            log.error("获取备份模块列表失败", e);
-            return ResultObject.failed("获取备份模块列表失败: " + e.getMessage());
+        List<BackupModuleRespBO> boList = dataBackupService.getModules();
+        List<BackupModuleRespDTO> result = new ArrayList<>();
+        for (BackupModuleRespBO bo : boList) {
+            BackupModuleRespDTO dto = new BackupModuleRespDTO();
+            dto.setModuleKey(bo.getModuleKey());
+            dto.setModuleName(bo.getModuleName());
+            dto.setDependencies(bo.getDependencies());
+            dto.setRecordCount(bo.getRecordCount());
+            dto.setEstimatedSizeBytes(bo.getEstimatedSizeBytes());
+            dto.setScope(bo.getScope());
+            dto.setContainsSensitiveSecrets(bo.getContainsSensitiveSecrets());
+            result.add(dto);
         }
+        return ResultObject.success(result);
     }
 
     @PostMapping("/export")
     public ResultObject<BackupExportRespDTO> exportData(@RequestBody BackupExportReqDTO reqDTO) {
-        try {
-            BackupExportReqBO reqBO = new BackupExportReqBO();
-            reqBO.setModules(reqDTO.getModules());
-
-            BackupExportRespBO respBO = dataBackupService.exportData(reqBO);
-
-            BackupExportRespDTO respDTO = new BackupExportRespDTO();
-            respDTO.setJsonData(respBO.getJsonData());
-            return ResultObject.success(respDTO);
-        } catch (Exception e) {
-            log.error("导出备份数据失败", e);
-            return ResultObject.failed("导出备份数据失败: " + e.getMessage());
-        }
+        BackupExportReqBO reqBO = new BackupExportReqBO();
+        reqBO.setModules(reqDTO == null ? null : reqDTO.getModules());
+        BackupExportRespBO respBO = dataBackupService.exportData(reqBO);
+        BackupExportRespDTO respDTO = new BackupExportRespDTO();
+        respDTO.setJsonData(respBO.getJsonData());
+        return ResultObject.success(respDTO);
     }
 
     @PostMapping("/import")
     public ResultObject<BackupImportRespDTO> importData(@RequestBody BackupImportReqDTO reqDTO) {
-        try {
-            if (reqDTO == null || reqDTO.getJsonData() == null || reqDTO.getJsonData().trim().isEmpty()) {
-                return ResultObject.validateFailed("备份数据不能为空");
-            }
+        return ResultObject.validateFailed("直接导入已停用，请先调用恢复预检并使用预检令牌执行");
+    }
 
-            BackupImportReqBO reqBO = new BackupImportReqBO();
-            reqBO.setJsonData(reqDTO.getJsonData());
-            reqBO.setModules(reqDTO.getModules());
+    @PostMapping("/restore/preview")
+    public ResultObject<java.util.Map<String, Object>> previewRestore(@RequestBody BackupImportReqDTO request) {
+        return ResultObject.success(dataBackupService.previewRestore(toImportBO(request)));
+    }
 
-            BackupImportRespBO respBO = dataBackupService.importData(reqBO);
+    @PostMapping("/restore/execute")
+    public ResultObject<java.util.Map<String, Object>> executeRestore(@RequestBody BackupImportReqDTO request) {
+        return ResultObject.success(dataBackupService.executeRestore(toImportBO(request)));
+    }
 
-            BackupImportRespDTO respDTO = new BackupImportRespDTO();
-            respDTO.setTotalCount(respBO.getTotalCount());
-            respDTO.setSuccessCount(respBO.getSuccessCount());
-            respDTO.setFailedModules(respBO.getFailedModules());
-            return ResultObject.success(respDTO);
-        } catch (Exception e) {
-            log.error("导入备份数据失败", e);
-            return ResultObject.failed("导入备份数据失败: " + e.getMessage());
+    @GetMapping("/restore/jobs/{jobId}")
+    public ResultObject<java.util.Map<String, Object>> restoreJob(@PathVariable Long jobId) {
+        return ResultObject.success(dataBackupService.getRestoreJob(jobId));
+    }
+
+    @PostMapping("/restore/jobs/{jobId}/rollback")
+    public ResultObject<java.util.Map<String, Object>> rollbackRestore(@PathVariable Long jobId,
+                                                                       @RequestBody BackupImportReqDTO request) {
+        return ResultObject.success(dataBackupService.rollbackRestore(jobId, request.getRequestId(), request.getConfirmationText()));
+    }
+
+    private BackupImportReqBO toImportBO(BackupImportReqDTO request) {
+        BackupImportReqBO value = new BackupImportReqBO();
+        if (request != null) {
+            value.setJsonData(request.getJsonData());
+            value.setModules(request.getModules());
+            value.setRequestId(request.getRequestId());
+            value.setPreviewToken(request.getPreviewToken());
+            value.setConfirmationText(request.getConfirmationText());
         }
+        return value;
     }
 
     @GetMapping("/log-dates")

@@ -5,7 +5,12 @@ import { getCurrentUser, changePassword } from '@/api/system'
 import { logout } from '@/api/auth'
 import { getSetting, saveSetting, testEmail } from '@/api/setting'
 import { getAIStatus, testAIConnection, type AIConnectionTestResult } from '@/api/ai'
-import { getBackupModules, exportBackup, importBackup, getLogDates, downloadLog, type BackupModule } from '@/api/backup'
+import {
+  getBackupModules, exportBackup, previewBackupRestore, executeBackupRestore,
+  getBackupRestoreJob, rollbackBackupRestore, getLogDates, downloadLog,
+  type BackupModule, type BackupRestoreJob, type BackupRestorePreview
+} from '@/api/backup'
+import { newRequestId } from '@/api/matrix'
 import { toast } from '@/utils/toast'
 import { showConfirm } from '@/utils/confirm'
 import { clearAuthToken } from '@/utils/request'
@@ -275,6 +280,14 @@ onMounted(async () => {
   await loadAIStatus()
   // 加载邮箱通知配置
   await loadEmailConfig()
+
+  const settingsQuery = router.currentRoute.value.query
+  if (settingsQuery.panel === 'backup') {
+    activeMenu.value = 'backup'
+    handleBackupMenuEnter()
+    const restoreJobId = Number(settingsQuery.jobId)
+    if (Number.isSafeInteger(restoreJobId) && restoreJobId > 0) await loadRestoreJob(restoreJobId)
+  }
 })
 
 async function loadSecurity() {
@@ -900,27 +913,45 @@ async function handleTestEmail() {
 const backupModules = ref<BackupModule[]>([])
 const backupSelectedModules = ref<string[]>([])
 const backupLoaded = ref(false)
+const backupLoading = ref(false)
+const backupLoadError = ref('')
 const backupExporting = ref(false)
-const backupImporting = ref(false)
-const backupExportProgress = ref(0)
-const backupImportProgress = ref(0)
+const backupPreviewing = ref(false)
+const backupExecuting = ref(false)
+const backupRollingBack = ref(false)
+const backupPreview = ref<BackupRestorePreview | null>(null)
+const backupRestoreJob = ref<BackupRestoreJob | null>(null)
+const backupConfirmationText = ref('')
+const backupRollbackText = ref('')
+
+const activeRestorePreview = computed(() => backupPreview.value?.preview || backupPreview.value)
+const requiredRestoreConfirmation = computed(() => backupPreview.value?.requiredConfirmation || '')
+const requiredRollbackConfirmation = computed(() => backupRestoreJob.value ? `回滚恢复任务 ${backupRestoreJob.value.jobId}` : '')
+const canManageBackup = computed(() => hasPermission('action:system-write'))
 
 const logDates = ref<string[]>([])
 const logSelectedDate = ref('')
 const logDownloading = ref(false)
 const logDatesLoaded = ref(false)
 
-async function loadBackupModules() {
-  if (backupLoaded.value) return
+async function loadBackupModules(force = false) {
+  if (backupLoaded.value && !force) return
+  backupLoading.value = true
+  backupLoadError.value = ''
   try {
     const res = await getBackupModules()
     if (res.code === 200 && res.data) {
       backupModules.value = res.data
       backupSelectedModules.value = res.data.map((m: BackupModule) => m.moduleKey)
       backupLoaded.value = true
+    } else {
+      backupLoadError.value = res.msg || '模块信息加载失败'
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('获取备份模块列表失败:', e)
+    backupLoadError.value = e.message || '模块信息加载失败'
+  } finally {
+    backupLoading.value = false
   }
 }
 
@@ -963,10 +994,30 @@ async function handleDownloadLog() {
 function toggleBackupModule(key: string) {
   const idx = backupSelectedModules.value.indexOf(key)
   if (idx >= 0) {
-    backupSelectedModules.value.splice(idx, 1)
+    const removing = new Set([key])
+    let changed = true
+    while (changed) {
+      changed = false
+      for (const mod of backupModules.value) {
+        if (backupSelectedModules.value.includes(mod.moduleKey) && mod.dependencies?.some(dep => removing.has(dep)) && !removing.has(mod.moduleKey)) {
+          removing.add(mod.moduleKey)
+          changed = true
+        }
+      }
+    }
+    backupSelectedModules.value = backupSelectedModules.value.filter(item => !removing.has(item))
   } else {
-    backupSelectedModules.value.push(key)
+    const selected = new Set(backupSelectedModules.value)
+    const includeWithDependencies = (moduleKey: string) => {
+      if (selected.has(moduleKey)) return
+      const module = backupModules.value.find(item => item.moduleKey === moduleKey)
+      module?.dependencies?.forEach(includeWithDependencies)
+      selected.add(moduleKey)
+    }
+    includeWithDependencies(key)
+    backupSelectedModules.value = backupModules.value.map(item => item.moduleKey).filter(item => selected.has(item))
   }
+  clearRestorePreview()
 }
 
 function toggleAllBackupModules() {
@@ -975,6 +1026,21 @@ function toggleAllBackupModules() {
   } else {
     backupSelectedModules.value = backupModules.value.map(m => m.moduleKey)
   }
+  clearRestorePreview()
+}
+
+function formatBackupSize(bytes: number | null | undefined) {
+  if (bytes === null || bytes === undefined) return '待重试'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function clearRestorePreview() {
+  backupPreview.value = null
+  backupRestoreJob.value = null
+  backupConfirmationText.value = ''
+  backupRollbackText.value = ''
 }
 
 async function handleExportBackup() {
@@ -983,17 +1049,9 @@ async function handleExportBackup() {
     return
   }
   backupExporting.value = true
-  backupExportProgress.value = 0
   try {
-    const total = backupSelectedModules.value.length
-    const progressStep = 100 / total
-    for (let i = 0; i < total; i++) {
-      backupExportProgress.value = Math.round((i + 1) * progressStep)
-      await new Promise(r => setTimeout(r, 100))
-    }
     const res = await exportBackup({ modules: backupSelectedModules.value })
     if (res.code === 200 && res.data) {
-      backupExportProgress.value = 100
       const jsonStr = res.data.jsonData
       const blob = new Blob([jsonStr], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
@@ -1015,7 +1073,6 @@ async function handleExportBackup() {
     toast.error(e.message || '导出失败')
   } finally {
     backupExporting.value = false
-    backupExportProgress.value = 0
   }
 }
 
@@ -1031,6 +1088,7 @@ function handleImportFileChange(e: Event) {
   const target = e.target as HTMLInputElement
   const file = target.files?.[0]
   if (!file) return
+  clearRestorePreview()
   importFileName.value = file.name
   const reader = new FileReader()
   reader.onload = (ev) => {
@@ -1039,7 +1097,7 @@ function handleImportFileChange(e: Event) {
   reader.readAsText(file)
 }
 
-async function handleImportBackup() {
+async function handlePreviewBackup() {
   if (!importJsonData.value) {
     toast.warning('请先选择备份文件')
     return
@@ -1049,45 +1107,81 @@ async function handleImportBackup() {
     return
   }
 
+  backupPreviewing.value = true
+  backupPreview.value = null
+  backupRestoreJob.value = null
+  backupConfirmationText.value = ''
   try {
-    await showConfirm(
-      '导入数据将覆盖当前选中模块的已有数据，是否继续？',
-      '确认导入'
-    )
-  } catch {
-    return
-  }
-
-  backupImporting.value = true
-  backupImportProgress.value = 0
-  try {
-    const total = backupSelectedModules.value.length
-    const progressStep = 100 / (total + 1)
-    for (let i = 0; i < total; i++) {
-      backupImportProgress.value = Math.round((i + 1) * progressStep)
-      await new Promise(r => setTimeout(r, 100))
-    }
-    const res = await importBackup({ jsonData: importJsonData.value, modules: backupSelectedModules.value })
+    const res = await previewBackupRestore({
+      jsonData: importJsonData.value,
+      modules: backupSelectedModules.value,
+      requestId: newRequestId('backup-preview')
+    })
     if (res.code === 200 && res.data) {
-      backupImportProgress.value = 100
-      const result = res.data
-      if (result.failedModules && result.failedModules.length > 0) {
-        toast.warning(`导入完成：${result.successCount}/${result.totalCount} 成功，失败模块：${result.failedModules.join(', ')}`)
-      } else {
-        toast.success(`导入成功：${result.successCount} 个模块`)
-      }
-      importJsonData.value = ''
-      importFileName.value = ''
-      if (importFileInput.value) importFileInput.value.value = ''
+      backupPreview.value = res.data
+      toast.success('安全预检完成，尚未写入任何数据')
     } else {
-      toast.error(res.msg || '导入失败')
+      toast.error(res.msg || '预检失败')
     }
   } catch (e: any) {
-    console.error('导入备份失败:', e)
-    toast.error(e.message || '导入失败')
+    console.error('恢复预检失败:', e)
+    toast.error(e.message || '恢复预检失败')
   } finally {
-    backupImporting.value = false
-    backupImportProgress.value = 0
+    backupPreviewing.value = false
+  }
+}
+
+async function handleExecuteBackup() {
+  if (!backupPreview.value || backupConfirmationText.value !== requiredRestoreConfirmation.value) return
+  backupExecuting.value = true
+  try {
+    const res = await executeBackupRestore({
+      jsonData: importJsonData.value,
+      modules: backupSelectedModules.value,
+      requestId: newRequestId('backup-execute'),
+      previewToken: backupPreview.value.previewToken,
+      confirmationText: backupConfirmationText.value
+    })
+    if (res.code === 200 && res.data) {
+      backupRestoreJob.value = res.data
+      toast.success('恢复任务已完成，并已创建逐模块恢复点')
+    } else {
+      toast.error(res.msg || '恢复执行失败')
+    }
+  } catch (e: any) {
+    toast.error(e.message || '恢复执行失败；本次写入已回滚')
+    if (backupPreview.value?.jobId) await loadRestoreJob(backupPreview.value.jobId)
+  } finally {
+    backupExecuting.value = false
+  }
+}
+
+async function loadRestoreJob(jobId: number) {
+  try {
+    const res = await getBackupRestoreJob(jobId)
+    if (res.code === 200 && res.data) backupRestoreJob.value = res.data
+  } catch (e: any) {
+    toast.error(e.message || '恢复任务加载失败')
+  }
+}
+
+async function handleRollbackBackup() {
+  const job = backupRestoreJob.value
+  if (!job || backupRollbackText.value !== requiredRollbackConfirmation.value) return
+  backupRollingBack.value = true
+  try {
+    const res = await rollbackBackupRestore(job.jobId, {
+      requestId: newRequestId('backup-rollback'),
+      confirmationText: backupRollbackText.value
+    })
+    if (res.code === 200 && res.data) {
+      backupRestoreJob.value = res.data
+      toast.success('已从逐模块恢复点回滚')
+    }
+  } catch (e: any) {
+    toast.error(e.message || '恢复点回滚失败')
+  } finally {
+    backupRollingBack.value = false
   }
 }
 
@@ -1878,12 +1972,25 @@ async function saveMenuLayout() {
 
       <!-- 备份与恢复 -->
       <div v-if="activeMenu === 'backup'" class="settings__panel">
-        <div class="settings__panel-title">备份与恢复</div>
+        <div class="settings__panel-title">安全备份与恢复</div>
 
         <div class="settings__section">
-          <div class="settings__section-title">选择备份模块</div>
-          <p class="settings__desc">选择需要导出或导入的数据模块，默认全部选择</p>
-          <div class="settings__backup-modules">
+          <div class="settings__section-header">
+            <div>
+              <div class="settings__section-title">1. 选择业务模块</div>
+              <p class="settings__desc">范围固定为当前经营主体；选择业务模块时会自动带上所需依赖。</p>
+            </div>
+            <button v-if="backupLoadError" class="settings__btn settings__btn--secondary" @click="loadBackupModules(true)">重试</button>
+          </div>
+          <div v-if="backupLoading" class="settings__backup-state" aria-live="polite">
+            <span class="settings__spinner"></span>
+            正在核对模块依赖、数据量与预计大小…
+          </div>
+          <div v-else-if="backupLoadError" class="settings__backup-state settings__backup-state--error" role="alert">
+            <strong>模块信息未能加载</strong>
+            <span>{{ backupLoadError }}</span>
+          </div>
+          <div v-else class="settings__backup-modules">
             <div class="settings__backup-module-all">
               <label class="settings__checkbox-label" @click.prevent="toggleAllBackupModules">
                 <span class="settings__checkbox" :class="{ 'settings__checkbox--checked': backupSelectedModules.length === backupModules.length && backupModules.length > 0 }">
@@ -1892,26 +1999,34 @@ async function saveMenuLayout() {
                 全选
               </label>
             </div>
-            <div v-for="mod in backupModules" :key="mod.moduleKey" class="settings__backup-module-item">
-              <label class="settings__checkbox-label" @click.prevent="toggleBackupModule(mod.moduleKey)">
+            <div
+              v-for="mod in backupModules"
+              :key="mod.moduleKey"
+              class="settings__backup-module-item"
+              :class="{ 'settings__backup-module-item--selected': backupSelectedModules.includes(mod.moduleKey) }"
+              @click="toggleBackupModule(mod.moduleKey)"
+            >
+              <div class="settings__backup-module-head">
                 <span class="settings__checkbox" :class="{ 'settings__checkbox--checked': backupSelectedModules.includes(mod.moduleKey) }">
                   <span v-if="backupSelectedModules.includes(mod.moduleKey)" class="settings__checkbox-tick">✓</span>
                 </span>
-                {{ mod.moduleName }}
-              </label>
+                <strong>{{ mod.moduleName }}</strong>
+                <span class="settings__backup-count">{{ mod.recordCount === null ? '数量待重试' : `${mod.recordCount} 条` }}</span>
+              </div>
+              <div class="settings__backup-module-meta">
+                <span>{{ mod.scope || '当前经营主体' }}</span>
+                <span>{{ formatBackupSize(mod.estimatedSizeBytes) }}</span>
+              </div>
+              <div class="settings__backup-module-deps">
+                {{ mod.dependencies?.length ? `依赖：${mod.dependencies.join('、')}` : '无前置依赖' }}
+              </div>
             </div>
           </div>
         </div>
 
         <div class="settings__section">
-          <div class="settings__section-title">导出备份</div>
-          <p class="settings__desc">将选中模块的数据导出为 JSON 文件</p>
-          <div v-if="backupExporting" class="settings__progress-wrap">
-            <div class="settings__progress-bar">
-              <div class="settings__progress-fill" :style="{ width: backupExportProgress + '%' }"></div>
-            </div>
-            <span class="settings__progress-text">{{ backupExportProgress }}%</span>
-          </div>
+          <div class="settings__section-title">2. 导出可校验备份</div>
+          <p class="settings__desc">文件包含应用/数据库版本、经营主体、逐模块数量与 SHA-256 校验和。Cookie、Token 和密码不会导出；卡密仓库含敏感业务数据且文件默认不加密，请仅存放在受控磁盘。</p>
           <div class="settings__actions">
             <button
               class="settings__btn settings__btn--primary"
@@ -1924,19 +2039,20 @@ async function saveMenuLayout() {
         </div>
 
         <div class="settings__section">
-          <div class="settings__section-title">导入恢复</div>
-          <p class="settings__desc">从 JSON 备份文件中恢复数据（将覆盖当前选中模块的已有数据）</p>
+          <div class="settings__section-title">3. 恢复预检</div>
+          <p class="settings__desc">先验证版本、经营主体、校验和和模块依赖，并估算新增/覆盖范围。预检绝不写数据，有效期 20 分钟。</p>
           <input
             ref="importFileInput"
             type="file"
             accept=".json"
+            :disabled="!canManageBackup"
             class="settings__file-input"
             @change="handleImportFileChange"
           />
           <div class="settings__import-file-row">
             <button
               class="settings__btn settings__btn--secondary"
-              :disabled="backupImporting"
+              :disabled="!canManageBackup || backupPreviewing || backupExecuting"
               @click="triggerImportFile"
             >
               选择文件
@@ -1944,20 +2060,78 @@ async function saveMenuLayout() {
             <span v-if="importFileName" class="settings__import-file-name">{{ importFileName }}</span>
             <span v-else class="settings__import-file-hint">未选择文件</span>
           </div>
-          <div v-if="backupImporting" class="settings__progress-wrap">
-            <div class="settings__progress-bar">
-              <div class="settings__progress-fill" :style="{ width: backupImportProgress + '%' }"></div>
-            </div>
-            <span class="settings__progress-text">{{ backupImportProgress }}%</span>
+          <div v-if="!canManageBackup" class="settings__backup-state settings__backup-state--error">
+            当前角色没有系统写权限，因此不能选择恢复文件、预检、执行或回滚。
           </div>
           <div class="settings__actions">
             <button
-              class="settings__btn settings__btn--danger"
-              :disabled="backupImporting || !importJsonData || backupSelectedModules.length === 0"
-              @click="handleImportBackup"
+              class="settings__btn settings__btn--primary"
+              :disabled="!canManageBackup || backupPreviewing || backupExecuting || !importJsonData || backupSelectedModules.length === 0"
+              @click="handlePreviewBackup"
             >
-              {{ backupImporting ? '导入中...' : '导入恢复' }}
+              {{ backupPreviewing ? '正在安全预检…' : '开始预检（不写数据）' }}
             </button>
+          </div>
+
+          <div v-if="backupPreview" class="settings__restore-preview">
+            <div class="settings__restore-preview-head">
+              <div>
+                <strong>预检通过 · 尚未写入</strong>
+                <span>任务 #{{ backupPreview.jobId }} · {{ activeRestorePreview?.scope || `经营主体 ${backupPreview.manifest?.tenantId}` }}</span>
+              </div>
+              <span class="settings__status-badge settings__status-badge--success">可执行</span>
+            </div>
+            <div class="settings__manifest-grid">
+              <div><span>备份格式</span><strong>{{ backupPreview.manifest?.formatVersion }}</strong></div>
+              <div><span>应用版本</span><strong>{{ backupPreview.manifest?.applicationVersion }}</strong></div>
+              <div><span>数据库版本</span><strong>{{ backupPreview.manifest?.schemaVersion }}</strong></div>
+              <div><span>导出时间</span><strong>{{ backupPreview.manifest?.exportedAt }}</strong></div>
+            </div>
+            <div class="settings__restore-table-wrap">
+              <table class="settings__restore-table">
+                <thead><tr><th>模块</th><th>备份记录</th><th>当前记录</th><th>预计新增</th><th>预计覆盖</th></tr></thead>
+                <tbody>
+                  <tr v-for="item in activeRestorePreview?.modules || []" :key="item.moduleKey">
+                    <td>{{ item.moduleName }}</td><td>{{ item.incomingCount }}</td><td>{{ item.currentCount }}</td>
+                    <td>{{ item.potentialCreateCount }}</td><td>{{ item.potentialOverwriteCount }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <ul class="settings__restore-warnings">
+              <li v-for="warning in activeRestorePreview?.warnings || []" :key="warning">{{ warning }}</li>
+            </ul>
+            <div class="settings__danger-confirm">
+              <label class="settings__label">输入“{{ requiredRestoreConfirmation }}”确认执行</label>
+              <input v-model="backupConfirmationText" class="settings__input" autocomplete="off" :placeholder="requiredRestoreConfirmation" />
+              <button
+                class="settings__btn settings__btn--danger"
+                :disabled="!canManageBackup || backupExecuting || backupConfirmationText !== requiredRestoreConfirmation"
+                @click="handleExecuteBackup"
+              >{{ backupExecuting ? '恢复执行中…' : '创建恢复点并执行' }}</button>
+            </div>
+          </div>
+
+          <div v-if="backupRestoreJob" class="settings__restore-job">
+            <div class="settings__restore-preview-head">
+              <div><strong>恢复任务 #{{ backupRestoreJob.jobId }}</strong><span>所有状态来自持久化任务，不使用模拟进度</span></div>
+              <span class="settings__job-state" :data-state="backupRestoreJob.status">{{ backupRestoreJob.status }}</span>
+            </div>
+            <p v-if="backupRestoreJob.errorMessage" class="settings__backup-error">{{ backupRestoreJob.errorMessage }}</p>
+            <div class="settings__restore-points">
+              <div v-for="point in backupRestoreJob.restorePoints || []" :key="point.moduleKey">
+                <strong>{{ point.moduleName }}</strong><span>{{ point.recordCount }} 条 · 校验 {{ point.snapshotChecksum.slice(0, 10) }}…</span>
+              </div>
+            </div>
+            <div v-if="['SUCCEEDED', 'FAILED'].includes(backupRestoreJob.status)" class="settings__danger-confirm settings__danger-confirm--rollback">
+              <label class="settings__label">需要撤销时，输入“{{ requiredRollbackConfirmation }}”</label>
+              <input v-model="backupRollbackText" class="settings__input" autocomplete="off" :placeholder="requiredRollbackConfirmation" />
+              <button
+                class="settings__btn settings__btn--danger"
+                :disabled="!canManageBackup || backupRollingBack || backupRollbackText !== requiredRollbackConfirmation"
+                @click="handleRollbackBackup"
+              >{{ backupRollingBack ? '回滚中…' : '从恢复点回滚' }}</button>
+            </div>
           </div>
         </div>
 
@@ -3524,19 +3698,79 @@ async function saveMenuLayout() {
 
 /* 备份与恢复 */
 .settings__backup-modules {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   margin-top: 12px;
 }
 
 .settings__backup-module-all {
-  width: 100%;
+  grid-column: 1 / -1;
   margin-bottom: 4px;
 }
 
 .settings__backup-module-item {
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(60,60,67,.1);
+  background: rgba(255,255,255,.48);
+  cursor: pointer;
+  transition: border-color .2s, background .2s, transform .2s;
 }
+
+.settings__backup-module-item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(10,132,255,.28);
+}
+
+.settings__backup-module-item--selected {
+  border-color: rgba(10,132,255,.45);
+  background: rgba(10,132,255,.06);
+}
+
+.settings__backup-module-head,
+.settings__backup-module-meta,
+.settings__restore-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings__backup-module-head strong { flex: 1; font-size: 14px; }
+.settings__backup-count { font-size: 12px; color: rgba(28,28,30,.58); }
+.settings__backup-module-meta { justify-content: space-between; margin-top: 10px; font-size: 12px; color: rgba(28,28,30,.58); }
+.settings__backup-module-deps { margin: 7px 0 0 26px; font-size: 12px; color: rgba(28,28,30,.48); }
+
+.settings__backup-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 72px;
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(10,132,255,.06);
+  color: rgba(28,28,30,.7);
+  font-size: 13px;
+}
+
+.settings__backup-state--error {
+  align-items: flex-start;
+  flex-direction: column;
+  background: rgba(255,59,48,.07);
+  color: #b42318;
+}
+
+.settings__spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(10,132,255,.2);
+  border-top-color: #0a84ff;
+  border-radius: 50%;
+  animation: settings-spin .75s linear infinite;
+}
+
+@keyframes settings-spin { to { transform: rotate(360deg); } }
 
 .settings__checkbox-label {
   display: inline-flex;
@@ -3576,10 +3810,73 @@ async function saveMenuLayout() {
 }
 
 .settings__checkbox-tick {
-  color: rgba(255,255,255,0.55);
+  color: #fff;
   font-size: 11px;
   line-height: 1;
 }
+
+.settings__restore-preview,
+.settings__restore-job {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid rgba(52,199,89,.25);
+  border-radius: 14px;
+  background: rgba(52,199,89,.05);
+}
+
+.settings__restore-job { border-color: rgba(10,132,255,.2); background: rgba(10,132,255,.04); }
+.settings__restore-preview-head { justify-content: space-between; align-items: flex-start; }
+.settings__restore-preview-head > div { display: flex; flex-direction: column; gap: 4px; }
+.settings__restore-preview-head strong { font-size: 15px; }
+.settings__restore-preview-head span { font-size: 12px; color: rgba(28,28,30,.58); }
+
+.settings__manifest-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.settings__manifest-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 9px;
+  background: rgba(255,255,255,.72);
+}
+.settings__manifest-grid span { font-size: 11px; color: rgba(28,28,30,.5); }
+.settings__manifest-grid strong { font-size: 12px; overflow-wrap: anywhere; }
+
+.settings__restore-table-wrap { overflow-x: auto; margin-top: 14px; }
+.settings__restore-table { width: 100%; min-width: 540px; border-collapse: collapse; font-size: 12px; }
+.settings__restore-table th,
+.settings__restore-table td { padding: 9px 10px; border-bottom: 1px solid rgba(60,60,67,.08); text-align: left; }
+.settings__restore-table th { color: rgba(28,28,30,.55); font-weight: 500; }
+.settings__restore-warnings { margin: 12px 0; padding-left: 20px; color: #8a5a00; font-size: 12px; line-height: 1.7; }
+
+.settings__danger-confirm {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 8px 12px;
+  align-items: center;
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 10px;
+  background: rgba(255,149,0,.09);
+}
+.settings__danger-confirm .settings__label { grid-column: 1 / -1; }
+.settings__danger-confirm--rollback { background: rgba(255,59,48,.07); }
+.settings__job-state { padding: 5px 9px; border-radius: 999px; background: rgba(10,132,255,.1); color: #075fae !important; font-weight: 700; }
+.settings__job-state[data-state="FAILED"] { background: rgba(255,59,48,.1); color: #b42318 !important; }
+.settings__job-state[data-state="SUCCEEDED"],
+.settings__job-state[data-state="ROLLED_BACK"] { background: rgba(52,199,89,.1); color: #18753a !important; }
+.settings__backup-error { color: #b42318; font-size: 13px; }
+.settings__restore-points { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin-top: 14px; }
+.settings__restore-points > div { display: flex; flex-direction: column; gap: 3px; padding: 10px; border-radius: 9px; background: rgba(255,255,255,.7); }
+.settings__restore-points strong { font-size: 13px; }
+.settings__restore-points span { font-size: 11px; color: rgba(28,28,30,.5); overflow-wrap: anywhere; }
 
 .settings__progress-wrap {
   display: flex;
@@ -3651,6 +3948,21 @@ async function saveMenuLayout() {
   outline: none;
   appearance: none;
   cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .settings__backup-modules,
+  .settings__restore-points { grid-template-columns: 1fr; }
+  .settings__manifest-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings__danger-confirm { grid-template-columns: 1fr; }
+  .settings__danger-confirm .settings__label { grid-column: auto; }
+  .settings__danger-confirm .settings__btn { width: 100%; }
+}
+
+@media (max-width: 430px) {
+  .settings__manifest-grid { grid-template-columns: 1fr; }
+  .settings__restore-preview,
+  .settings__restore-job { padding: 12px; }
 }
 
 .settings__log-select:focus {
