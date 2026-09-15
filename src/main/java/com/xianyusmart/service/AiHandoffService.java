@@ -226,8 +226,10 @@ public class AiHandoffService {
         return jdbcTemplate.queryForList("""
                 SELECT record.id replyRecordId,record.pnm_id messageId,record.buyer_message buyerMessage,
                        record.reply_content replyContent,record.reply_type replyType,
-                       record.matched_keyword matchedKeyword,record.trigger_context triggerContext,
+                       record.matched_keyword matchedKeyword,record.selected_rule_id selectedRuleId,
+                       record.selected_content_id selectedContentId,record.trigger_context triggerContext,
                        record.state,record.decision_state decisionState,record.confidence_score confidenceScore,
+                       record.decision_trace_json decisionTraceJson,record.safety_verdict safetyVerdict,
                        record.model_name modelName,record.processing_duration_ms processingDurationMs,
                        record.handoff_reason_code handoffReasonCode,record.last_error_code lastErrorCode,
                        record.last_error_message lastErrorMessage,record.create_time createdTime
@@ -244,6 +246,18 @@ public class AiHandoffService {
                  WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? AND status IN ('OPEN','CLAIMED')
                 """, Long.class, tenant(), accountId, sessionId);
         return count != null && count > 0;
+    }
+
+    /** 由消息核对状态机关闭对应的结果未知任务；没有任务时保持幂等。 */
+    @Transactional
+    public void resolveMessageOutcome(String sendRequestId, String resolutionRequestId, String note) {
+        List<Map<String,Object>> tasks = jdbcTemplate.queryForList("""
+                SELECT id FROM xianyu_ai_handoff_task
+                 WHERE tenant_id=? AND dedupe_key=? AND status IN ('OPEN','CLAIMED')
+                """, tenant(), "MESSAGE_SEND:" + tenant() + ":" + sendRequestId);
+        if (tasks.isEmpty()) return;
+        resolve(number(tasks.getFirst().get("id")),
+                new ActionCommand("RESOLVED", trim(note, 1000), resolutionRequestId));
     }
 
     private Map<String, Object> requireTask(Long id) {

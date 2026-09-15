@@ -17,6 +17,13 @@ public class XianyuKeywordReplyRule {
     private String sharingScope;
     private String keyword;
     private Integer matchMode;
+    private String matchType;
+    private Integer priority;
+    private Integer enabled;
+    private Integer versionNo;
+    private String effectiveTime;
+    private String expiresTime;
     private Integer isFallback;
     private String createTime;
+    private String updateTime;
 }

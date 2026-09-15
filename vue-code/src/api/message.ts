@@ -146,7 +146,9 @@ export function getWorkspaceConversations(params: Record<string, unknown> = {}) 
 }
 
 export function getWorkspaceConversation(accountId: number, sessionId: string, limit = 100, offset = 0) {
-  return request<Record<string, any>>({ url: '/message-workspace/conversation', method: 'GET', params: { accountId, sessionId, limit, offset } })
+  return request<Record<string, any>>({
+    url: '/message-workspace/conversation', method: 'GET', params: { accountId, sessionId, limit, offset }, silent: true
+  })
 }
 
 export function markWorkspaceConversationRead(accountId: number, sessionId: string) {
@@ -175,12 +177,73 @@ export interface WorkspaceSendCommand {
   requestId: string
 }
 
+export interface MessageSendAttempt {
+  accountId: number
+  sessionId: string
+  recipientUserId?: string
+  goodsId?: string
+  contentType: 'TEXT' | 'IMAGE' | string
+  contentExcerpt?: string
+  requestId: string
+  attemptToken?: string
+  eventId?: string
+  outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED' | 'MANUAL_CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | string
+  platformAckCode?: string
+  platformReceipt?: Record<string, unknown>
+  platformReceiptJson?: string
+  errorMessage?: string
+  resolutionStatus?: 'PENDING_VERIFICATION' | 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | string
+  resolutionNote?: string
+  verifiedMessageId?: string
+  resolutionRequestId?: string
+  resolvedUsername?: string
+  resolvedTime?: string
+  operatorUsername?: string
+  createdTime?: string
+  updatedTime?: string
+  canResolve?: boolean
+}
+
+export interface WorkspaceConversationDetail {
+  accountId: number
+  sessionId: string
+  messages: Record<string, unknown>[]
+  relatedOrders: Record<string, unknown>[]
+  sendAttempts: MessageSendAttempt[]
+  replyDecisions: Record<string, unknown>[]
+  historyPage: { limit: number; offset: number }
+}
+
+export interface MessageResolutionCommand {
+  accountId: number
+  resolution: 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT'
+  note: string
+  verifiedMessageId?: string
+  requestId: string
+}
+
 export function sendWorkspaceText(data: WorkspaceSendCommand) {
-  return request<{ requestId: string; outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/text', method: 'POST', data })
+  return request<{ requestId: string; outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED'; attemptToken?: string; eventId?: string; resolutionStatus?: string; recoveryHint?: string }>({ url: '/message-workspace/send/text', method: 'POST', data })
 }
 
 export function sendWorkspaceImage(data: WorkspaceSendCommand) {
-  return request<{ requestId: string; outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED'; recoveryHint?: string }>({ url: '/message-workspace/send/image', method: 'POST', data })
+  return request<{ requestId: string; outcomeState: 'SENT' | 'UNKNOWN' | 'FAILED'; attemptToken?: string; eventId?: string; resolutionStatus?: string; recoveryHint?: string }>({ url: '/message-workspace/send/image', method: 'POST', data })
+}
+
+export function getMessageSendAttempt(accountId: number, requestId: string) {
+  return request<MessageSendAttempt>({ url: `/message-workspace/send-attempts/${encodeURIComponent(requestId)}`, method: 'GET', params: { accountId } })
+}
+
+export function previewMessageResolution(sendRequestId: string, data: MessageResolutionCommand) {
+  return request<MessageSendAttempt & { requestedResolution: string; willResend: false; stateChange: string; confirmation: string }>({
+    url: `/message-workspace/send-attempts/${encodeURIComponent(sendRequestId)}/resolution/preview`, method: 'POST', data
+  })
+}
+
+export function resolveMessageResolution(sendRequestId: string, data: MessageResolutionCommand) {
+  return request<MessageSendAttempt & { idempotentReplay: boolean; platformWrite: false; recoveryHint?: string }>({
+    url: `/message-workspace/send-attempts/${encodeURIComponent(sendRequestId)}/resolution`, method: 'POST', data
+  })
 }
 
 export interface AiHandoffTask {

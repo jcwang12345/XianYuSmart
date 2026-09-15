@@ -35,16 +35,16 @@ public class KeywordReplyStrategy implements ReplyStrategy {
             return ReplyResult.fail();
         }
 
-        List<KeywordReplyRuleBO.KeywordReplyContentBO> allContents = matchedRules.stream()
-                .filter(r -> r.getContents() != null)
-                .flatMap(r -> r.getContents().stream())
-                .collect(Collectors.toList());
+        KeywordReplyRuleBO winningRule = matchedRules.getFirst();
+        List<KeywordReplyRuleBO.KeywordReplyContentBO> allContents = winningRule.getContents() == null
+                ? List.of() : winningRule.getContents();
 
         if (allContents.isEmpty()) {
             return ReplyResult.fail();
         }
 
-        KeywordReplyRuleBO.KeywordReplyContentBO selected = allContents.get(new Random().nextInt(allContents.size()));
+        // 规则与内容都按持久化顺序确定，确保同一问题的预演、重试和审计可以复现。
+        KeywordReplyRuleBO.KeywordReplyContentBO selected = allContents.getFirst();
         List<ReplyResult.ReplyItem> items = new ArrayList<>();
         String text = selected.getReplyText();
         String image = selected.getReplyImageUrl();
@@ -63,14 +63,13 @@ public class KeywordReplyStrategy implements ReplyStrategy {
         }
 
         ReplyResult result = ReplyResult.of(items);
-        String keywords = matchedRules.stream()
-                .filter(r -> r.getIsFallback() == null || r.getIsFallback() == 0)
-                .map(KeywordReplyRuleBO::getKeyword)
-                .collect(Collectors.joining(", "));
+        if (winningRule.getId() != null) result.setSelectedRuleId(Long.valueOf(winningRule.getId().toString()));
+        if (selected.getId() != null) result.setSelectedContentId(Long.valueOf(selected.getId().toString()));
+        String keywords = Integer.valueOf(1).equals(winningRule.getIsFallback()) ? "" : winningRule.getKeyword();
         result.setMatchedKeyword(keywords);
         result.setMatchedRules(matchedRules);
         if (!matchedRules.isEmpty()) {
-            result.setMatchedRule(matchedRules.get(0));
+            result.setMatchedRule(winningRule);
         }
         return result;
     }

@@ -125,6 +125,8 @@ const {
   handleUpdateMatchMode,
   fallbackRule, fallbackText, fallbackImageUrls, fallbackExpanded, handleSaveFallbackText,
   editKeywordDialogVisible, editKeywordId, editKeywordName, editKeywordAccountIds,
+  editKeywordMatchType, editKeywordPriority, editKeywordEnabled, editKeywordEffectiveTime, editKeywordExpiresTime,
+  keywordRuleVersions, keywordVersionsLoading, replyPolicyResult,
   handleOpenEditKeyword, handleSaveEditKeyword, handleDeleteFromEditDialog
 } = useAutoReply()
 
@@ -613,7 +615,7 @@ onMounted(() => {
                         <button class="ar__kw-mode-btn" :class="{ 'ar__kw-mode-btn--active': selectedKeywordRule.matchMode === 2 }" @click="handleUpdateMatchMode(selectedKeywordRule.id, 2)">精准匹配</button>
                       </div>
                     </div>
-                    <div class="ar__kw-detail-sub">匹配此关键词时随机回复以下内容</div>
+                    <div class="ar__kw-detail-sub">按优先级选择规则并稳定使用第一条有效内容；冲突规则会被记录但不会重复回复</div>
                     <div v-if="selectedKeywordRule.contents?.length" class="ar__kw-replies">
                       <div v-for="(c, i) in selectedKeywordRule.contents" :key="c.id" class="ar__kw-reply">
                         <div class="ar__kw-reply-top"><span class="ar__kw-reply-num">#{{ i + 1 }}</span><button class="ar__kw-reply-del" @click="handleDeleteContent(c.id, selectedKeywordRule!.id)">删除</button></div>
@@ -653,18 +655,47 @@ onMounted(() => {
           <!-- Edit Keyword Dialog -->
           <Teleport to="body">
             <div v-if="editKeywordDialogVisible" class="ar__dialog-overlay" @click.self="editKeywordDialogVisible = false">
-              <div class="ar__dialog">
-                <div class="ar__dialog-header">编辑关键词</div>
+              <div class="ar__dialog ar__dialog--rule-version">
+                <div class="ar__dialog-header">编辑关键词规则 · 保存后生成新版本</div>
                 <div class="ar__dialog-body">
                   <input type="text" v-model="editKeywordName" class="ar__dialog-input" placeholder="输入关键词" @keydown.enter="handleSaveEditKeyword" />
+                  <div class="ar__rule-grid">
+                    <label>匹配方式
+                      <select v-model="editKeywordMatchType" class="ar__dialog-input">
+                        <option value="EXACT">精准匹配</option>
+                        <option value="CONTAINS">包含匹配</option>
+                        <option value="REGEX">正则表达式</option>
+                      </select>
+                    </label>
+                    <label>优先级
+                      <input v-model.number="editKeywordPriority" type="number" min="-1000" max="1000" class="ar__dialog-input">
+                    </label>
+                    <label>生效时间
+                      <input v-model="editKeywordEffectiveTime" type="datetime-local" class="ar__dialog-input">
+                    </label>
+                    <label>失效时间（可选）
+                      <input v-model="editKeywordExpiresTime" type="datetime-local" class="ar__dialog-input">
+                    </label>
+                  </div>
+                  <label class="ar__rule-enabled"><input v-model="editKeywordEnabled" type="checkbox"> 启用此版本</label>
                   <label class="ar__dialog-account-label">适用账号（可多选）</label>
                   <select v-model="editKeywordAccountIds" class="ar__dialog-input" multiple :size="Math.min(accounts.length, 5)">
                     <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
                   </select>
                   <small>选择多个账号后，该关键词模板会在这些账号已开启关键词回复的商品上共享。</small>
+                  <div class="ar__version-history">
+                    <strong>不可变版本历史</strong>
+                    <span v-if="keywordVersionsLoading">正在读取…</span>
+                    <div v-for="version in keywordRuleVersions" :key="version.id" class="ar__version-row">
+                      <span>V{{ version.versionNo }}</span>
+                      <span>{{ version.matchType }} · 优先级 {{ version.priority }} · {{ version.enabled ? '启用' : '停用' }}</span>
+                      <time>{{ formatTime(version.createdTime) }}</time>
+                    </div>
+                    <span v-if="!keywordVersionsLoading && !keywordRuleVersions.length">首次保存后将在这里保留版本快照</span>
+                  </div>
                 </div>
                 <div class="ar__dialog-actions">
-                  <button class="ar__dialog-btn ar__dialog-btn--danger" @click="handleDeleteFromEditDialog">删除</button>
+                  <button class="ar__dialog-btn ar__dialog-btn--danger" @click="handleDeleteFromEditDialog">停用并保留历史</button>
                   <button class="ar__dialog-btn ar__dialog-btn--cancel" @click="editKeywordDialogVisible = false">取消</button>
                   <button class="ar__dialog-btn ar__dialog-btn--confirm" @click="handleSaveEditKeyword" :disabled="!editKeywordName.trim() || !editKeywordAccountIds.length">保存</button>
                 </div>
@@ -723,7 +754,7 @@ onMounted(() => {
               @click="rightTab = 'chat'"
             >
               <IconRobot />
-              AI回答测试
+              策略测试
             </button>
           </div>
 
@@ -974,8 +1005,28 @@ onMounted(() => {
               <!-- Chat empty -->
               <div v-if="chatMessages.length === 0" class="ar__chat-empty">
                 <IconRobot />
-                <span class="ar__chat-empty-text">AI 对话</span>
-                <span class="ar__chat-empty-hint">基于商品知识库回答问题，输入消息开始对话</span>
+                <span class="ar__chat-empty-text">回复策略测试台</span>
+                <span class="ar__chat-empty-hint">演练关键词、知识与转人工决策；不调用 AI，不向买家发送</span>
+              </div>
+
+              <div v-if="replyPolicyResult" class="ar__policy-evidence">
+                <header>
+                  <strong>本次演练证据</strong>
+                  <span>平台写入 0 · AI 调用 0 · 买家发送 0</span>
+                </header>
+                <dl>
+                  <dt>选中策略</dt><dd>{{ replyPolicyResult.selectedStrategy }}</dd>
+                  <dt>规则 / 知识版本</dt><dd>{{ replyPolicyResult.selectedRuleId ? `规则 #${replyPolicyResult.selectedRuleId}` : '-' }} · {{ replyPolicyResult.knowledgeVersionNo ? `知识 V${replyPolicyResult.knowledgeVersionNo}` : '-' }}</dd>
+                  <dt>安全结论</dt><dd>{{ replyPolicyResult.safetyVerdict }}</dd>
+                  <dt>正式链路</dt><dd>{{ replyPolicyResult.productionWouldSend ? '会继续经过发送前门禁' : '不会自动发送，将转人工或停止' }}</dd>
+                  <dt>请求 ID</dt><dd>{{ replyPolicyResult.requestId }}</dd>
+                </dl>
+                <ol>
+                  <li v-for="step in replyPolicyResult.decisionTrace" :key="`${step.step}-${step.outcome}`">
+                    <strong>{{ step.step }} · {{ step.outcome }}</strong><span>{{ step.reason }}</span>
+                  </li>
+                </ol>
+                <small>{{ replyPolicyResult.dataNotice }}</small>
               </div>
 
               <!-- Chat input -->
@@ -983,7 +1034,7 @@ onMounted(() => {
                 <textarea
                   v-model="chatInput"
                   class="ar__chat-input"
-                  placeholder="输入消息..."
+                  placeholder="输入买家问题，执行无发送策略演练…"
                   rows="1"
                   :disabled="chatSending"
                   @keydown="handleChatKeydown"

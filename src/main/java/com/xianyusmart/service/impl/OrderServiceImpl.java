@@ -429,11 +429,14 @@ public class OrderServiceImpl implements OrderService {
             Map<String, Object> module = (Map<String, Object>) moduleObj;
 
             String buyerUserName = null;
+            String buyerUserId = null;
             Object merchantBuyerVO = module.get("merchantBuyerVO");
             if (merchantBuyerVO instanceof Map) {
                 Map<String, Object> buyer = (Map<String, Object>) merchantBuyerVO;
                 Object userNick = buyer.get("userNick");
                 if (userNick instanceof String) buyerUserName = (String) userNick;
+                Object userId = buyer.get("userId");
+                if (userId != null) buyerUserId = String.valueOf(userId);
             }
 
             String orderCreateTime = null;
@@ -473,7 +476,8 @@ public class OrderServiceImpl implements OrderService {
                 }
             }
 
-            orderMapper.updateOrderDetail(order.getId(), buyerUserName, orderCreateTime, paySuccessTime, consignTime, null, null, goodsTitle, totalPrice, buyNum);
+            orderMapper.updateOrderDetail(order.getId(), buyerUserId, buyerUserName, orderCreateTime,
+                    paySuccessTime, consignTime, null, null, goodsTitle, totalPrice, buyNum);
             log.info("【账号{}】从API更新订单详情成功: orderId={}", accountId, orderId);
         } catch (Exception e) {
             log.warn("【账号{}】更新订单详情失败: orderId={}", accountId, orderId, e);

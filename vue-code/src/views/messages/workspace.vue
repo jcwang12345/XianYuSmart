@@ -6,10 +6,13 @@ import {
   getContextMessages,
   getConversationProfiles,
   getAiHandoffs,
+  getWorkspaceConversation,
   getWorkspaceConversations,
   claimAiHandoff,
   markWorkspaceConversationRead,
   resolveAiHandoff,
+  resolveMessageResolution,
+  previewMessageResolution,
   sendWorkspaceImage,
   sendWorkspaceText,
   takeoverWorkspaceConversation,
@@ -18,7 +21,9 @@ import {
   type AiHandoffTask,
   type ChatMessage,
   type ConversationProfile,
-  type WorkspaceConversation
+  type MessageSendAttempt,
+  type WorkspaceConversation,
+  type WorkspaceConversationDetail
 } from '@/api/message'
 import { newRequestId } from '@/api/matrix'
 import { getKeywordReplyRules } from '@/api/keywordReply'
@@ -84,15 +89,24 @@ const notificationError = ref('')
 const selectedNotificationId = ref('')
 const acknowledgingNotification = ref('')
 const workspaceRecord = ref<any>(null)
+const workspaceDetail = ref<WorkspaceConversationDetail | null>(null)
 const workspaceSaving = ref(false)
 const workspaceError = ref('')
 const contextExpanded = ref(false)
 const workspaceForm = reactive({ pinned: false, keywordFlag: 'NONE', customerNote: '', blacklisted: false })
+const resolutionForm = reactive<{ resolution: 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT'; note: string; verifiedMessageId: string }>({
+  resolution: 'CONFIRMED_SENT', note: '', verifiedMessageId: ''
+})
+const resolutionPreview = ref<Record<string, any> | null>(null)
+const resolutionRequestId = ref('')
+const resolutionPreviewKey = ref('')
+const resolutionBusy = ref(false)
 const workspaceInboxRecords = ref<WorkspaceConversation[]>([])
 const workspaceInboxLoaded = ref(false)
 const workspaceInboxLoading = ref(false)
 const workspaceInboxError = ref('')
 let workspaceInboxRevision = 0
+let workspaceRecordRevision = 0
 const conversationFilters = reactive({ unreadOnly: false, pinnedOnly: false, keywordFlag: 'ALL' })
 const handoffs = ref<AiHandoffTask[]>([])
 const handoffLoading = ref(false)
@@ -186,6 +200,15 @@ const pendingNotificationCount = computed(() => operationExceptions.value.filter
 const selectedHandoff = computed(() =>
   handoffs.value.find(item => item.id === selectedHandoffId.value) || handoffs.value[0]
 )
+const uncertainSendAttempts = computed<MessageSendAttempt[]>(() => (workspaceDetail.value?.sendAttempts || [])
+  .filter(item => item.outcomeState === 'UNKNOWN' && item.resolutionStatus === 'PENDING_VERIFICATION'))
+const selectedUncertainAttempt = computed(() => uncertainSendAttempts.value[0] || null)
+const resolutionDraftKey = () => JSON.stringify({
+  requestId: selectedUncertainAttempt.value?.requestId,
+  resolution: resolutionForm.resolution,
+  note: resolutionForm.note.trim(),
+  verifiedMessageId: resolutionForm.verifiedMessageId.trim()
+})
 
 const handoffPriorityLabel: Record<AiHandoffTask['priority'], string> = {
   URGENT: '紧急', HIGH: '高', NORMAL: '普通', LOW: '低'
@@ -283,22 +306,86 @@ const loadWorkspaceInbox = async (silent = false) => {
 }
 
 const loadWorkspaceRecord = async () => {
+  const revision = ++workspaceRecordRevision
   workspaceRecord.value = null
+  workspaceDetail.value = null
+  resolutionPreview.value = null
+  resolutionRequestId.value = ''
   workspaceError.value = ''
   if (!selectedAccountId.value || !selected.value) return
+  const accountId = selectedAccountId.value
+  const sessionId = selected.value.sid
   try {
-    const response = await getWorkspaceConversations({ status: 'ALL', accountId: selectedAccountId.value, search: selected.value.sid, limit: 50 })
-    const record = (response.data?.records || []).find(item => item.sessionId === selected.value?.sid)
+    const response = await getWorkspaceConversations({ status: 'ALL', accountId, search: sessionId, limit: 50 })
+    if (revision !== workspaceRecordRevision || selectedAccountId.value !== accountId || selected.value?.sid !== sessionId) return
+    const record = (response.data?.records || []).find(item => item.sessionId === sessionId)
     workspaceRecord.value = record || null
     workspaceForm.pinned = Boolean(record?.pinned)
     workspaceForm.keywordFlag = record?.keywordFlag || 'NONE'
     workspaceForm.customerNote = record?.customerNote || ''
     workspaceForm.blacklisted = Boolean(record?.customerBlacklisted)
-    if (record?.unreadCount) await markWorkspaceConversationRead(selectedAccountId.value, selected.value.sid)
+    // 原始消息同步可能早于客服工作台投影。没有投影时不请求详情，
+    // 避免正常的时间差被误报成全局“会话不存在”。
+    if (!record) return
+    const detailResponse = await getWorkspaceConversation(accountId, sessionId, 100, 0)
+    if (revision !== workspaceRecordRevision || selectedAccountId.value !== accountId || selected.value?.sid !== sessionId) return
+    workspaceDetail.value = (detailResponse.data || null) as WorkspaceConversationDetail | null
+    if (record?.unreadCount) await markWorkspaceConversationRead(accountId, sessionId)
   } catch (error: any) {
+    if (revision !== workspaceRecordRevision || selectedAccountId.value !== accountId || selected.value?.sid !== sessionId) return
     workspaceRecord.value = null
     workspaceError.value = error?.message || '会话运营信息读取失败'
   }
+}
+
+const previewSendResolution = async () => {
+  const attempt = selectedUncertainAttempt.value
+  if (!selectedAccountId.value || !attempt) return
+  if (!resolutionForm.note.trim()) return showWarning('请填写核对依据和处理说明')
+  if (resolutionForm.resolution === 'CONFIRMED_SENT' && !resolutionForm.verifiedMessageId.trim()) {
+    return showWarning('确认已发送时，请填写平台消息 ID 或截图证据编号')
+  }
+  resolutionBusy.value = true
+  try {
+    resolutionRequestId.value = newRequestId('message-resolution')
+    const response = await previewMessageResolution(attempt.requestId, {
+      accountId: selectedAccountId.value,
+      resolution: resolutionForm.resolution,
+      note: resolutionForm.note.trim(),
+      verifiedMessageId: resolutionForm.verifiedMessageId.trim() || undefined,
+      requestId: resolutionRequestId.value
+    })
+    resolutionPreview.value = response.data || null
+    resolutionPreviewKey.value = resolutionDraftKey()
+  } catch (error: any) {
+    resolutionPreview.value = null
+    if (!error?.messageShown) showError(error?.message || '发送结果核对预检失败')
+  } finally { resolutionBusy.value = false }
+}
+
+const executeSendResolution = async () => {
+  const attempt = selectedUncertainAttempt.value
+  if (!selectedAccountId.value || !attempt || !resolutionPreview.value || !resolutionRequestId.value) return
+  if (resolutionPreviewKey.value !== resolutionDraftKey()) return showWarning('核对内容已变化，请重新预检')
+  const confirmed = window.confirm(`${resolutionPreview.value.confirmation || '确认提交核对结果？'}\n\n该操作不会重新发送消息。`)
+  if (!confirmed) return
+  resolutionBusy.value = true
+  try {
+    await resolveMessageResolution(attempt.requestId, {
+      accountId: selectedAccountId.value,
+      resolution: resolutionForm.resolution,
+      note: resolutionForm.note.trim(),
+      verifiedMessageId: resolutionForm.verifiedMessageId.trim() || undefined,
+      requestId: resolutionRequestId.value
+    })
+    showSuccess('核对结果已记录；系统没有重新发送消息')
+    resolutionForm.note = ''
+    resolutionForm.verifiedMessageId = ''
+    resolutionPreview.value = null
+    await Promise.all([loadWorkspaceRecord(), loadHandoffs(true)])
+  } catch (error: any) {
+    if (!error?.messageShown) showError(error?.message || '提交核对结果失败')
+  } finally { resolutionBusy.value = false }
 }
 
 const takeoverCurrent = async () => {
@@ -422,6 +509,7 @@ const sendCurrentMessage = async () => {
     imageUrls.value = ''
     showImageUploader.value = false
     await loadConversationContext(false, false)
+    if (outcomeUnknown) await Promise.all([loadWorkspaceRecord(), loadHandoffs(true)])
     if (!outcomeUnknown) showSuccess('平台已确认消息发送成功')
   } catch (error: any) {
     showError(error?.message || '消息发送失败')
@@ -621,6 +709,13 @@ const backToConversationList = () => {
 const backToConversation = () => {
   contextExpanded.value = false
   mobileStage.value = 'conversation'
+}
+
+const focusSendReceiptReview = async () => {
+  contextExpanded.value = true
+  mobileStage.value = 'context'
+  await nextTick()
+  document.getElementById('send-receipt-review')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 watch(conversations, value => {
@@ -845,6 +940,9 @@ onBeforeUnmount(() => {
             <button class="workbench__btn" :disabled="platformSyncing" @click="loadConversationContext(true)">
               {{ platformSyncing ? '同步历史中' : '同步完整历史' }}
             </button>
+            <button v-if="selectedUncertainAttempt" class="workbench__btn chat__mobile-risk" @click="focusSendReceiptReview">
+              发送待核对
+            </button>
             <button class="workbench__btn chat__context-toggle" :aria-expanded="contextExpanded" aria-controls="conversation-context" @click="openMobileContext">
               会话资料
             </button>
@@ -882,6 +980,9 @@ onBeforeUnmount(() => {
       <aside id="conversation-context" class="workbench__card chat__context" :class="{ 'chat__context--open': contextExpanded }">
         <div class="chat__context-mobile-header"><button class="workbench__btn" @click="backToConversation">返回会话</button><strong>买家与商品资料</strong></div>
         <template v-if="selected">
+          <button v-if="selectedUncertainAttempt" class="chat__context-risk" @click="focusSendReceiptReview">
+            <strong>发送结果待核对</strong><span>先核对，禁止重发 →</span>
+          </button>
           <section>
             <h2>相关商品</h2>
             <img v-if="imageAvailable(selected.goodsCover)" class="chat__goods-cover" :src="selected.goodsCover" alt="" @error="markImageError(selected.goodsCover)">
@@ -908,6 +1009,41 @@ onBeforeUnmount(() => {
             <label class="chat__check chat__check--danger"><input v-model="workspaceForm.blacklisted" type="checkbox"><span>加入黑名单并停止自动化</span></label>
             <button class="workbench__btn" :disabled="workspaceSaving" @click="saveWorkspaceSettings">保存会话设置</button>
             <small v-if="workspaceRecord">未读 {{ workspaceRecord.unreadCount || 0 }} · 历史 {{ workspaceRecord.historyCoverageStatus || '未同步' }} · 接管 {{ workspaceRecord.manualTakeoverState || '自动' }}</small>
+          </section>
+          <section v-if="selectedUncertainAttempt" id="send-receipt-review" class="chat__receipt-review">
+            <div class="chat__receipt-title">
+              <h2>发送结果待核对</h2>
+              <span>禁止重复发送</span>
+            </div>
+            <p>网络中断后平台回执未知。请先在当前会话中确认消息是否出现，再记录结果。</p>
+            <dl>
+              <dt>原请求 ID</dt><dd>{{ selectedUncertainAttempt.requestId }}</dd>
+              <dt>消息摘要</dt><dd>{{ selectedUncertainAttempt.contentExcerpt || '图片消息' }}</dd>
+              <dt>事件 ID</dt><dd>{{ selectedUncertainAttempt.eventId || '未返回' }}</dd>
+              <dt>尝试令牌</dt><dd>{{ selectedUncertainAttempt.attemptToken || '未返回' }}</dd>
+            </dl>
+            <label>核对结果
+              <select v-model="resolutionForm.resolution" class="workbench__select" @change="resolutionPreview = null">
+                <option value="CONFIRMED_SENT">已在平台会话中看到</option>
+                <option value="CONFIRMED_NOT_SENT">确认平台没有收到</option>
+              </select>
+            </label>
+            <label v-if="resolutionForm.resolution === 'CONFIRMED_SENT'">平台消息 ID / 证据编号
+              <input v-model="resolutionForm.verifiedMessageId" class="workbench__input" maxlength="200" placeholder="必填，可填写平台消息 ID 或截图编号" @input="resolutionPreview = null">
+            </label>
+            <label>核对说明
+              <textarea v-model="resolutionForm.note" class="workbench__textarea" maxlength="1000" placeholder="记录核对时间、证据和处理说明" @input="resolutionPreview = null"></textarea>
+            </label>
+            <div v-if="resolutionPreview" class="chat__receipt-preview" role="status">
+              <strong>预检通过，不会触发发送</strong>
+              <span>{{ resolutionPreview.stateChange }}</span>
+              <p>{{ resolutionPreview.confirmation }}</p>
+            </div>
+            <div class="chat__receipt-actions">
+              <button class="workbench__btn" :disabled="resolutionBusy" @click="previewSendResolution">核对预检</button>
+              <button class="workbench__btn workbench__btn--primary" :disabled="resolutionBusy || !resolutionPreview" @click="executeSendResolution">确认记录结果</button>
+            </div>
+            <small v-if="uncertainSendAttempts.length > 1">本会话还有 {{ uncertainSendAttempts.length - 1 }} 条结果未知记录；请逐条处理，完成后将自动显示下一条。</small>
           </section>
           <section>
             <h2>关联信息</h2>
@@ -1089,6 +1225,19 @@ onBeforeUnmount(() => {
 <style scoped>
 .chat { height: 100%; overflow: hidden; }
 .chat__permission-state { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 12px 14px; border: 1px solid #fedf89; border-radius: 10px; color: #7a2e0e; background: #fffaeb; }
+.chat__receipt-review { display: grid; gap: 9px; border: 1px solid #fdb022 !important; background: #fffaeb; }
+.chat__context-risk { position: sticky; top: 0; z-index: 4; display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid #fdb022; color: #912018; background: #fffaeb; text-align: left; cursor: pointer; }
+.chat__context-risk span { font-size: 11px; }
+.chat__receipt-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chat__receipt-title h2 { margin: 0; }
+.chat__receipt-title span { padding: 3px 7px; border-radius: 999px; color: #b42318; background: #fee4e2; font-size: 11px; font-weight: 700; }
+.chat__receipt-review > p { margin: 0; color: #854a0e; font-size: 12px; line-height: 1.55; }
+.chat__receipt-review label { display: grid; gap: 5px; color: #475467; font-size: 12px; }
+.chat__receipt-review dl { margin: 0; }
+.chat__receipt-review dd { overflow-wrap: anywhere; }
+.chat__receipt-preview { display: grid; gap: 3px; padding: 9px; border-radius: 8px; color: #175cd3; background: #eff8ff; font-size: 12px; }
+.chat__receipt-preview p { margin: 0; color: #344054; }
+.chat__receipt-actions { display: flex; gap: 8px; }
 .chat__permission-state span { flex: 1; color: #854a0e; font-size: 13px; }
 .chat__account { width: 180px; }
 .chat__inbox-tabs { display: flex; height: 44px; gap: 24px; padding: 0 4px; border-bottom: 1px solid #eaecf0; }
@@ -1126,6 +1275,7 @@ onBeforeUnmount(() => {
 .chat__main-header span { overflow: hidden; color: #667085; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat__main-header .chat__sla { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: #b42318; background: #fee4e2; font-size: 11px; }
 .chat__context-toggle { display: none; }
+.chat__mobile-risk { display: none; }
 .chat__mobile-back, .chat__context-mobile-header { display: none; }
 .chat__messages { display: flex; flex: 1; overflow-y: auto; flex-direction: column; gap: 10px; padding: 18px; }
 .chat__loading, .chat__system { align-self: center; padding: 5px 10px; border-radius: 12px; color: #667085; background: #f2f4f7; font-size: 11px; }
@@ -1249,7 +1399,8 @@ onBeforeUnmount(() => {
   .chat__main-header > div:nth-child(2) { min-width: calc(100% - 52px); }
   .chat__message { max-width: 88%; }
   .chat__main-header .workbench__btn { padding: 6px 8px; font-size: 11px; }
-  .chat__mobile-back, .chat__context-toggle { display: inline-flex; }
+  .chat__mobile-back, .chat__context-toggle, .chat__mobile-risk { display: inline-flex; }
+  .chat__main-header .chat__mobile-risk { border-color: #fda29b; color: #b42318; background: #fef3f2; font-weight: 700; }
   .chat__context-mobile-header { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #eaecf0; background: #fff; }
 }
 </style>

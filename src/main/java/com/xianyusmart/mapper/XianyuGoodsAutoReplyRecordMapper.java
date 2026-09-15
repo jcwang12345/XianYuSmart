@@ -53,6 +53,12 @@ public interface XianyuGoodsAutoReplyRecordMapper {
                                @Param("knowledgeVersionId") Long knowledgeVersionId,
                                @Param("knowledgeVersionNo") Integer knowledgeVersionNo);
 
+    @Update("UPDATE xianyu_goods_auto_reply_record SET selected_rule_id=#{ruleId},selected_content_id=#{contentId}," +
+            "decision_trace_json=#{traceJson},safety_verdict=#{safetyVerdict} WHERE id=#{id}")
+    int updateDecisionTrace(@Param("id") Long id,@Param("ruleId") Long ruleId,
+                            @Param("contentId") Long contentId,@Param("traceJson") String traceJson,
+                            @Param("safetyVerdict") String safetyVerdict);
+
     @Update("UPDATE xianyu_goods_auto_reply_record SET state=IF(external_attempt_started=1,3,-2)," +
             "lease_owner=NULL,lease_expire_time=NULL,next_retry_time=NULL,last_error_code=#{reasonCode}," +
             "last_error_message=#{reasonDetail} WHERE id=#{id} AND state<>1")

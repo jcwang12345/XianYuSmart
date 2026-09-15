@@ -45,6 +45,9 @@ public class AIReplyStrategy implements ReplyStrategy {
     @Autowired
     private GoodsKnowledgeService goodsKnowledgeService;
 
+    @Autowired
+    private ReplyFactSafetyPolicy factSafetyPolicy;
+
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
         long startedAt = System.nanoTime();
@@ -56,6 +59,12 @@ public class AIReplyStrategy implements ReplyStrategy {
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
             GoodsKnowledgeService.ActiveKnowledge knowledge = goodsKnowledgeService.effective(accountId, xyGoodsId);
             String fixedMaterial = knowledge == null ? null : knowledge.content();
+            ReplyFactSafetyPolicy.Decision factDecision = factSafetyPolicy.evaluate(messageList, knowledge != null);
+            if (!factDecision.allowed()) {
+                ReplyResult handoff = ReplyResult.handoff(factDecision.reasonCode(), factDecision.reasonDetail());
+                handoff.setProcessingDurationMs((System.nanoTime() - startedAt) / 1_000_000L);
+                return handoff;
+            }
 
             XianyuGoodsInfo goodsInfo = goodsInfoMapper.selectOne(
                     new LambdaQueryWrapper<XianyuGoodsInfo>()
@@ -76,7 +85,7 @@ public class AIReplyStrategy implements ReplyStrategy {
                     .filter(java.util.Objects::nonNull).max(Double::compareTo).orElse(null);
             String model = null;
             try { model = chatClientManager.getStatusInfo().getModel(); } catch (Exception ignored) { }
-            if (safeReply != null) {
+            if (safeReply != null && (confidence == null || confidence >= 0.55d)) {
                 ReplyResult replyResult = ReplyResult.of(Collections.singletonList(
                         ReplyResult.ReplyItem.text(safeReply, REPLY_TYPE_AI)));
                 replyResult.setAiIntent(prepared.intent().name());
@@ -93,8 +102,10 @@ public class AIReplyStrategy implements ReplyStrategy {
                 return replyResult;
             }
             ReplyResult handoff = ReplyResult.handoff(
-                    chatClientManager.isAvailable() ? "AI_NO_SAFE_ANSWER" : "AI_UNAVAILABLE",
-                    chatClientManager.isAvailable() ? "AI 返回为空或被安全门禁拦截" : "AI 服务未启用或配置不可用");
+                    confidence != null && confidence < 0.55d ? "LOW_CONFIDENCE"
+                            : chatClientManager.isAvailable() ? "AI_NO_SAFE_ANSWER" : "AI_UNAVAILABLE",
+                    confidence != null && confidence < 0.55d ? "知识命中置信度低于安全阈值"
+                            : chatClientManager.isAvailable() ? "AI 返回为空或被安全门禁拦截" : "AI 服务未启用或配置不可用");
             handoff.setConfidenceScore(confidence);
             handoff.setModelName(model);
             handoff.setProcessingDurationMs((System.nanoTime() - startedAt) / 1_000_000L);

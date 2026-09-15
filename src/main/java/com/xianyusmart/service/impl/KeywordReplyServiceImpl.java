@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 @Slf4j
 @Service
@@ -66,6 +68,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         rule.setSharingScope("GOODS");
         rule.setKeyword(keyword);
         rule.setMatchMode(1);
+        rule.setMatchType("CONTAINS");
+        rule.setPriority(100);
+        rule.setEnabled(1);
+        rule.setVersionNo(1);
         rule.setIsFallback(0);
         ruleMapper.insert(rule);
         replaceAccounts(rule, List.of(accountId));
@@ -78,6 +84,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         bo.setXianyuAccountIds(List.of(accountId));
         bo.setKeyword(keyword);
         bo.setMatchMode(1);
+        bo.setMatchType("CONTAINS");
+        bo.setPriority(100);
+        bo.setEnabled(1);
+        bo.setVersionNo(1);
         bo.setIsFallback(0);
         bo.setContents(Collections.emptyList());
         return bo;
@@ -106,6 +116,7 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
             throw new RuntimeException("规则不存在: id=" + ruleId);
         }
         rule.setMatchMode(matchMode);
+        rule.setMatchType(matchMode != null && matchMode == 2 ? "EXACT" : matchMode != null && matchMode == 3 ? "REGEX" : "CONTAINS");
         ruleMapper.updateById(rule);
     }
 
@@ -144,6 +155,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         rule.setSharingScope("GOODS");
         rule.setKeyword("__fallback__");
         rule.setMatchMode(1);
+        rule.setMatchType("CONTAINS");
+        rule.setPriority(-1000);
+        rule.setEnabled(1);
+        rule.setVersionNo(1);
         rule.setIsFallback(1);
         ruleMapper.insert(rule);
         replaceAccounts(rule, List.of(accountId));
@@ -156,6 +171,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         bo.setXianyuAccountIds(List.of(accountId));
         bo.setKeyword("__fallback__");
         bo.setMatchMode(1);
+        bo.setMatchType("CONTAINS");
+        bo.setPriority(-1000);
+        bo.setEnabled(1);
+        bo.setVersionNo(1);
         bo.setIsFallback(1);
         bo.setContents(Collections.emptyList());
         return bo;
@@ -200,25 +219,17 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
         }
 
         String msg = message.trim();
-
-        List<XianyuKeywordReplyRule> exactMatches = ruleMapper.matchExact(accountId, xyGoodsId, msg);
-        List<XianyuKeywordReplyRule> fuzzyMatches = ruleMapper.matchFuzzy(accountId, xyGoodsId, msg);
-
-        Set<Long> matchedIds = new HashSet<>();
-        List<XianyuKeywordReplyRule> allMatches = new ArrayList<>();
-        for (XianyuKeywordReplyRule r : exactMatches) {
-            if (matchedIds.add(r.getId())) {
-                allMatches.add(r);
-            }
-        }
-        for (XianyuKeywordReplyRule r : fuzzyMatches) {
-            if (matchedIds.add(r.getId())) {
-                allMatches.add(r);
-            }
-        }
+        List<XianyuKeywordReplyRule> effective = ruleMapper.selectEffective(accountId, xyGoodsId);
+        List<XianyuKeywordReplyRule> allMatches = effective == null ? new ArrayList<>() : effective.stream()
+                .filter(rule -> !Integer.valueOf(1).equals(rule.getIsFallback()))
+                .filter(rule -> matches(rule, msg))
+                .sorted(Comparator.comparingInt(this::priority).reversed()
+                        .thenComparing(Comparator.comparingInt(this::specificity).reversed())
+                        .thenComparing(XianyuKeywordReplyRule::getId))
+                .toList();
 
         if (!allMatches.isEmpty()) {
-            Map<Long, List<XianyuKeywordReplyContent>> contentMap = loadContents(allMatches);
+            Map<Long, List<XianyuKeywordReplyContent>> contentMap = loadEffectiveContents(allMatches);
             return allMatches.stream()
                     .map(rule -> toRuleBO(rule, contentMap.getOrDefault(rule.getId(), Collections.emptyList())))
                     .collect(Collectors.toList());
@@ -226,7 +237,7 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
 
         XianyuKeywordReplyRule fallback = ruleMapper.selectFallback(accountId, xyGoodsId);
         if (fallback != null) {
-            List<XianyuKeywordReplyContent> contents = contentMapper.selectByRuleId(fallback.getId());
+            List<XianyuKeywordReplyContent> contents = contentMapper.selectEffectiveByRuleIds(List.of(fallback.getId()));
             if (contents != null && !contents.isEmpty()) {
                 return Collections.singletonList(toRuleBO(fallback, contents));
             }
@@ -260,6 +271,12 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
                 ? List.of(rule.getXianyuAccountId()) : accountIds);
         bo.setKeyword(rule.getKeyword());
         bo.setMatchMode(rule.getMatchMode());
+        bo.setMatchType(matchType(rule));
+        bo.setPriority(priority(rule));
+        bo.setEnabled(rule.getEnabled() == null ? 1 : rule.getEnabled());
+        bo.setVersionNo(rule.getVersionNo() == null ? 1 : rule.getVersionNo());
+        bo.setEffectiveTime(rule.getEffectiveTime());
+        bo.setExpiresTime(rule.getExpiresTime());
         bo.setIsFallback(rule.getIsFallback());
         bo.setContents(contents.stream().map(c -> {
             KeywordReplyRuleBO.KeywordReplyContentBO cbo = new KeywordReplyRuleBO.KeywordReplyContentBO();
@@ -267,6 +284,10 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
             cbo.setRuleId(c.getRuleId());
             cbo.setReplyText(c.getReplyText());
             cbo.setReplyImageUrl(c.getReplyImageUrl());
+            cbo.setVersionNo(c.getVersionNo() == null ? 1 : c.getVersionNo());
+            cbo.setStatus(c.getStatus() == null ? "ACTIVE" : c.getStatus());
+            cbo.setEffectiveTime(c.getEffectiveTime());
+            cbo.setExpiresTime(c.getExpiresTime());
             return cbo;
         }).collect(Collectors.toList()));
         return bo;
@@ -282,6 +303,37 @@ public class KeywordReplyServiceImpl implements KeywordReplyService {
             return Collections.emptyMap();
         }
         return contents.stream().collect(Collectors.groupingBy(XianyuKeywordReplyContent::getRuleId));
+    }
+
+    private Map<Long, List<XianyuKeywordReplyContent>> loadEffectiveContents(List<XianyuKeywordReplyRule> rules) {
+        List<Long> ruleIds = rules.stream().map(XianyuKeywordReplyRule::getId).toList();
+        if (ruleIds.isEmpty()) return Collections.emptyMap();
+        List<XianyuKeywordReplyContent> contents = contentMapper.selectEffectiveByRuleIds(ruleIds);
+        return contents == null || contents.isEmpty() ? Collections.emptyMap()
+                : contents.stream().collect(Collectors.groupingBy(XianyuKeywordReplyContent::getRuleId));
+    }
+
+    private boolean matches(XianyuKeywordReplyRule rule, String message) {
+        String keyword = rule.getKeyword();
+        if (keyword == null || keyword.isBlank()) return false;
+        return switch (matchType(rule)) {
+            case "EXACT" -> message.equals(keyword);
+            case "REGEX" -> {
+                try { yield Pattern.compile(keyword).matcher(message).find(); }
+                catch (PatternSyntaxException ignored) { yield false; }
+            }
+            default -> message.contains(keyword);
+        };
+    }
+
+    private String matchType(XianyuKeywordReplyRule rule) {
+        if (rule.getMatchType() != null && !rule.getMatchType().isBlank()) return rule.getMatchType().toUpperCase(Locale.ROOT);
+        return Integer.valueOf(2).equals(rule.getMatchMode()) ? "EXACT"
+                : Integer.valueOf(3).equals(rule.getMatchMode()) ? "REGEX" : "CONTAINS";
+    }
+    private int priority(XianyuKeywordReplyRule rule) { return rule.getPriority() == null ? 100 : rule.getPriority(); }
+    private int specificity(XianyuKeywordReplyRule rule) {
+        return switch (matchType(rule)) { case "EXACT" -> 3; case "CONTAINS" -> 2; default -> 1; };
     }
 
     private void replaceAccounts(XianyuKeywordReplyRule rule, List<Long> accountIds) {

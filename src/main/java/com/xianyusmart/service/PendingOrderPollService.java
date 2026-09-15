@@ -29,6 +29,9 @@ public class PendingOrderPollService {
     @Autowired
     private DeliveryTaskService deliveryTaskService;
 
+    @Autowired
+    private BuyerProfileService buyerProfileService;
+
     @SuppressWarnings("unchecked")
     public int deliverPendingOrders(Long accountId) {
         List<Map<String, Object>> pendingOrders = orderService.queryPendingOrders(accountId);
@@ -71,6 +74,7 @@ public class PendingOrderPollService {
                 }
 
                 XianyuGoodsOrder record = buildOrderRecord(accountId, order);
+                projectBuyer(record);
                 String itemId = (String) commonData.get("itemId");
                 if (isAutoDeliveryEnabled(accountId, itemId)) {
                     deliveryTaskService.discover(record, DeliveryChannel.HTTP_API);
@@ -90,6 +94,7 @@ public class PendingOrderPollService {
 
     private XianyuGoodsOrder queueOrder(Long accountId, Map<String, Object> order) {
         XianyuGoodsOrder record = buildOrderRecord(accountId, order);
+        projectBuyer(record);
         if (!isAutoDeliveryEnabled(accountId, record.getXyGoodsId())) {
             return null;
         }
@@ -172,6 +177,12 @@ public class PendingOrderPollService {
         return record;
     }
 
+    private void projectBuyer(XianyuGoodsOrder order) {
+        if (order == null) return;
+        buyerProfileService.touch(order.getXianyuAccountId(), order.getBuyerUserId(),
+                order.getBuyerUserName(), System.currentTimeMillis());
+    }
+
     @SuppressWarnings("unchecked")
     private void enrichFromDetailApi(Long accountId, String orderId, XianyuGoodsOrder existing) {
         try {
@@ -238,7 +249,12 @@ public class PendingOrderPollService {
             }
             if (existing == null) return;
 
-            orderMapper.updateOrderDetail(existing.getId(), buyerUserName, orderCreateTime, paySuccessTime, consignTime, skuName, null, goodsTitle, totalPrice, buyNum);
+            orderMapper.updateOrderDetail(existing.getId(), buyerUserId, buyerUserName, orderCreateTime,
+                    paySuccessTime, consignTime, skuName, null, goodsTitle, totalPrice, buyNum);
+            buyerProfileService.touch(accountId,
+                    buyerUserId == null || buyerUserId.isBlank() ? existing.getBuyerUserId() : buyerUserId,
+                    buyerUserName == null || buyerUserName.isBlank() ? existing.getBuyerUserName() : buyerUserName,
+                    System.currentTimeMillis());
             log.info("【账号{}】从详情API补充订单字段: orderId={}", accountId, orderId);
         } catch (Exception e) {
             log.warn("【账号{}】补充订单详情异常: orderId={}", accountId, orderId, e);

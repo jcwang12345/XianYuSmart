@@ -109,6 +109,8 @@ public class AutoReplyServiceImpl implements AutoReplyService {
         String pnmId = lastMessage.getPnmId();
         Long workingRecordId = existingRecordId;
         String claimToken = null;
+        boolean welcomeClaimed = false;
+        boolean externalSendStarted = false;
         long decisionStartedAt = System.nanoTime();
         
         String buyerMessage = messageList.stream()
@@ -156,6 +158,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             // 3. 解析回复策略
             ReplyStrategy strategy = replyStrategyResolver.resolve(messageList);
             ReplyStrategy.ReplyResult welcomeResult = enhancements.welcome(lastMessage);
+            welcomeClaimed = welcomeResult != null;
             if (strategy == null && welcomeResult == null) {
                 log.info("【账号{}】无可用回复策略: xyGoodsId={}", accountId, xyGoodsId);
                 openHandoff(messageList, workingRecordId, claimToken, "NO_REPLY_STRATEGY",
@@ -194,11 +197,15 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 int insertResult = autoReplyRecordMapper.insert(record);
                 if (insertResult <= 0) {
                     log.info("【账号{}】该消息已处理过，跳过自动回复: sId={}, pnmId={}", accountId, sId, pnmId);
+                    if (welcomeClaimed) enhancements.releaseWelcome(lastMessage);
                     return;
                 }
                 workingRecordId=record.getId();
                 claimToken=java.util.UUID.randomUUID().toString();
-                if(autoReplyRecordMapper.claim(workingRecordId,claimToken,600)!=1) return;
+                if(autoReplyRecordMapper.claim(workingRecordId,claimToken,600)!=1) {
+                    if (welcomeClaimed) enhancements.releaseWelcome(lastMessage);
+                    return;
+                }
             } else {
                 record.setId(existingRecordId);
             }
@@ -220,6 +227,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                         ? replyResult.getHandoffReasonDetail() : "回复策略未产生可安全发送的内容";
                 openHandoff(messageList, record.getId(), claimToken, reasonCode, reasonDetail,
                         replyResult, decisionStartedAt);
+                if (welcomeClaimed) enhancements.releaseWelcome(lastMessage);
                 return;
             }
             
@@ -239,6 +247,8 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                     replyResult.getConfidenceScore(), replyResult.getModelName(),
                     duration(replyResult, decisionStartedAt), null,
                     replyResult.getKnowledgeVersionId(), replyResult.getKnowledgeVersionNo());
+            autoReplyRecordMapper.updateDecisionTrace(record.getId(), replyResult.getSelectedRuleId(),
+                    replyResult.getSelectedContentId(), decisionTrace(replyResult), "SAFE_TO_SEND");
 
             triggerContext.setAiIntent(replyResult.getAiIntent());
             triggerContext.setBargainRound(replyResult.getBargainRound());
@@ -292,6 +302,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             // 8. 发送回复消息
             boolean sendSuccess = true;
             boolean hasReplyContent = false;
+            boolean anyItemSent = false;
             String cid = sId.replace("@goofish", "");
             String toId = lastMessage.getSenderUserId();
             if (toId == null || toId.isBlank() || toId.equals(accountService.getXianyuUserId(accountId))) {
@@ -302,7 +313,11 @@ public class AutoReplyServiceImpl implements AutoReplyService {
             if(account==null || !Integer.valueOf(1).equals(account.getStatus()) || takeoverManager.isTakenOver(accountId,sId)) {
                 autoReplyRecordMapper.finishClaim(record.getId(),claimToken,-2,null,null,null,null);return;
             }
-            if (autoReplyRecordMapper.beginSend(record.getId(),claimToken) != 1) return;
+            if (autoReplyRecordMapper.beginSend(record.getId(),claimToken) != 1) {
+                if (welcomeClaimed) enhancements.releaseWelcome(lastMessage);
+                return;
+            }
+            externalSendStarted = true;
             
             for (ReplyStrategy.ReplyResult.ReplyItem item : replyResult.getItems()) {
                 if (item.getImageUrl() != null && !item.getImageUrl().isEmpty()) {
@@ -312,6 +327,7 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                         sendSuccess = false;
                         log.warn("【账号{}】发送回复图片失败: {}", accountId, item.getImageUrl());
                     } else {
+                        anyItemSent = true;
                         sentMessageSaveService.saveAiImageReply(accountId, cid, toId, item.getImageUrl(), xyGoodsId);
                     }
                 }
@@ -320,6 +336,8 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                     boolean textSent = webSocketService.sendMessageWithResult(accountId, cid, toId, item.getTextContent());
                     if (!textSent) {
                         sendSuccess = false;
+                    } else {
+                        anyItemSent = true;
                     }
                 }
             }
@@ -340,16 +358,27 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 }
             } else {
                 log.error("【账号{}】自动回复发送失败: xyGoodsId={}, sId={}", accountId, xyGoodsId, sId);
-                updateReplyResult(record, -1, allReplyText);
-                openHandoff(messageList, record.getId(), null, "REPLY_PREPARATION_FAILED",
-                        "一条或多条回复内容未取得平台成功回执，请人工核对会话", replyResult, decisionStartedAt);
+                if (anyItemSent) {
+                    autoReplyRecordMapper.markUncertain(record.getId(), "组合回复仅部分取得成功回执，请核对会话，禁止整体重发");
+                    openHandoff(messageList, record.getId(), null, "MESSAGE_OUTCOME_UNKNOWN",
+                            "组合回复仅部分取得成功回执，请核对会话，禁止整体重发", replyResult, decisionStartedAt);
+                } else {
+                    updateReplyResult(record, -1, allReplyText);
+                    openHandoff(messageList, record.getId(), null, "REPLY_PREPARATION_FAILED",
+                            "平台明确未确认任何回复内容发送成功，请人工检查账号连接", replyResult, decisionStartedAt);
+                }
             }
             
         } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+            if (welcomeClaimed) enhancements.finishWelcome(lastMessage,false);
             if(workingRecordId!=null) autoReplyRecordMapper.failClaim(workingRecordId,claimToken,"消息回执未知，请核对聊天");
             openHandoff(messageList, workingRecordId, null, "MESSAGE_OUTCOME_UNKNOWN",
                     "外部发送已开始但回执未知，确认前禁止重复发送", null, decisionStartedAt);
         } catch (Exception e) {
+            if (welcomeClaimed) {
+                if (externalSendStarted) enhancements.finishWelcome(lastMessage,false);
+                else enhancements.releaseWelcome(lastMessage);
+            }
             log.error("【账号{}】执行自动回复异常: xyGoodsId={}, sId={}", accountId, xyGoodsId, sId, e);
             if(workingRecordId!=null) autoReplyRecordMapper.failClaim(workingRecordId,claimToken,"回复执行中断，请检查账号、AI 配置或核对聊天");
             openHandoff(messageList, workingRecordId, null, "AI_UNAVAILABLE",
@@ -429,6 +458,10 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                     model, processingMs, reasonCode,
                     evidence == null ? null : evidence.getKnowledgeVersionId(),
                     evidence == null ? null : evidence.getKnowledgeVersionNo());
+            autoReplyRecordMapper.updateDecisionTrace(resolvedRecordId,
+                    evidence == null ? null : evidence.getSelectedRuleId(),
+                    evidence == null ? null : evidence.getSelectedContentId(),
+                    decisionTrace(evidence, reasonCode, reasonDetail), "HUMAN_REQUIRED");
             String messageIdentity = last.getPnmId() == null || last.getPnmId().isBlank()
                     ? String.valueOf(resolvedRecordId) : last.getPnmId();
             aiHandoffService.open(new AiHandoffService.OpenCommand(
@@ -449,5 +482,30 @@ public class AutoReplyServiceImpl implements AutoReplyService {
     private String configuredModel() {
         try { return dynamicAIChatClientManager.getStatusInfo().getModel(); }
         catch (Exception ignored) { return null; }
+    }
+
+    private String decisionTrace(ReplyStrategy.ReplyResult result) {
+        return decisionTrace(result, null, null);
+    }
+
+    private String decisionTrace(ReplyStrategy.ReplyResult result, String handoffReason, String handoffDetail) {
+        try {
+            java.util.Map<String,Object> trace = new java.util.LinkedHashMap<>();
+            trace.put("priorityOrder", java.util.List.of("BLACKLIST_OR_HANDOFF", "SENSITIVE", "KEYWORD", "ACTIVE_KNOWLEDGE", "AI", "HANDOFF"));
+            trace.put("selectedStrategy", result == null ? "HANDOFF"
+                    : result.getSelectedRuleId() != null ? "KEYWORD"
+                    : result.getKnowledgeVersionId() != null ? "AI_WITH_ACTIVE_KNOWLEDGE" : "AI");
+            trace.put("selectedRuleId", result == null ? null : result.getSelectedRuleId());
+            trace.put("selectedContentId", result == null ? null : result.getSelectedContentId());
+            trace.put("knowledgeVersionId", result == null ? null : result.getKnowledgeVersionId());
+            trace.put("knowledgeVersionNo", result == null ? null : result.getKnowledgeVersionNo());
+            trace.put("matchedRuleIds", result == null || result.getMatchedRules() == null ? java.util.List.of()
+                    : result.getMatchedRules().stream().map(com.xianyusmart.entity.bo.KeywordReplyRuleBO::getId).toList());
+            trace.put("handoffReasonCode", handoffReason);
+            trace.put("handoffReasonDetail", handoffDetail);
+            return objectMapper.writeValueAsString(trace);
+        } catch (Exception e) {
+            return "{}";
+        }
     }
 }

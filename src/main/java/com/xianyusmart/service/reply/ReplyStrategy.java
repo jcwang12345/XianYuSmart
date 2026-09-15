@@ -17,6 +17,8 @@ public interface ReplyStrategy {
         private List<ReplyItem> items = new ArrayList<>();
         private String matchedKeyword;
         private KeywordReplyRuleBO matchedRule;
+        private Long selectedRuleId;
+        private Long selectedContentId;
         private List<KeywordReplyRuleBO> matchedRules = new ArrayList<>();
         private String aiIntent;
         private Integer bargainRound;

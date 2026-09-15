@@ -1831,6 +1831,58 @@
   color: var(--d-text-tertiary);
 }
 
+/* V6: versioned keyword editor and no-send policy evidence */
+.ar__dialog--rule-version { max-width: 680px; max-height: min(88vh, 760px); overflow: auto; }
+.ar__rule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.ar__rule-grid label { display: grid; gap: 6px; color: #475467; font-size: 12px; }
+.ar__rule-enabled { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: #344054; font-size: 13px; }
+.ar__version-history { display: grid; gap: 7px; margin-top: 14px; padding: 12px; border: 1px solid #eaecf0; border-radius: 10px; background: #f9fafb; }
+.ar__version-history > span { color: #667085; font-size: 12px; }
+.ar__version-row { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding-top: 7px; border-top: 1px solid #eaecf0; color: #475467; font-size: 12px; }
+.ar__version-row > span:first-child { color: #9a6700; font-weight: 700; }
+.ar__version-row time { color: #98a2b3; }
+.ar__policy-evidence { display: grid; gap: 10px; margin: 10px 0; padding: 14px; border: 1px solid #fedf89; border-radius: 12px; background: #fffaeb; color: #344054; }
+.ar__policy-evidence header { display: flex; justify-content: space-between; gap: 10px; }
+.ar__policy-evidence header span { color: #067647; font-size: 12px; font-weight: 700; }
+.ar__policy-evidence dl { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 5px 10px; margin: 0; font-size: 12px; }
+.ar__policy-evidence dt { color: #667085; }
+.ar__policy-evidence dd { margin: 0; overflow-wrap: anywhere; }
+.ar__policy-evidence ol { display: grid; gap: 7px; margin: 0; padding-left: 20px; }
+.ar__policy-evidence li { padding-left: 3px; font-size: 12px; }
+.ar__policy-evidence li strong, .ar__policy-evidence li span { display: block; }
+.ar__policy-evidence li span { margin-top: 2px; color: #667085; }
+.ar__policy-evidence small { color: #854a0e; line-height: 1.5; }
+
+@media screen and (max-width: 700px) {
+  .ar__dialog--rule-version { max-height: calc(100dvh - 24px); }
+  .ar__rule-grid { grid-template-columns: 1fr; }
+  .ar__version-row { grid-template-columns: 42px minmax(0, 1fr); }
+  .ar__version-row time { grid-column: 2; }
+  .ar__policy-evidence header { display: grid; }
+  .ar__policy-evidence dl { grid-template-columns: 88px minmax(0, 1fr); }
+}
+
+/* Product Design QA: align the workbench with the system's warm marketplace palette. */
+.ar { --d-accent: #b77900; --d-border: #eaecf0; --d-border-strong: #d0d5dd; --d-surface: #fff; --d-surface-hover: #fffcf0; --d-surface-solid: #fff; --d-shadow-sm: 0 1px 3px rgba(16,24,40,.08); --d-shadow-md: 0 12px 32px rgba(16,24,40,.14); }
+.ar .btn--primary,
+.ar .ar__delay-btn,
+.ar .ar__kw-toolbar-btn,
+.ar .ar__kw-fallback-save,
+.ar .ar__kw-add-reply-btn,
+.ar .ar__chat-send-btn,
+.ar .ar__reply-mode-tab--active,
+.ar .ar__kw-mode-btn--active {
+  border-color: #e9bd26;
+  background: #ffd33d;
+  color: #342600;
+  box-shadow: 0 3px 10px rgba(183,121,0,.18);
+}
+.ar .ar__tab-btn--active { border-color: #e9bd26; background: #fffaeb; color: #8a5800; }
+.ar .ar__goods-icon-item--active { border-color: #d6a300; background: #fffaeb; }
+.ar .ar__chat-msg--user .ar__chat-bubble { background: #9a6700; color: #fff; }
+.ar .ar__config-panel,
+.ar .ar__goods-panel { border-color: #e4e7ec; background: #fff; box-shadow: 0 1px 3px rgba(16,24,40,.06); }
+
 /* --- Records Toggle Row --- */
 .ar__records-toggle-row {
   display: flex;

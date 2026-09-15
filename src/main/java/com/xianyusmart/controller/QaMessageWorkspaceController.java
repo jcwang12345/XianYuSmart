@@ -118,11 +118,16 @@ public class QaMessageWorkspaceController {
             jdbcTemplate.update("""
                     INSERT INTO xianyu_message_send_attempt
                         (tenant_id,xianyu_account_id,session_id,recipient_user_id,xy_goods_id,content_type,
-                         content_sha256,content_excerpt,request_id,idempotency_key,outcome_state,error_message,
+                         content_sha256,content_excerpt,request_id,idempotency_key,request_payload_hash,
+                         attempt_token,event_id,outcome_state,error_message,resolution_status,
                          operator_user_id,operator_username)
-                    VALUES (?,?,?,?,?,'TEXT',REPEAT('0',64),'QA 发送结果未知夹具',?,?, 'UNKNOWN',?, ?,?)
-                    ON DUPLICATE KEY UPDATE outcome_state='UNKNOWN',error_message=VALUES(error_message)
+                    VALUES (?,?,?,?,?,'TEXT',REPEAT('0',64),'QA 发送结果未知夹具',?,?,SHA2(?,256),
+                            ?,?,'UNKNOWN',?,'PENDING_VERIFICATION',?,?)
+                    ON DUPLICATE KEY UPDATE outcome_state='UNKNOWN',error_message=VALUES(error_message),
+                        resolution_status=IF(resolution_request_id IS NULL,'PENDING_VERIFICATION',resolution_status)
                     """, tenantId, accountId, sessionId, buyerId, goodsId, requestId, requestId,
+                    accountId + "|" + sessionId + "|" + buyerId + "|QA_FIXTURE",
+                    "qa-attempt-" + suffix, "QA-MSG-" + suffix,
                     "QA Mock：平台请求超时，未发起真实网络请求", UserContext.getUserId(), UserContext.getUsername());
         }
 
@@ -130,16 +135,18 @@ public class QaMessageWorkspaceController {
                 accountId, sessionId, goodsId, buyerId, replyRecordId, reasonCode, reasonDetail,
                 confidence, model, 88L, "QA_IM:" + tenantId + ":" + accountId + ":" + requestId,
                 requestId));
-        return ResultObject.success(Map.of(
-                "safeFixture", true,
-                "platformNetworkCalls", false,
-                "aiNetworkCalls", false,
-                "scenario", scenario,
-                "accountId", accountId,
-                "sessionId", sessionId,
-                "goodsId", goodsId,
-                "replyRecordId", replyRecordId,
-                "handoffTask", task));
+        Map<String,Object> result = new java.util.LinkedHashMap<>();
+        result.put("safeFixture", true);
+        result.put("platformNetworkCalls", false);
+        result.put("aiNetworkCalls", false);
+        result.put("scenario", scenario);
+        result.put("accountId", accountId);
+        result.put("sessionId", sessionId);
+        result.put("goodsId", goodsId);
+        result.put("replyRecordId", replyRecordId);
+        result.put("handoffTask", task);
+        if ("OUTCOME_UNKNOWN".equals(scenario)) result.put("sendRequestId", requestId);
+        return ResultObject.success(result);
     }
 
     private void requireEnabled() {

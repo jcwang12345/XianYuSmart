@@ -388,7 +388,10 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             log.info("【账号{}】订单SKU: orderId={}, skuId={}, buyNum={}", accountId, orderId, orderSkuId, buyNum);
 
             if (orderDetail != null) {
-                orderMapper.updateOrderDetail(recordId, orderDetail.buyerUserName, orderDetail.orderCreateTime, orderDetail.paySuccessTime, orderDetail.consignTime, orderDetail.skuName, orderDetail.skuId, orderDetail.goodsTitle, orderDetail.totalPrice, orderDetail.buyNum);
+                orderMapper.updateOrderDetail(recordId, orderDetail.buyerUserId, orderDetail.buyerUserName,
+                        orderDetail.orderCreateTime, orderDetail.paySuccessTime, orderDetail.consignTime,
+                        orderDetail.skuName, orderDetail.skuId, orderDetail.goodsTitle,
+                        orderDetail.totalPrice, orderDetail.buyNum);
             }
 
             XianyuGoodsAutoDeliveryConfig deliveryConfig;

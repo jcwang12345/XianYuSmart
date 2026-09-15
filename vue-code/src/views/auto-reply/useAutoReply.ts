@@ -9,8 +9,10 @@ import { getGoodsStatusClass, getGoodsStatusText, showSuccess, showError, showIn
 import { toast } from '@/utils/toast'
 import type { Account } from '@/types'
 import type { GoodsItemWithConfig } from '@/api/goods'
-import { getKeywordReplyRules, addKeywordRule, deleteKeywordRule, updateKeyword, addKeywordContent, deleteKeywordContent, updateKeywordContent, updateKeywordRuleMatchMode, updateKeywordRuleAccounts, ensureFallbackRule } from '@/api/keywordReply'
-import type { KeywordReplyRule, KeywordReplyContent } from '@/api/keywordReply'
+import { getKeywordReplyRules, addKeywordRule, deleteKeywordRule, updateKeyword, addKeywordContent, deleteKeywordContent, updateKeywordContent, updateKeywordRuleMatchMode, updateKeywordRuleAccounts, ensureFallbackRule, getKeywordRuleVersions, saveKeywordRuleVersion } from '@/api/keywordReply'
+import type { KeywordReplyRule, KeywordReplyContent, KeywordRuleVersion, SaveKeywordRuleVersionCommand } from '@/api/keywordReply'
+import { simulateReplyPolicy } from '@/api/reply-policy'
+import type { ReplyPolicySimulation } from '@/api/reply-policy'
 
 // 聊天消息类型
 export interface ChatMessage {
@@ -261,6 +263,7 @@ export function useAutoReply() {
     selectedGoods.value = null
     goodsCurrentPage.value = 1
     chatMessages.value = []
+    replyPolicyResult.value = null
     dataContent.value = ''
     loadGoods()
   }
@@ -270,6 +273,7 @@ export function useAutoReply() {
     selectedGoods.value = goods
     // 切换商品时重置聊天和资料
     chatMessages.value = []
+    replyPolicyResult.value = null
     dataContent.value = ''
     rightTab.value = 'data'
     dataVisible.value = false
@@ -467,6 +471,14 @@ export function useAutoReply() {
   const editKeywordId = ref<number | null>(null)
   const editKeywordName = ref('')
   const editKeywordAccountIds = ref<number[]>([])
+  const editKeywordMatchType = ref<'EXACT' | 'CONTAINS' | 'REGEX'>('CONTAINS')
+  const editKeywordPriority = ref(100)
+  const editKeywordEnabled = ref(true)
+  const editKeywordEffectiveTime = ref('')
+  const editKeywordExpiresTime = ref('')
+  const keywordRuleVersions = ref<KeywordRuleVersion[]>([])
+  const keywordVersionsLoading = ref(false)
+  const replyPolicyResult = ref<ReplyPolicySimulation | null>(null)
 
   const selectedKeywordRule = computed(() => {
     if (!selectedKeywordRuleId.value) return null
@@ -481,6 +493,11 @@ export function useAutoReply() {
         xyGoodsId: selectedGoods.value.item.xyGoodId
       })
       const allRules: KeywordReplyRule[] = (res as any)?.data || res || []
+      allRules.forEach(rule => {
+        rule.matchType = rule.matchType || (rule.matchMode === 2 ? 'EXACT' : rule.matchMode === 3 ? 'REGEX' : 'CONTAINS')
+        rule.priority = rule.priority ?? 100
+        rule.enabled = rule.enabled ?? 1
+      })
       keywordRules.value = allRules.filter(r => !r.isFallback || r.isFallback === 0)
       const fb = allRules.find(r => r.isFallback === 1)
       if (fb) {
@@ -633,15 +650,35 @@ export function useAutoReply() {
 
   const handleUpdateMatchMode = async (ruleId: string | number, matchMode: number) => {
     try {
-      await updateKeywordRuleMatchMode({ ruleId, matchMode })
       const rule = keywordRules.value.find(r => r.id === ruleId)
-      if (rule) {
-        rule.matchMode = matchMode
-      }
-      showSuccess('匹配模式修改成功')
+      if (!rule) return
+      const matchType = matchMode === 2 ? 'EXACT' : matchMode === 3 ? 'REGEX' : 'CONTAINS'
+      await saveKeywordVersion(rule, { matchType, enabled: Boolean(rule.enabled) && Boolean(rule.contents?.length) })
+      showSuccess('匹配方式已保存为新版本')
     } catch (e: any) {
       showError(e?.message || '更新匹配模式失败')
     }
+  }
+
+  const saveKeywordVersion = async (rule: KeywordReplyRule, overrides: Partial<SaveKeywordRuleVersionCommand> = {}) => {
+    const accountIds = rule.xianyuAccountIds?.length ? rule.xianyuAccountIds.map(Number) : [Number(rule.xianyuAccountId)]
+    const command: SaveKeywordRuleVersionCommand = {
+      keyword: rule.keyword,
+      matchType: rule.matchType || (rule.matchMode === 2 ? 'EXACT' : rule.matchMode === 3 ? 'REGEX' : 'CONTAINS'),
+      priority: rule.priority ?? 100,
+      enabled: Boolean(rule.enabled),
+      effectiveTime: rule.effectiveTime || undefined,
+      expiresTime: rule.expiresTime || undefined,
+      accountIds,
+      contents: (rule.contents || []).map(content => ({ replyText: content.replyText || undefined, replyImageUrl: content.replyImageUrl || undefined })),
+      requestId: requestId('keyword-version'),
+      ...overrides
+    }
+    await saveKeywordRuleVersion(rule.id, command)
+    await loadKeywordRules()
+    const refreshed = keywordRules.value.find(item => item.id === rule.id) || (fallbackRule.value?.id === rule.id ? fallbackRule.value : null)
+    if (refreshed) selectedKeywordRuleId.value = refreshed.isFallback ? selectedKeywordRuleId.value : refreshed.id
+    return refreshed
   }
 
   const handleSaveFallbackText = async () => {
@@ -660,31 +697,11 @@ export function useAutoReply() {
 
       const text = fallbackText.value.trim()
       const images = fallbackImageUrls.value.filter(u => u.trim())
-      const hasContent = text || images.length > 0
-
-      if (rule.contents?.length) {
-        await Promise.all(rule.contents.map(c => deleteKeywordContent({ contentId: c.id })))
-        rule.contents = []
-      }
-
-      if (hasContent) {
-        rule.contents = []
-        if (images.length > 0) {
-          const res = await addKeywordContent({ ruleId: rule.id, replyText: text, replyImageUrl: images[0] })
-          const content = (res as any)?.data || res
-          if (content) rule.contents.push(content)
-          for (let i = 1; i < images.length; i++) {
-            const res2 = await addKeywordContent({ ruleId: rule.id, replyText: '', replyImageUrl: images[i] })
-            const content2 = (res2 as any)?.data || res2
-            if (content2) rule.contents.push(content2)
-          }
-        } else if (text) {
-          const res = await addKeywordContent({ ruleId: rule.id, replyText: text, replyImageUrl: '' })
-          const content = (res as any)?.data || res
-          if (content) rule.contents.push(content)
-        }
-      }
-      showSuccess('未匹配回复保存成功')
+      const contents = images.length
+        ? images.map((image, index) => ({ replyText: index === 0 ? text || undefined : undefined, replyImageUrl: image }))
+        : (text ? [{ replyText: text }] : [])
+      await saveKeywordVersion(rule, { enabled: contents.length > 0, contents })
+      showSuccess('未匹配回复已保存为不可变版本')
       fallbackExpanded.value = false
     } catch (e: any) {
       showError(e?.message || '保存未匹配回复失败')
@@ -699,21 +716,11 @@ export function useAutoReply() {
     try {
       const rule = keywordRules.value.find(r => r.id === selectedKeywordRuleId.value)
       if (!rule) return
-      rule.contents = rule.contents || []
-      if (images.length > 0) {
-        const res = await addKeywordContent({ ruleId: selectedKeywordRuleId.value, replyText: text, replyImageUrl: images[0] })
-        const content = (res as any)?.data || res
-        if (content) rule.contents.push(content)
-        for (let i = 1; i < images.length; i++) {
-          const res2 = await addKeywordContent({ ruleId: selectedKeywordRuleId.value, replyText: '', replyImageUrl: images[i] })
-          const content2 = (res2 as any)?.data || res2
-          if (content2) rule.contents.push(content2)
-        }
-      } else {
-        const res = await addKeywordContent({ ruleId: selectedKeywordRuleId.value, replyText: text, replyImageUrl: '' })
-        const content = (res as any)?.data || res
-        if (content) rule.contents.push(content)
-      }
+      const appended = images.length
+        ? images.map((image, index) => ({ replyText: index === 0 ? text || undefined : undefined, replyImageUrl: image }))
+        : [{ replyText: text }]
+      const contents = [...(rule.contents || []).map(content => ({ replyText: content.replyText || undefined, replyImageUrl: content.replyImageUrl || undefined })), ...appended]
+      await saveKeywordVersion(rule, { enabled: true, contents })
       addReplyText.value = ''
       addReplyImageUrls.value = []
       addReplyDialogVisible.value = false
@@ -724,11 +731,10 @@ export function useAutoReply() {
 
   const handleDeleteRule = async (ruleId: number) => {
     try {
-      await deleteKeywordRule({ ruleId })
-      keywordRules.value = keywordRules.value.filter(r => r.id !== ruleId)
-      if (selectedKeywordRuleId.value === ruleId) {
-        selectedKeywordRuleId.value = keywordRules.value.length > 0 ? keywordRules.value[0]!.id : null
-      }
+      const rule = keywordRules.value.find(item => Number(item.id) === Number(ruleId))
+      if (!rule) return
+      await saveKeywordVersion(rule, { enabled: false })
+      showSuccess('规则已停用，历史版本继续保留')
     } catch (e: any) {
       showError(e?.message || '删除关键词规则失败')
     }
@@ -738,24 +744,43 @@ export function useAutoReply() {
     editKeywordId.value = rule.id as number
     editKeywordName.value = rule.keyword
     editKeywordAccountIds.value = rule.xianyuAccountIds?.length ? [...rule.xianyuAccountIds] : [Number(rule.xianyuAccountId)]
+    editKeywordMatchType.value = rule.matchType || (rule.matchMode === 2 ? 'EXACT' : rule.matchMode === 3 ? 'REGEX' : 'CONTAINS')
+    editKeywordPriority.value = rule.priority ?? 100
+    editKeywordEnabled.value = Boolean(rule.enabled)
+    editKeywordEffectiveTime.value = toLocalDateTimeInput(rule.effectiveTime) || toLocalDateTimeInput(new Date().toISOString())
+    editKeywordExpiresTime.value = toLocalDateTimeInput(rule.expiresTime)
+    keywordRuleVersions.value = []
     editKeywordDialogVisible.value = true
+    void loadKeywordVersions(rule.id)
+  }
+
+  const loadKeywordVersions = async (ruleId: string | number) => {
+    keywordVersionsLoading.value = true
+    try {
+      const response = await getKeywordRuleVersions(ruleId)
+      keywordRuleVersions.value = response.data?.records || []
+    } catch (error: any) {
+      keywordRuleVersions.value = []
+      if (!error?.messageShown) showError(error?.message || '规则版本读取失败')
+    } finally { keywordVersionsLoading.value = false }
   }
 
   const handleSaveEditKeyword = async () => {
     if (!editKeywordId.value || !editKeywordName.value.trim() || !editKeywordAccountIds.value.length) return
     try {
-      await Promise.all([
-        updateKeyword({ ruleId: editKeywordId.value, keyword: editKeywordName.value.trim() }),
-        updateKeywordRuleAccounts({ ruleId: editKeywordId.value, xianyuAccountIds: editKeywordAccountIds.value })
-      ])
       const rule = keywordRules.value.find(r => r.id === editKeywordId.value)
-      if (rule) {
-        rule.keyword = editKeywordName.value.trim()
-        rule.xianyuAccountIds = [...editKeywordAccountIds.value]
-        rule.sharingScope = editKeywordAccountIds.value.length > 1 ? 'ACCOUNT' : 'GOODS'
-      }
+      if (!rule) return
+      await saveKeywordVersion(rule, {
+        keyword: editKeywordName.value.trim(),
+        matchType: editKeywordMatchType.value,
+        priority: Number(editKeywordPriority.value),
+        enabled: editKeywordEnabled.value,
+        effectiveTime: editKeywordEffectiveTime.value || undefined,
+        expiresTime: editKeywordExpiresTime.value || undefined,
+        accountIds: [...editKeywordAccountIds.value]
+      })
       editKeywordDialogVisible.value = false
-      showSuccess('关键词修改成功')
+      showSuccess('关键词规则已整体保存为新版本')
     } catch (e: any) {
       showError(e?.message || '修改关键词失败')
     }
@@ -764,13 +789,11 @@ export function useAutoReply() {
   const handleDeleteFromEditDialog = async () => {
     if (!editKeywordId.value) return
     try {
-      await deleteKeywordRule({ ruleId: editKeywordId.value })
-      keywordRules.value = keywordRules.value.filter(r => r.id !== editKeywordId.value)
-      if (selectedKeywordRuleId.value === editKeywordId.value) {
-        selectedKeywordRuleId.value = keywordRules.value.length > 0 ? keywordRules.value[0]!.id : null
-      }
+      const rule = keywordRules.value.find(item => Number(item.id) === Number(editKeywordId.value))
+      if (!rule) return
+      await saveKeywordVersion(rule, { enabled: false })
       editKeywordDialogVisible.value = false
-      showSuccess('关键词删除成功')
+      showSuccess('关键词规则已停用，历史版本继续保留')
     } catch (e: any) {
       showError(e?.message || '删除关键词失败')
     }
@@ -823,8 +846,14 @@ export function useAutoReply() {
 
   const handleContentImageDelete = async (content: KeywordReplyContent) => {
     try {
-      await updateKeywordContent({ contentId: content.id, replyText: content.replyText, replyImageUrl: '' })
-      content.replyImageUrl = ''
+      const rule = keywordRules.value.find(item => (item.contents || []).some(candidate => candidate.id === content.id))
+      if (!rule) return
+      const contents = (rule.contents || []).map(candidate => ({
+        replyText: candidate.replyText || undefined,
+        replyImageUrl: candidate.id === content.id ? undefined : (candidate.replyImageUrl || undefined)
+      })).filter(candidate => candidate.replyText || candidate.replyImageUrl)
+      await saveKeywordVersion(rule, { enabled: contents.length > 0 && Boolean(rule.enabled), contents })
+      showSuccess('图片移除已保存为新版本')
     } catch (e: any) {
       showError(e?.message || '删除回复图片失败')
     }
@@ -832,10 +861,12 @@ export function useAutoReply() {
 
   const handleDeleteContent = async (contentId: string | number, ruleId: string | number) => {
     try {
-      await deleteKeywordContent({ contentId })
       const rule = keywordRules.value.find(r => r.id === ruleId)
       if (rule) {
-        rule.contents = rule.contents.filter(c => c.id !== contentId)
+        const contents = (rule.contents || []).filter(c => c.id !== contentId)
+          .map(content => ({ replyText: content.replyText || undefined, replyImageUrl: content.replyImageUrl || undefined }))
+        await saveKeywordVersion(rule, { enabled: contents.length > 0 && Boolean(rule.enabled), contents })
+        showSuccess('回复内容变更已保存为新版本')
       }
     } catch (e: any) {
       showError(e?.message || '删除回复内容失败')
@@ -1174,82 +1205,20 @@ export function useAutoReply() {
 
     chatSending.value = true
     try {
-      const response = await chatTestWithAI({
-        msg: inputText,
+      const response = await simulateReplyPolicy({
+        message: inputText,
         goodsId: selectedGoods.value.item.xyGoodId,
-        accountId: selectedAccountId.value!
+        accountId: selectedAccountId.value!,
+        requestId: requestId('reply-simulation')
       })
-
-      if (!response.ok) {
-        if (response.status === 405 || response.status === 404) {
-          throw new Error('请前往系统设置->AI服务配置中完成配置')
-        }
-        throw new Error(`请求失败: ${response.status}`)
-      }
-
-      // 处理 SSE 流式响应
       assistantMsg.loading = false
-
-      const reader = response.body?.getReader()
-      const decoder = new TextDecoder()
-
-      if (reader) {
-        let buffer = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          buffer += decoder.decode(value, { stream: true })
-
-          // 处理 SSE 格式: data:xxx\n\n
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
-
-          for (const line of lines) {
-            if (line.startsWith('data:')) {
-              const data = line.substring(5).trim()
-              if (data === '[DONE]') continue
-              try {
-                // 尝试解析 JSON，提取 reply/content/text 字段
-                const parsed = JSON.parse(data)
-                assistantMsg.content += parsed.reply || parsed.content || parsed.text || ''
-              } catch {
-                // 直接作为文本追加
-                assistantMsg.content += data
-              }
-              scrollChatToBottom()
-            }
-          }
-        }
-
-        // 处理剩余 buffer
-        if (buffer.startsWith('data:')) {
-          const data = buffer.substring(5).trim()
-          if (data && data !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(data)
-              assistantMsg.content += parsed.reply || parsed.content || parsed.text || ''
-            } catch {
-              assistantMsg.content += data
-            }
-          }
-        }
-      } else {
-        // 没有 reader（不支持流式读取），直接读取文本
-        const text = await response.text()
-        assistantMsg.content = text || '暂无回复'
-      }
-
-      // 如果流式读取后内容仍为空
-      if (!assistantMsg.content) {
-        assistantMsg.content = '暂无回复'
-      }
-
+      replyPolicyResult.value = response.data || null
+      assistantMsg.content = response.data?.answerPreview
+        || (response.data?.handoffReasonCode ? `转人工：${response.data.handoffReasonCode}` : '当前策略不会自动回复')
       scrollChatToBottom()
     } catch (error: any) {
-      console.error('AI 对话失败:', error)
       assistantMsg.loading = false
-      assistantMsg.content = '对话失败，请稍后重试'
+      assistantMsg.content = error?.message || '策略演练失败，请稍后重试'
       scrollChatToBottom()
     } finally {
       chatSending.value = false
@@ -1507,6 +1476,14 @@ export function useAutoReply() {
     editKeywordId,
     editKeywordName,
     editKeywordAccountIds,
+    editKeywordMatchType,
+    editKeywordPriority,
+    editKeywordEnabled,
+    editKeywordEffectiveTime,
+    editKeywordExpiresTime,
+    keywordRuleVersions,
+    keywordVersionsLoading,
+    replyPolicyResult,
     handleOpenEditKeyword,
     handleSaveEditKeyword,
     handleDeleteFromEditDialog

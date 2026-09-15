@@ -12,5 +12,10 @@ public class XianyuKeywordReplyContent {
     private Long ruleId;
     private String replyText;
     private String replyImageUrl;
+    private Integer versionNo;
+    private String status;
+    private String effectiveTime;
+    private String expiresTime;
     private String createTime;
+    private String updateTime;
 }

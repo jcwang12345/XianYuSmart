@@ -45,12 +45,17 @@ public class ReplyEnhancementService {
         var p=mapper.find(message.getXianyuAccountId(),message.getXyGoodsId());
         if(p==null || !Integer.valueOf(1).equals(p.getWelcomeEnabled()) || blank(message.getSenderUserId())) return null;
         if(blank(p.getWelcomeText()) && blank(p.getWelcomeImageUrl())) return null;
-        if(mapper.claim(p.getTenantId(),p.getXianyuAccountId(),p.getXyGoodsId(),message.getSenderUserId())!=1) return null;
+        if(mapper.claim(p.getTenantId(),p.getXianyuAccountId(),p.getXyGoodsId(),message.getSenderUserId(),message.getPnmId())!=1) return null;
         var item=ReplyStrategy.ReplyResult.ReplyItem.textAndImage(p.getWelcomeText(),p.getWelcomeImageUrl(),5);
         return ReplyStrategy.ReplyResult.of(List.of(item));
     }
     public void finishWelcome(ChatMessageData m,boolean success) {
-        mapper.finish(m.getXianyuAccountId(),m.getXyGoodsId(),m.getSenderUserId(),success?"SENT":"REVIEW_REQUIRED");
+        mapper.finish(m.getXianyuAccountId(),m.getXyGoodsId(),m.getSenderUserId(),
+                success?"SENT":"REVIEW_REQUIRED",m.getPnmId(),
+                success?"平台已确认首次回复发送成功":"已开始外部发送但未取得完整成功证据，禁止自动重发");
+    }
+    public void releaseWelcome(ChatMessageData m) {
+        mapper.release(m.getXianyuAccountId(),m.getXyGoodsId(),m.getSenderUserId());
     }
     public String guard(Long account,String goods,String text,boolean priceIntent) {
         var p=mapper.find(account,goods);

@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /** IM-01/02 会话收件箱与可追踪发送，不把超时误报为失败后重发。 */
 @Service
@@ -163,7 +164,12 @@ public class MessageWorkspaceService {
                 """, tenant(), accountId, sessionId);
         List<Map<String, Object>> sends = jdbcTemplate.queryForList("""
                 SELECT request_id requestId,content_type contentType,content_excerpt contentExcerpt,
-                       outcome_state outcomeState,platform_ack_code platformAckCode,error_message errorMessage,
+                       outcome_state outcomeState,platform_ack_code platformAckCode,
+                       platform_receipt_json platformReceiptJson,error_message errorMessage,
+                       attempt_token attemptToken,event_id eventId,resolution_status resolutionStatus,
+                       resolution_note resolutionNote,verified_message_id verifiedMessageId,
+                       resolution_request_id resolutionRequestId,resolved_username resolvedUsername,
+                       resolved_time resolvedTime,
                        operator_username operatorUsername,created_time createdTime,updated_time updatedTime
                   FROM xianyu_message_send_attempt
                  WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? ORDER BY created_time DESC LIMIT 100
@@ -268,25 +274,36 @@ public class MessageWorkspaceService {
         String recipient = required(command.recipientUserId(), "接收方ID", 100);
         String requestId = required(command.requestId(), "requestId", 80);
         requireConversation(accountId, sessionId);
+        String payloadHash = sendPayloadHash(command, type, content, width, height);
         List<Map<String, Object>> replay = jdbcTemplate.queryForList("""
-                SELECT outcome_state outcomeState,error_message errorMessage,updated_time updatedTime
+                SELECT outcome_state outcomeState,error_message errorMessage,updated_time updatedTime,
+                       request_payload_hash requestPayloadHash,attempt_token attemptToken,event_id eventId,
+                       resolution_status resolutionStatus,resolution_note resolutionNote,
+                       verified_message_id verifiedMessageId,resolved_time resolvedTime
                   FROM xianyu_message_send_attempt WHERE tenant_id=? AND request_id=?
                 """, tenant(), requestId);
-        if (!replay.isEmpty()) return replayAttempt(replay.getFirst(), requestId);
+        if (!replay.isEmpty()) return replayAttempt(replay.getFirst(), requestId, payloadHash);
+        String attemptToken = UUID.randomUUID().toString();
+        String eventId = "MSG-" + UUID.randomUUID();
         int inserted = jdbcTemplate.update("""
                 INSERT IGNORE INTO xianyu_message_send_attempt
                 (tenant_id,xianyu_account_id,session_id,recipient_user_id,xy_goods_id,content_type,
-                 content_sha256,content_excerpt,request_id,idempotency_key,operator_user_id,operator_username)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                 content_sha256,content_excerpt,request_id,idempotency_key,request_payload_hash,
+                 attempt_token,event_id,operator_user_id,operator_username)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, tenant(), accountId, sessionId, recipient, trim(command.goodsId()), type,
-                sha256(content), excerpt(content), requestId, requestId, UserContext.getUserId(), UserContext.getUsername());
+                sha256(content), excerpt(content), requestId, requestId, payloadHash, attemptToken, eventId,
+                UserContext.getUserId(), UserContext.getUsername());
         if (inserted == 0) {
             List<Map<String, Object>> concurrentReplay = jdbcTemplate.queryForList("""
-                    SELECT outcome_state outcomeState,error_message errorMessage,updated_time updatedTime
+                    SELECT outcome_state outcomeState,error_message errorMessage,updated_time updatedTime,
+                           request_payload_hash requestPayloadHash,attempt_token attemptToken,event_id eventId,
+                           resolution_status resolutionStatus,resolution_note resolutionNote,
+                           verified_message_id verifiedMessageId,resolved_time resolvedTime
                       FROM xianyu_message_send_attempt WHERE tenant_id=? AND request_id=?
                     """, tenant(), requestId);
             if (concurrentReplay.isEmpty()) throw new BusinessException(409, "相同请求正在处理中，请使用原 requestId 查询结果");
-            return replayAttempt(concurrentReplay.getFirst(), requestId);
+            return replayAttempt(concurrentReplay.getFirst(), requestId, payloadHash);
         }
         if (!webSocketService.isConnected(accountId)) {
             return finishAttempt(accountId, requestId, "FAILED", "账号实时连接未建立", command, false);
@@ -315,9 +332,13 @@ public class MessageWorkspaceService {
     private Map<String, Object> finishAttempt(Long accountId, String requestId, String outcome,
                                               String error, Object request, boolean success) {
         jdbcTemplate.update("""
-                UPDATE xianyu_message_send_attempt SET outcome_state=?,platform_ack_code=?,error_message=?
+                UPDATE xianyu_message_send_attempt SET outcome_state=?,platform_ack_code=?,platform_receipt_json=?,
+                       error_message=?,resolution_status=?
                  WHERE tenant_id=? AND request_id=?
-                """, outcome, success ? "200" : null, limit(error, 500), tenant(), requestId);
+                """, outcome, success ? "ACKNOWLEDGED" : null,
+                success ? json(Map.of("acknowledged", true, "transport", "PLATFORM_WEBSOCKET")) : null,
+                limit(error, 500), "UNKNOWN".equals(outcome) ? "PENDING_VERIFICATION" : "NOT_REQUIRED",
+                tenant(), requestId);
         XianyuOperationLog log = new XianyuOperationLog();
         log.setXianyuAccountId(accountId);
         log.setOperationType("MESSAGE_SEND");
@@ -359,17 +380,168 @@ public class MessageWorkspaceService {
         result.put("requestId", requestId);
         result.put("outcomeState", outcome);
         result.put("idempotentReplay", false);
+        Map<String,Object> evidence = attemptEvidence(requestId);
+        result.putAll(evidence);
         result.put("error", error);
         result.put("recoveryHint", "UNKNOWN".equals(outcome)
                 ? "请先查看当前会话是否已出现该消息，确认前不要重复发送" : null);
         return result;
     }
 
-    private Map<String, Object> replayAttempt(Map<String, Object> persisted, String requestId) {
+    private Map<String, Object> replayAttempt(Map<String, Object> persisted, String requestId, String payloadHash) {
+        String persistedHash = String.valueOf(persisted.getOrDefault("requestPayloadHash", "LEGACY"));
+        if (!"LEGACY".equals(persistedHash) && !payloadHash.equals(persistedHash)) {
+            throw new BusinessException(409, "相同 requestId 已绑定另一条消息；请恢复原内容或生成新的 requestId");
+        }
         Map<String, Object> result = new LinkedHashMap<>(persisted);
         result.put("requestId", requestId);
         result.put("idempotentReplay", true);
+        result.put("recoveryHint", "UNKNOWN".equals(result.get("outcomeState"))
+                ? "请先查看当前会话是否已出现该消息，确认前不要重复发送" : null);
         return result;
+    }
+
+    public Map<String,Object> sendAttempt(Long accountId, String requestId) {
+        accountAccessService.requireAccess(accountId);
+        return requireAttempt(accountId, required(requestId, "requestId", 80));
+    }
+
+    public Map<String,Object> previewResolution(String sendRequestId, SendResolutionCommand command) {
+        ResolutionContext context = resolutionContext(sendRequestId, command);
+        Map<String,Object> result = new LinkedHashMap<>(context.attempt());
+        result.put("requestedResolution", context.resolution());
+        result.put("willResend", false);
+        result.put("stateChange", context.resolution().equals("CONFIRMED_SENT")
+                ? "UNKNOWN → MANUAL_CONFIRMED_SENT" : "UNKNOWN → CONFIRMED_NOT_SENT");
+        result.put("confirmation", context.resolution().equals("CONFIRMED_SENT")
+                ? "确认平台会话中已经存在该消息；系统不会再次发送"
+                : "确认平台会话中不存在该消息；本次操作仍不会发送，之后可用新 requestId 主动重试");
+        return result;
+    }
+
+    @Transactional
+    public Map<String,Object> resolveAttempt(String sendRequestId, SendResolutionCommand command) {
+        ResolutionContext context = resolutionContext(sendRequestId, command);
+        Map<String,Object> attempt = context.attempt();
+        String storedResolutionRequestId = trim((String) attempt.get("resolutionRequestId"));
+        String storedResolutionHash = trim((String) attempt.get("resolutionPayloadHash"));
+        if (storedResolutionRequestId != null) {
+            if (storedResolutionRequestId.equals(context.resolutionRequestId())
+                    && context.payloadHash().equals(storedResolutionHash)) {
+                Map<String,Object> replay = requireAttempt(command.accountId(), sendRequestId);
+                replay.put("idempotentReplay", true);
+                return replay;
+            }
+            throw new BusinessException(409, "该发送结果已经完成核对，不能再次改写");
+        }
+        String finalOutcome = "CONFIRMED_SENT".equals(context.resolution())
+                ? "MANUAL_CONFIRMED_SENT" : "CONFIRMED_NOT_SENT";
+        int updated = jdbcTemplate.update("""
+                UPDATE xianyu_message_send_attempt
+                   SET outcome_state=?,resolution_status=?,resolution_note=?,verified_message_id=?,
+                       resolution_request_id=?,resolution_payload_hash=?,resolved_by=?,resolved_username=?,resolved_time=NOW(3)
+                 WHERE tenant_id=? AND xianyu_account_id=? AND request_id=?
+                   AND outcome_state='UNKNOWN' AND resolution_status='PENDING_VERIFICATION'
+                   AND resolution_request_id IS NULL
+                """, finalOutcome, context.resolution(), context.note(), context.verifiedMessageId(),
+                context.resolutionRequestId(), context.payloadHash(), UserContext.getUserId(), UserContext.getUsername(),
+                tenant(), command.accountId(), sendRequestId);
+        if (updated == 0) throw new BusinessException(409, "发送结果已被其他成员核对，请刷新后查看");
+        aiHandoffService.resolveMessageOutcome(sendRequestId, context.resolutionRequestId(),
+                context.resolution() + "：" + context.note());
+        XianyuOperationLog log = new XianyuOperationLog();
+        log.setXianyuAccountId(command.accountId()); log.setOperationType("MESSAGE_OUTCOME_RESOLVE");
+        log.setOperationModule("集成客服"); log.setOperationDesc("人工核对消息发送结果：" + context.resolution());
+        log.setOperationStatus(1); log.setTargetType("MESSAGE_SEND_ATTEMPT"); log.setTargetId(sendRequestId);
+        log.setRequestId(context.resolutionRequestId()); log.setIdempotencyKey(context.resolutionRequestId());
+        log.setOutcomeState(finalOutcome); log.setDataSource("MANUAL_PLATFORM_VERIFICATION");
+        log.setRequestParams(json(Map.of("sendRequestId", sendRequestId, "resolution", context.resolution(),
+                "verifiedMessageId", context.verifiedMessageId() == null ? "" : context.verifiedMessageId())));
+        log.setResponseResult(json(Map.of("outcomeState", finalOutcome, "platformWrite", false)));
+        log.setFieldDiffJson(json(Map.of("outcomeState", Map.of("before", "UNKNOWN", "after", finalOutcome),
+                "resolutionStatus", Map.of("before", "PENDING_VERIFICATION", "after", context.resolution()))));
+        operationLogService.logRequired(log);
+        Map<String,Object> result = requireAttempt(command.accountId(), sendRequestId);
+        result.put("idempotentReplay", false);
+        result.put("platformWrite", false);
+        result.put("recoveryHint", "CONFIRMED_NOT_SENT".equals(finalOutcome)
+                ? "可用新的 requestId 主动发送；系统不会自动重试" : "已确认送达，系统不会重复发送");
+        return result;
+    }
+
+    private ResolutionContext resolutionContext(String sendRequestId, SendResolutionCommand command) {
+        if (command == null) throw new BusinessException(400, "核对参数不能为空");
+        Long accountId = command.accountId();
+        if (accountId == null || accountId <= 0) throw new BusinessException(400, "账号ID无效");
+        String originalRequestId = required(sendRequestId, "原发送 requestId", 80);
+        String resolutionRequestId = required(command.requestId(), "核对 requestId", 80);
+        String resolution = required(command.resolution(), "核对结果", 32).toUpperCase(Locale.ROOT);
+        if (!Set.of("CONFIRMED_SENT", "CONFIRMED_NOT_SENT").contains(resolution)) {
+            throw new BusinessException(400, "核对结果只能是已发送或确认未发送");
+        }
+        String note = required(command.note(), "核对说明", 1000);
+        String verifiedMessageId = trim(command.verifiedMessageId());
+        if ("CONFIRMED_SENT".equals(resolution) && verifiedMessageId == null) {
+            throw new BusinessException(400, "确认已发送时必须填写平台消息ID或可核验证据编号");
+        }
+        Map<String,Object> attempt = requireAttempt(accountId, originalRequestId);
+        String existingResolutionRequestId = trim((String) attempt.get("resolutionRequestId"));
+        if (existingResolutionRequestId == null && (!"UNKNOWN".equals(attempt.get("outcomeState"))
+                || !"PENDING_VERIFICATION".equals(attempt.get("resolutionStatus")))) {
+            throw new BusinessException(409, "只有发送结果未知的记录可以人工核对");
+        }
+        String payloadHash = sha256(json(Map.of("sendRequestId", originalRequestId,
+                "accountId", accountId, "resolution", resolution, "note", note,
+                "verifiedMessageId", verifiedMessageId == null ? "" : verifiedMessageId)));
+        if (existingResolutionRequestId != null && existingResolutionRequestId.equals(resolutionRequestId)) {
+            String storedHash = trim((String) attempt.get("resolutionPayloadHash"));
+            if (!payloadHash.equals(storedHash)) throw new BusinessException(409, "相同核对 requestId 已绑定不同内容");
+        } else if (existingResolutionRequestId != null) {
+            throw new BusinessException(409, "该发送结果已经完成核对，不能再次改写");
+        }
+        return new ResolutionContext(attempt,resolution,note,verifiedMessageId,resolutionRequestId,payloadHash);
+    }
+
+    private Map<String,Object> requireAttempt(Long accountId, String requestId) {
+        accountAccessService.requireAccess(accountId);
+        List<Map<String,Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id,xianyu_account_id accountId,session_id sessionId,recipient_user_id recipientUserId,
+                       xy_goods_id goodsId,content_type contentType,content_sha256 contentSha256,
+                       content_excerpt contentExcerpt,request_id requestId,request_payload_hash requestPayloadHash,
+                       attempt_token attemptToken,event_id eventId,outcome_state outcomeState,
+                       platform_ack_code platformAckCode,platform_receipt_json platformReceiptJson,
+                       error_message errorMessage,resolution_status resolutionStatus,resolution_note resolutionNote,
+                       verified_message_id verifiedMessageId,resolution_request_id resolutionRequestId,
+                       resolution_payload_hash resolutionPayloadHash,resolved_username resolvedUsername,
+                       resolved_time resolvedTime,operator_username operatorUsername,
+                       created_time createdTime,updated_time updatedTime
+                  FROM xianyu_message_send_attempt
+                 WHERE tenant_id=? AND xianyu_account_id=? AND request_id=?
+                """, tenant(), accountId, requestId);
+        if (rows.isEmpty()) throw new BusinessException(404, "消息发送记录不存在或无权访问");
+        Map<String,Object> result = new LinkedHashMap<>(rows.getFirst());
+        result.put("platformReceipt", readJson((String) result.remove("platformReceiptJson")));
+        result.put("canResolve", "UNKNOWN".equals(result.get("outcomeState"))
+                && "PENDING_VERIFICATION".equals(result.get("resolutionStatus")));
+        return result;
+    }
+
+    private Map<String,Object> attemptEvidence(String requestId) {
+        List<Map<String,Object>> rows = jdbcTemplate.queryForList("""
+                SELECT attempt_token attemptToken,event_id eventId,resolution_status resolutionStatus,
+                       platform_ack_code platformAckCode
+                  FROM xianyu_message_send_attempt WHERE tenant_id=? AND request_id=?
+                """, tenant(), requestId);
+        return rows.isEmpty() ? Map.of() : rows.getFirst();
+    }
+
+    private String sendPayloadHash(SendCommand command, String type, String content, int width, int height) {
+        Map<String,Object> payload = new LinkedHashMap<>();
+        payload.put("accountId", command.accountId()); payload.put("sessionId", command.sessionId());
+        payload.put("recipientUserId", command.recipientUserId()); payload.put("goodsId", trim(command.goodsId()));
+        payload.put("contentType", type); payload.put("contentSha256", sha256(content));
+        payload.put("width", width); payload.put("height", height);
+        return sha256(json(payload));
     }
 
     private void requireConversation(Long accountId, String sessionId) {
@@ -419,4 +591,8 @@ public class MessageWorkspaceService {
                               String content, Integer width, Integer height, String requestId) {}
     public record ConversationUpdate(Long accountId,String sessionId,Boolean pinned,String keywordFlag,
                                      String customerNote,Boolean blacklisted,String requestId) {}
+    public record SendResolutionCommand(Long accountId,String resolution,String note,
+                                        String verifiedMessageId,String requestId) {}
+    private record ResolutionContext(Map<String,Object> attempt,String resolution,String note,
+                                     String verifiedMessageId,String resolutionRequestId,String payloadHash) {}
 }

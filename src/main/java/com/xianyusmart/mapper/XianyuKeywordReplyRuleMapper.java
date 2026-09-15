@@ -12,8 +12,19 @@ public interface XianyuKeywordReplyRuleMapper extends BaseMapper<XianyuKeywordRe
     @Select("SELECT DISTINCT rule.* FROM xianyu_keyword_reply_rule rule " +
             "JOIN xianyu_keyword_reply_rule_account link ON link.rule_id = rule.id " +
             "WHERE link.xianyu_account_id = #{accountId} " +
-            "AND (rule.sharing_scope = 'ACCOUNT' OR rule.xy_goods_id = #{xyGoodsId}) ORDER BY rule.id")
+            "AND (rule.sharing_scope = 'ACCOUNT' OR rule.xy_goods_id = #{xyGoodsId}) " +
+            "ORDER BY rule.priority DESC,rule.id")
     List<XianyuKeywordReplyRule> selectByAccountAndGoodsId(@Param("accountId") Long accountId, @Param("xyGoodsId") String xyGoodsId);
+
+    @Select("SELECT DISTINCT rule.* FROM xianyu_keyword_reply_rule rule " +
+            "JOIN xianyu_keyword_reply_rule_account link ON link.rule_id=rule.id " +
+            "WHERE link.xianyu_account_id=#{accountId} " +
+            "AND (rule.sharing_scope='ACCOUNT' OR rule.xy_goods_id=#{xyGoodsId}) " +
+            "AND rule.enabled=1 AND rule.effective_time<=NOW(3) " +
+            "AND (rule.expires_time IS NULL OR rule.expires_time>NOW(3)) " +
+            "ORDER BY rule.priority DESC,FIELD(rule.match_type,'EXACT','CONTAINS','REGEX'),rule.id")
+    List<XianyuKeywordReplyRule> selectEffective(@Param("accountId") Long accountId,
+                                                  @Param("xyGoodsId") String xyGoodsId);
 
     @Select("SELECT * FROM xianyu_keyword_reply_rule WHERE xianyu_account_id = #{accountId} AND xy_goods_id = #{xyGoodsId} AND keyword = #{keyword} AND is_fallback = 0")
     XianyuKeywordReplyRule selectByKeyword(@Param("accountId") Long accountId, @Param("xyGoodsId") String xyGoodsId, @Param("keyword") String keyword);
@@ -21,7 +32,9 @@ public interface XianyuKeywordReplyRuleMapper extends BaseMapper<XianyuKeywordRe
     @Select("SELECT rule.* FROM xianyu_keyword_reply_rule rule " +
             "JOIN xianyu_keyword_reply_rule_account link ON link.rule_id = rule.id " +
             "WHERE link.xianyu_account_id = #{accountId} AND (rule.sharing_scope = 'ACCOUNT' OR rule.xy_goods_id = #{xyGoodsId}) " +
-            "AND rule.is_fallback = 1 ORDER BY (rule.xy_goods_id = #{xyGoodsId}) DESC, rule.id LIMIT 1")
+            "AND rule.is_fallback = 1 AND rule.enabled=1 AND rule.effective_time<=NOW(3) " +
+            "AND (rule.expires_time IS NULL OR rule.expires_time>NOW(3)) " +
+            "ORDER BY (rule.xy_goods_id = #{xyGoodsId}) DESC, rule.priority DESC,rule.id LIMIT 1")
     XianyuKeywordReplyRule selectFallback(@Param("accountId") Long accountId, @Param("xyGoodsId") String xyGoodsId);
 
     @Select("SELECT DISTINCT rule.* FROM xianyu_keyword_reply_rule rule " +

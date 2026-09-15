@@ -59,6 +59,7 @@ class AIReplyStrategyTest {
         ReflectionTestUtils.setField(strategy, "safetyGuard", new AIReplySafetyGuard());
         ReflectionTestUtils.setField(strategy, "chatClientManager", chatClientManager);
         ReflectionTestUtils.setField(strategy, "goodsKnowledgeService", goodsKnowledgeService);
+        ReflectionTestUtils.setField(strategy, "factSafetyPolicy", new ReplyFactSafetyPolicy());
     }
 
     @Test

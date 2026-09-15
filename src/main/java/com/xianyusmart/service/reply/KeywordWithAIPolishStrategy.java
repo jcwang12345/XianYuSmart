@@ -50,6 +50,9 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
     @Autowired
     private GoodsKnowledgeService goodsKnowledgeService;
 
+    @Autowired
+    private ReplyFactSafetyPolicy factSafetyPolicy;
+
     @Override
     public ReplyResult execute(List<ChatMessageData> messageList) {
         ChatMessageData lastMessage = messageList.get(messageList.size() - 1);
@@ -71,16 +74,16 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
     }
 
     private ReplyResult executeKeywordWithPolish(Long accountId, List<KeywordReplyRuleBO> matchedRules) {
-        List<KeywordReplyRuleBO.KeywordReplyContentBO> allContents = matchedRules.stream()
-                .filter(r -> r.getContents() != null)
-                .flatMap(r -> r.getContents().stream())
-                .collect(Collectors.toList());
+        KeywordReplyRuleBO winningRule = matchedRules.getFirst();
+        List<KeywordReplyRuleBO.KeywordReplyContentBO> allContents = winningRule.getContents() == null
+                ? List.of() : winningRule.getContents();
 
         if (allContents.isEmpty()) {
             return ReplyResult.fail();
         }
 
-        KeywordReplyRuleBO.KeywordReplyContentBO selected = allContents.get(new Random().nextInt(allContents.size()));
+        // 使用稳定候选，避免网络重试前后挑中不同话术。
+        KeywordReplyRuleBO.KeywordReplyContentBO selected = allContents.getFirst();
         List<ReplyResult.ReplyItem> items = new ArrayList<>();
         String originalText = selected.getReplyText();
         String image = selected.getReplyImageUrl();
@@ -118,14 +121,13 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
         }
 
         ReplyResult result = ReplyResult.of(items);
-        String keywords = matchedRules.stream()
-                .filter(r -> r.getIsFallback() == null || r.getIsFallback() == 0)
-                .map(KeywordReplyRuleBO::getKeyword)
-                .collect(Collectors.joining(", "));
+        if (winningRule.getId() != null) result.setSelectedRuleId(Long.valueOf(winningRule.getId().toString()));
+        if (selected.getId() != null) result.setSelectedContentId(Long.valueOf(selected.getId().toString()));
+        String keywords = Integer.valueOf(1).equals(winningRule.getIsFallback()) ? "" : winningRule.getKeyword();
         result.setMatchedKeyword(keywords);
         result.setMatchedRules(matchedRules);
         if (!matchedRules.isEmpty()) {
-            result.setMatchedRule(matchedRules.get(0));
+            result.setMatchedRule(winningRule);
         }
         return result;
     }
@@ -136,6 +138,10 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
             XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, xyGoodsId);
             GoodsKnowledgeService.ActiveKnowledge knowledge = goodsKnowledgeService.effective(accountId, xyGoodsId);
             String fixedMaterial = knowledge == null ? null : knowledge.content();
+            ReplyFactSafetyPolicy.Decision factDecision = factSafetyPolicy.evaluate(messageList, knowledge != null);
+            if (!factDecision.allowed()) {
+                return ReplyResult.handoff(factDecision.reasonCode(), factDecision.reasonDetail());
+            }
 
             XianyuGoodsInfo goodsInfo = goodsInfoMapper.selectOne(
                     new LambdaQueryWrapper<XianyuGoodsInfo>()
@@ -159,18 +165,30 @@ public class KeywordWithAIPolishStrategy implements ReplyStrategy {
 
     private ReplyResult executePreparedAIReply(AIReplyPreparationService.PreparedReply prepared,
                                                String xyGoodsId, String fixedMaterial, String goodsDetail) {
+        long startedAt = System.nanoTime();
         RAGReplyResult ragResult = aiService.chatByRAGWithFixedMaterial(
                 prepared.buyerMessage(), xyGoodsId, prepared.contextMessages(),
                 AIReplyStrategy.appendPolicy(fixedMaterial, prepared.policy()), goodsDetail);
 
         String safeReply = ragResult == null ? null : safetyGuard.safeOrNull(ragResult.getReplyContent());
-        if (safeReply == null) return ReplyResult.fail();
+        Double confidence = ragResult == null || ragResult.getHitDetails() == null ? null
+                : ragResult.getHitDetails().stream().map(RAGReplyResult.RAGHitDetail::getScore)
+                .filter(Objects::nonNull).max(Double::compareTo).orElse(null);
+        if (safeReply == null) return ReplyResult.handoff("AI_NO_SAFE_ANSWER","AI 返回为空或被安全门禁拦截");
+        if (confidence != null && confidence < 0.55d) {
+            ReplyResult handoff=ReplyResult.handoff("LOW_CONFIDENCE","知识命中置信度低于安全阈值");
+            handoff.setConfidenceScore(confidence);
+            return handoff;
+        }
         ReplyResult result = ReplyResult.of(Collections.singletonList(
                 ReplyResult.ReplyItem.text(safeReply, REPLY_TYPE_AI)));
         result.setAiIntent(prepared.intent().name());
         result.setBargainRound(prepared.bargainRound());
         result.setContextMessages(prepared.contextMessages());
         result.setRagHitDetails(ragResult.getHitDetails());
+        result.setConfidenceScore(confidence);
+        try { result.setModelName(dynamicAIChatClientManager.getStatusInfo().getModel()); } catch(Exception ignored) { }
+        result.setProcessingDurationMs((System.nanoTime()-startedAt)/1_000_000L);
         return result;
     }
 

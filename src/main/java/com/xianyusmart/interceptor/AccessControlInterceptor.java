@@ -113,6 +113,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/product-matrix")) return PermissionCatalog.MENU_GOODS;
         if (uri.startsWith("/api/account-matrix")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/automation-assist/reply-preference")) return PermissionCatalog.MENU_AUTO_REPLY;
+        if (uri.startsWith("/api/reply-policy")) return PermissionCatalog.MENU_AUTO_REPLY;
         if (uri.startsWith("/api/automation-assist/skus")) return PermissionCatalog.MENU_AUTO_DELIVERY;
         if (uri.startsWith("/api/automation-assist/")) return PermissionCatalog.MENU_ORDERS;
         // 账号选择器、商品基础资料和连接状态被多个页面复用，由各业务页面权限决定是否可见。
@@ -185,6 +186,13 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/qa/backup") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
+        if (uri.startsWith("/api/reply-policy/") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_AUTOMATION_WRITE;
+        }
+        if ((uri.startsWith("/api/keyword-reply") || uri.startsWith("/ai"))
+                && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_AUTOMATION_WRITE;
+        }
         if (uri.startsWith("/api/qa/notification-trace") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
@@ -204,6 +212,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             return PermissionCatalog.ACTION_ACCOUNT_WRITE;
         }
         if (uri.startsWith("/api/message-workspace/send/")
+                || (uri.startsWith("/api/message-workspace/send-attempts/") && !"GET".equalsIgnoreCase(method))
                 || uri.equals("/api/message-workspace/conversation/takeover")
                 || (uri.startsWith("/api/message-workspace/handoffs/") && !"GET".equalsIgnoreCase(method))) {
             return PermissionCatalog.ACTION_MESSAGE_SEND;

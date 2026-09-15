@@ -2,6 +2,7 @@ package com.xianyusmart.controller;
 
 import com.xianyusmart.entity.bo.KeywordReplyRuleBO;
 import com.xianyusmart.service.KeywordReplyService;
+import com.xianyusmart.service.KeywordRuleVersionService;
 import com.xianyusmart.common.ResultObject;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +18,20 @@ public class KeywordReplyController {
 
     @Autowired
     private KeywordReplyService keywordReplyService;
+    @Autowired
+    private KeywordRuleVersionService keywordRuleVersionService;
+
+    @PutMapping("/rules/{ruleId}")
+    public ResultObject<Map<String,Object>> saveRuleVersion(
+            @PathVariable Long ruleId,
+            @RequestBody KeywordRuleVersionService.SaveCommand command) {
+        return ResultObject.success(keywordRuleVersionService.save(ruleId, command));
+    }
+
+    @GetMapping("/rules/{ruleId}/versions")
+    public ResultObject<Map<String,Object>> ruleVersions(@PathVariable Long ruleId) {
+        return ResultObject.success(keywordRuleVersionService.versions(ruleId));
+    }
 
     @PostMapping("/rules")
     public ResultObject<List<KeywordReplyRuleBO>> getRules(@RequestBody Map<String, Object> params) {

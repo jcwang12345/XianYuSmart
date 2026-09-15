@@ -17,6 +17,12 @@ public class KeywordReplyRuleBO {
     private String sharingScope;
     private String keyword;
     private Integer matchMode;
+    private String matchType;
+    private Integer priority;
+    private Integer enabled;
+    private Integer versionNo;
+    private String effectiveTime;
+    private String expiresTime;
     private Integer isFallback;
     private List<KeywordReplyContentBO> contents;
 
@@ -28,5 +34,9 @@ public class KeywordReplyRuleBO {
         private Long ruleId;
         private String replyText;
         private String replyImageUrl;
+        private Integer versionNo;
+        private String status;
+        private String effectiveTime;
+        private String expiresTime;
     }
 }

@@ -472,8 +472,16 @@ public interface XianyuGoodsOrderMapper {
     @Update("UPDATE xianyu_goods_order SET sku_name = #{skuName} WHERE id = #{id}")
     int updateSkuName(@Param("id") Long id, @Param("skuName") String skuName);
 
-    @Update("UPDATE xianyu_goods_order SET buyer_user_name = #{buyerUserName}, order_create_time = #{orderCreateTime}, pay_success_time = #{paySuccessTime}, consign_time = #{consignTime}, sku_name = #{skuName}, sku_id = COALESCE(#{skuId}, sku_id), goods_title = #{goodsTitle}, total_price = #{totalPrice}, buy_num = #{buyNum} WHERE id = #{id}")
-    int updateOrderDetail(@Param("id") Long id, @Param("buyerUserName") String buyerUserName, @Param("orderCreateTime") String orderCreateTime, @Param("paySuccessTime") String paySuccessTime, @Param("consignTime") String consignTime, @Param("skuName") String skuName, @Param("skuId") String skuId, @Param("goodsTitle") String goodsTitle, @Param("totalPrice") String totalPrice, @Param("buyNum") Integer buyNum);
+    @Update("UPDATE xianyu_goods_order SET buyer_user_id=COALESCE(NULLIF(#{buyerUserId},''),buyer_user_id), " +
+            "buyer_user_name=COALESCE(NULLIF(#{buyerUserName},''),buyer_user_name), order_create_time=#{orderCreateTime}, " +
+            "pay_success_time=#{paySuccessTime},consign_time=#{consignTime},sku_name=#{skuName}, " +
+            "sku_id=COALESCE(#{skuId},sku_id),goods_title=#{goodsTitle},total_price=#{totalPrice},buy_num=#{buyNum} WHERE id=#{id}")
+    int updateOrderDetail(@Param("id") Long id, @Param("buyerUserId") String buyerUserId,
+                          @Param("buyerUserName") String buyerUserName, @Param("orderCreateTime") String orderCreateTime,
+                          @Param("paySuccessTime") String paySuccessTime, @Param("consignTime") String consignTime,
+                          @Param("skuName") String skuName, @Param("skuId") String skuId,
+                          @Param("goodsTitle") String goodsTitle, @Param("totalPrice") String totalPrice,
+                          @Param("buyNum") Integer buyNum);
 
     @Select("SELECT COALESCE(SUM(CAST(total_price AS DECIMAL(12, 2))), 0) FROM xianyu_goods_order WHERE state = 1 AND confirm_state = 1 AND date(create_time) = #{date}")
     double sumDeliverySuccessAmountByDate(@Param("date") String date);

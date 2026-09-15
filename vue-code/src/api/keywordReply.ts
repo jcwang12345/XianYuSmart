@@ -5,6 +5,10 @@ export interface KeywordReplyContent {
   ruleId: string | number;
   replyText: string;
   replyImageUrl: string;
+  versionNo?: number;
+  status?: string;
+  effectiveTime?: string;
+  expiresTime?: string;
 }
 
 export interface KeywordReplyRule {
@@ -15,8 +19,45 @@ export interface KeywordReplyRule {
   xyGoodsId: string;
   keyword: string;
   matchMode: number;
+  matchType?: 'EXACT' | 'CONTAINS' | 'REGEX';
+  priority?: number;
+  enabled?: boolean | number;
+  versionNo?: number;
+  effectiveTime?: string;
+  expiresTime?: string;
   isFallback: number;
   contents: KeywordReplyContent[];
+}
+
+export interface KeywordRuleVersion {
+  id: number;
+  ruleId: number;
+  versionNo: number;
+  keyword: string;
+  matchType: 'EXACT' | 'CONTAINS' | 'REGEX';
+  priority: number;
+  enabled: boolean | number;
+  isFallback: boolean | number;
+  sharingScope: 'GOODS' | 'ACCOUNT';
+  accountIds: number[];
+  contents: Array<{ replyText?: string; replyImageUrl?: string }>;
+  effectiveTime: string;
+  expiresTime?: string;
+  requestId: string;
+  createdUsername?: string;
+  createdTime: string;
+}
+
+export interface SaveKeywordRuleVersionCommand {
+  keyword: string;
+  matchType: 'EXACT' | 'CONTAINS' | 'REGEX';
+  priority: number;
+  enabled: boolean;
+  effectiveTime?: string;
+  expiresTime?: string;
+  accountIds: number[];
+  contents: Array<{ replyText?: string; replyImageUrl?: string }>;
+  requestId: string;
 }
 
 export function getKeywordReplyRules(data: { xianyuAccountId: number; xyGoodsId: string }) {
@@ -57,4 +98,14 @@ export function updateKeywordContent(data: { contentId: string | number; replyTe
 
 export function deleteKeywordContent(data: { contentId: string | number }) {
   return request({ url: '/keyword-reply/deleteContent', method: 'POST', data });
+}
+
+export function saveKeywordRuleVersion(ruleId: string | number, data: SaveKeywordRuleVersionCommand) {
+  return request<KeywordRuleVersion>({ url: `/keyword-reply/rules/${ruleId}`, method: 'PUT', data });
+}
+
+export function getKeywordRuleVersions(ruleId: string | number) {
+  return request<{ ruleId: number; records: KeywordRuleVersion[]; dataNotice: string }>({
+    url: `/keyword-reply/rules/${ruleId}/versions`, method: 'GET'
+  });
 }

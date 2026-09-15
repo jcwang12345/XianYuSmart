@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
@@ -69,6 +70,26 @@ public class MessageWorkspaceController {
     @PostMapping("/send/image")
     public ResultObject<Map<String, Object>> sendImage(@RequestBody MessageWorkspaceService.SendCommand command) {
         return ResultObject.success(service.sendImage(command));
+    }
+
+    @GetMapping("/send-attempts/{requestId}")
+    public ResultObject<Map<String,Object>> sendAttempt(@PathVariable String requestId,
+                                                        @RequestParam Long accountId) {
+        return ResultObject.success(service.sendAttempt(accountId, requestId));
+    }
+
+    @PostMapping("/send-attempts/{requestId}/resolution/preview")
+    public ResultObject<Map<String,Object>> previewResolution(
+            @PathVariable String requestId,
+            @RequestBody MessageWorkspaceService.SendResolutionCommand command) {
+        return ResultObject.success(service.previewResolution(requestId, command));
+    }
+
+    @PostMapping("/send-attempts/{requestId}/resolution")
+    public ResultObject<Map<String,Object>> resolveAttempt(
+            @PathVariable String requestId,
+            @RequestBody MessageWorkspaceService.SendResolutionCommand command) {
+        return ResultObject.success(service.resolveAttempt(requestId, command));
     }
 
     @GetMapping("/handoffs")

@@ -17,6 +17,12 @@ public interface XianyuKeywordReplyContentMapper extends BaseMapper<XianyuKeywor
             "ORDER BY rule_id, id</script>")
     List<XianyuKeywordReplyContent> selectByRuleIds(@Param("ruleIds") List<Long> ruleIds);
 
+    @Select("<script>SELECT * FROM xianyu_keyword_reply_content WHERE status='ACTIVE' " +
+            "AND effective_time&lt;=NOW(3) AND (expires_time IS NULL OR expires_time&gt;NOW(3)) AND rule_id IN " +
+            "<foreach collection='ruleIds' item='ruleId' open='(' separator=',' close=')'>#{ruleId}</foreach> " +
+            "ORDER BY rule_id, id</script>")
+    List<XianyuKeywordReplyContent> selectEffectiveByRuleIds(@Param("ruleIds") List<Long> ruleIds);
+
     @Delete("DELETE FROM xianyu_keyword_reply_content WHERE rule_id = #{ruleId}")
     int deleteByRuleId(@Param("ruleId") Long ruleId);
 }
