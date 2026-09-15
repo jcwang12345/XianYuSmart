@@ -82,6 +82,8 @@ export interface QRLoginSession {
   status: 'pending' | 'scanned' | 'confirmed' | 'expired' | 'cancelled' | 'verification_required' | 'error'
   accountId?: number
   message?: string
+  /** 后端确认的本轮二维码生成时间。 */
+  generatedAt?: number
   /** 后端本地监控截止时间；平台可能提前使二维码失效。 */
   expiresAt?: number
 }

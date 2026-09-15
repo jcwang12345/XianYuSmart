@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useMessageManager } from './useMessageManager'
 import {
   getContextMessages,
@@ -34,6 +34,7 @@ import { showError, showSuccess, showWarning } from '@/utils'
 import '@/styles/merchant-workbench.css'
 
 const route = useRoute()
+const router = useRouter()
 
 const {
   loading,
@@ -65,7 +66,12 @@ const sending = ref(false)
 const refreshing = ref(false)
 const quickReplies = ref<string[]>([])
 const messagesRef = ref<HTMLElement>()
-const inboxMode = ref<'conversations' | 'notifications' | 'handoffs'>('conversations')
+type InboxMode = 'conversations' | 'notifications' | 'handoffs'
+const requestedInbox = String(route.query.inbox || '')
+const inboxMode = ref<InboxMode>(['conversations', 'notifications', 'handoffs'].includes(requestedInbox)
+  ? requestedInbox as InboxMode
+  : 'conversations')
+const mobileStage = ref<'list' | 'conversation' | 'context'>('list')
 const notificationSearch = ref('')
 const notificationFilter = ref<'all' | 'pending' | 'delivery'>('all')
 const notificationLogs = ref<NotificationLog[]>([])
@@ -479,14 +485,24 @@ const loadHandoffs = async (silent = false) => {
   }
 }
 
-const switchInbox = (mode: 'conversations' | 'notifications' | 'handoffs') => {
+const syncWorkspaceRoute = () => router.replace({
+  query: {
+    ...route.query,
+    accountId: selectedAccountId.value ? String(selectedAccountId.value) : undefined,
+    inbox: inboxMode.value === 'conversations' ? undefined : inboxMode.value
+  }
+})
+
+const switchInbox = (mode: InboxMode) => {
   inboxMode.value = mode
+  mobileStage.value = 'list'
+  void syncWorkspaceRoute()
   if (mode === 'notifications') void loadSupportNotifications()
   if (mode === 'handoffs') void loadHandoffs()
 }
 
-const inboxTabs: Array<'conversations' | 'notifications' | 'handoffs'> = ['conversations', 'notifications', 'handoffs']
-const moveInboxFocus = async (event: KeyboardEvent, current: 'conversations' | 'notifications' | 'handoffs') => {
+const inboxTabs: InboxMode[] = ['conversations', 'notifications', 'handoffs']
+const moveInboxFocus = async (event: KeyboardEvent, current: InboxMode) => {
   const direction = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0
   const edgeIndex = event.key === 'Home' ? 0 : event.key === 'End' ? inboxTabs.length - 1 : -1
   if (!direction && edgeIndex < 0) return
@@ -537,6 +553,8 @@ const openHandoffConversation = async () => {
     await Promise.all([loadMessages(), loadWorkspaceInbox()])
   }
   inboxMode.value = 'conversations'
+  mobileStage.value = 'conversation'
+  await syncWorkspaceRoute()
   await nextTick()
   selectedSid.value = task.sessionId
 }
@@ -564,8 +582,30 @@ const refreshCurrentInbox = async () => {
 
 const changeAccount = async () => {
   workspaceInboxLoaded.value = false
+  mobileStage.value = 'list'
+  await syncWorkspaceRoute()
   await handleAccountChange()
   await Promise.all([loadWorkspaceInbox(), loadSupportNotifications(true), loadHandoffs(true)])
+}
+
+const openConversation = (sid: string) => {
+  selectedSid.value = sid
+  mobileStage.value = 'conversation'
+}
+
+const openMobileContext = () => {
+  contextExpanded.value = true
+  mobileStage.value = 'context'
+}
+
+const backToConversationList = () => {
+  contextExpanded.value = false
+  mobileStage.value = 'list'
+}
+
+const backToConversation = () => {
+  contextExpanded.value = false
+  mobileStage.value = 'conversation'
 }
 
 watch(conversations, value => {
@@ -640,6 +680,7 @@ onMounted(async () => {
   } else {
     await Promise.all([loadWorkspaceInbox(true), loadSupportNotifications(true), loadHandoffs(true)])
   }
+  await syncWorkspaceRoute()
   const routeBuyerId = String(route.query.buyerId || '').trim()
   if (routeBuyerId) {
     searchText.value = routeBuyerId
@@ -697,8 +738,8 @@ onBeforeUnmount(() => {
       </button>
     </nav>
 
-    <div v-if="inboxMode === 'conversations'" id="support-panel-conversations" class="chat__layout" role="tabpanel" aria-labelledby="support-tab-conversations">
-      <aside class="workbench__card chat__conversations">
+    <div v-if="inboxMode === 'conversations'" id="support-panel-conversations" class="chat__layout" :data-mobile-stage="mobileStage" role="tabpanel" aria-labelledby="support-tab-conversations">
+      <aside class="workbench__card chat__conversations" aria-label="买家会话列表">
         <div class="chat__summary">
           <strong>在线消息 <span>{{ conversations.length }}</span></strong>
           <div><span>全部 {{ conversations.length }}</span><span>买家消息 {{ incomingCount }}</span></div>
@@ -719,7 +760,7 @@ onBeforeUnmount(() => {
           :key="conversation.sid"
           class="chat__conversation"
           :class="{ 'chat__conversation--active': selected?.sid === conversation.sid }"
-          @click="selectedSid = conversation.sid"
+          @click="openConversation(conversation.sid)"
         >
           <img v-if="imageAvailable(conversation.buyerAvatar)" class="chat__avatar chat__avatar--image" :src="conversation.buyerAvatar" alt="" @error="markImageError(conversation.buyerAvatar)">
           <div v-else class="chat__avatar">{{ conversation.buyerName.slice(0, 1) }}</div>
@@ -736,19 +777,20 @@ onBeforeUnmount(() => {
         <div v-if="!conversations.length" class="workbench__empty">暂无会话</div>
       </aside>
 
-      <main class="workbench__card chat__main">
+      <main class="workbench__card chat__main" aria-label="当前会话">
         <template v-if="selected">
           <header class="chat__main-header">
             <img v-if="imageAvailable(selected.buyerAvatar)" class="chat__avatar chat__avatar--image" :src="selected.buyerAvatar" alt="" @error="markImageError(selected.buyerAvatar)">
             <div v-else class="chat__avatar">{{ selected.buyerName.slice(0, 1) }}</div>
             <div><strong>{{ selected.buyerName }}</strong><span>{{ selected.goodsTitle }}</span></div>
             <span v-if="workspaceRecord?.slaBreached" class="chat__sla">响应已超时</span>
+            <button class="workbench__btn chat__mobile-back" @click="backToConversationList">返回会话</button>
             <button class="workbench__btn" :disabled="workspaceSaving" @click="takeoverCurrent">人工接管 15 分钟</button>
             <button class="workbench__btn" :disabled="platformSyncing" @click="loadConversationContext(true)">
               {{ platformSyncing ? '同步历史中' : '同步完整历史' }}
             </button>
-            <button class="workbench__btn chat__context-toggle" :aria-expanded="contextExpanded" aria-controls="conversation-context" @click="contextExpanded = !contextExpanded">
-              {{ contextExpanded ? '收起资料' : '会话资料' }}
+            <button class="workbench__btn chat__context-toggle" :aria-expanded="contextExpanded" aria-controls="conversation-context" @click="openMobileContext">
+              会话资料
             </button>
           </header>
 
@@ -782,6 +824,7 @@ onBeforeUnmount(() => {
       </main>
 
       <aside id="conversation-context" class="workbench__card chat__context" :class="{ 'chat__context--open': contextExpanded }">
+        <div class="chat__context-mobile-header"><button class="workbench__btn" @click="backToConversation">返回会话</button><strong>买家与商品资料</strong></div>
         <template v-if="selected">
           <section>
             <h2>相关商品</h2>
@@ -818,8 +861,8 @@ onBeforeUnmount(() => {
               <dt>商品 ID</dt><dd>{{ selected.latest.xyGoodsId || '-' }}</dd>
               <dt>历史消息</dt><dd>{{ contextMessages.length }} 条</dd>
             </dl>
-            <router-link class="workbench__btn" :to="{ path: '/buyers', query: { buyerId: selected.buyerId } }">查看买家档案</router-link>
-            <router-link class="workbench__btn" :to="{ path: '/orders', query: { buyerId: selected.buyerId } }">查看关联订单</router-link>
+            <router-link class="workbench__btn" :to="{ path: '/buyers', query: { accountId: selectedAccountId, buyerAccountId: selectedAccountId, buyerId: selected.buyerId } }">查看买家档案</router-link>
+            <router-link class="workbench__btn" :to="{ path: '/orders', query: { accountId: selectedAccountId, buyerId: selected.buyerId } }">查看关联订单</router-link>
           </section>
         </template>
       </aside>
@@ -1025,6 +1068,7 @@ onBeforeUnmount(() => {
 .chat__main-header span { overflow: hidden; color: #667085; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat__main-header .chat__sla { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: #b42318; background: #fee4e2; font-size: 11px; }
 .chat__context-toggle { display: none; }
+.chat__mobile-back, .chat__context-mobile-header { display: none; }
 .chat__messages { display: flex; flex: 1; overflow-y: auto; flex-direction: column; gap: 10px; padding: 18px; }
 .chat__loading, .chat__system { align-self: center; padding: 5px 10px; border-radius: 12px; color: #667085; background: #f2f4f7; font-size: 11px; }
 .chat__message { max-width: 72%; align-self: flex-start; }
@@ -1125,12 +1169,19 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .chat { height: auto; overflow: visible; }
   .chat__layout { display: block; height: auto; min-height: 0; }
-  .chat__conversations { max-height: 42vh; }
-  .chat__main { min-height: 58vh; margin-top: 10px; margin-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .chat__layout[data-mobile-stage='list'] .chat__main,
+  .chat__layout[data-mobile-stage='list'] .chat__context,
+  .chat__layout[data-mobile-stage='conversation'] .chat__conversations,
+  .chat__layout[data-mobile-stage='conversation'] .chat__context,
+  .chat__layout[data-mobile-stage='context'] .chat__conversations,
+  .chat__layout[data-mobile-stage='context'] .chat__main { display: none; }
+  .chat__conversations { max-height: none; min-height: calc(100dvh - 250px); }
+  .chat__main { min-height: calc(100dvh - 220px); margin: 0 0 max(12px, env(safe-area-inset-bottom)); }
   .chat__layout--notifications { display: block; }
   .chat__layout--handoffs { display: block; }
   .chat__notification-detail { min-height: 48vh; margin-top: 10px; }
   .chat__handoff-detail { min-height: 54vh; margin-top: 10px; }
+  .chat__layout[data-mobile-stage='context'] .chat__context,
   .chat__context--open { display: block; max-height: none; margin: 0 0 max(12px, env(safe-area-inset-bottom)); }
   .chat__context--open section { border-right: 0; border-bottom: 1px solid #eaecf0; }
   .chat__permission-state { align-items: flex-start; flex-direction: column; }
@@ -1140,5 +1191,7 @@ onBeforeUnmount(() => {
   .chat__main-header > div:nth-child(2) { min-width: calc(100% - 52px); }
   .chat__message { max-width: 88%; }
   .chat__main-header .workbench__btn { padding: 6px 8px; font-size: 11px; }
+  .chat__mobile-back, .chat__context-toggle { display: inline-flex; }
+  .chat__context-mobile-header { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #eaecf0; background: #fff; }
 }
 </style>

@@ -23,8 +23,10 @@ const qrCodeUrl = ref('')
 const sessionId = ref('')
 const status = ref<QRLoginSession['status']>('pending')
 const statusText = ref('正在生成二维码...')
+const generatedAt = ref<number | null>(null)
 const expiresAt = ref<number | null>(null)
 const now = ref(Date.now())
+const generating = ref(false)
 let pollTimer: number | null = null
 let pollRequestPending = false
 let countdownTimer: number | null = null
@@ -38,7 +40,14 @@ const remainingText = computed(() => {
     ? `剩余 ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
     : '本轮二维码已过期'
 })
-const canRegenerate = computed(() => status.value === 'expired' || status.value === 'error' || remainingSeconds.value === 0)
+const canRegenerate = computed(() => !generating.value && status.value !== 'confirmed' && status.value !== 'scanned')
+const formatMoment = (value: number | null) => value
+  ? new Date(value).toLocaleString('zh-CN', { hour12: false })
+  : '读取中'
+const normalizeEpoch = (value: unknown) => {
+  const epoch = Number(value)
+  return Number.isFinite(epoch) && epoch > 0 ? epoch : null
+}
 
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
@@ -54,15 +63,18 @@ const generateQR = async () => {
   stopPolling()
   qrCodeUrl.value = ''
   sessionId.value = ''
+  generatedAt.value = null
   expiresAt.value = null
   status.value = 'pending'
   statusText.value = '正在生成二维码...'
+  generating.value = true
   try {
     const response = await generateQRCode(props.accountId)
     if (response.code === 0 || response.code === 200) {
       qrCodeUrl.value = response.data?.qrCodeUrl || ''
       sessionId.value = response.data?.sessionId || ''
-      expiresAt.value = response.data?.expiresAt || null
+      generatedAt.value = normalizeEpoch(response.data?.generatedAt) || Date.now()
+      expiresAt.value = normalizeEpoch(response.data?.expiresAt)
       now.value = Date.now()
       startPolling()
     } else {
@@ -73,6 +85,8 @@ const generateQR = async () => {
     status.value = 'error'
     statusText.value = error?.message || '生成二维码失败，请重试'
     showError(statusText.value)
+  } finally {
+    generating.value = false
   }
 }
 
@@ -192,12 +206,16 @@ onBeforeUnmount(() => {
               <span class="status-tag" :class="status === 'confirmed' ? 'is-success' : ''">{{ statusText }}</span>
             </div>
             <p class="expiry" :class="{ 'is-expired': remainingSeconds === 0 && !!expiresAt }">{{ remainingText }}</p>
+            <dl class="qr-time-facts">
+              <div><dt>生成时间</dt><dd>{{ formatMoment(generatedAt) }}</dd></div>
+              <div><dt>本地失效时间</dt><dd>{{ formatMoment(expiresAt) }}</dd></div>
+            </dl>
             <p class="expiry-note">本地最长保留 15 分钟；闲鱼平台可能提前使二维码失效。</p>
             <details v-if="sessionId" class="session-detail"><summary>会话详情</summary><code>{{ sessionId }}</code></details>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" @click="handleClose">取消</button>
-            <button v-if="canRegenerate" class="btn btn-primary" @click="generateQR">重新生成二维码</button>
+            <button v-if="canRegenerate" class="btn btn-primary" @click="generateQR">{{ qrCodeUrl ? '刷新二维码' : '重新生成二维码' }}</button>
           </div>
         </div>
       </div>
@@ -228,6 +246,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  max-height: calc(100dvh - 32px);
 }
 
 .modal-header {
@@ -269,6 +288,7 @@ onBeforeUnmount(() => {
 .modal-body {
   padding: 0 20px 20px;
   text-align: center;
+  overflow-y: auto;
 }
 
 .account-card {
@@ -380,6 +400,10 @@ onBeforeUnmount(() => {
 
 .expiry { margin: 2px 0 0; color: #8a6400; font-size: 13px; font-weight: 700; }
 .expiry.is-expired { color: #c9342f; }
+.qr-time-facts { display: grid; gap: 5px; margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; background: rgba(255,255,255,.5); text-align: left; }
+.qr-time-facts > div { display: flex; justify-content: space-between; gap: 12px; }
+.qr-time-facts dt { color: rgba(28,28,30,.55); font-size: 11px; }
+.qr-time-facts dd { margin: 0; color: #1c1c1e; font-size: 11px; text-align: right; }
 .expiry-note { margin: 6px auto 0; max-width: 280px; color: rgba(28,28,30,.55); font-size: 11px; line-height: 1.5; }
 .session-detail { margin-top: 10px; color: rgba(28,28,30,.55); font-size: 11px; }
 .session-detail code { display: block; margin-top: 5px; overflow-wrap: anywhere; }

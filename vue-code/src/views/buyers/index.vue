@@ -29,6 +29,8 @@ const accountId = ref<number | undefined>(Number.isSafeInteger(routeAccountId) &
 const keyword = ref(String(route.query.search || ''))
 const blockedFilter = ref(String(route.query.blocked || ''))
 const loading = ref(false)
+const loadError = ref('')
+const profilesLoaded = ref(false)
 const profiles = ref<BuyerProfile[]>([])
 const total = ref(0)
 const routePage = Number(route.query.page)
@@ -78,6 +80,7 @@ const loadAccounts = async () => {
 
 const loadProfiles = async () => {
   loading.value = true
+  loadError.value = ''
   void router.replace({ query: {
     ...route.query,
     accountId: accountId.value ? String(accountId.value) : undefined,
@@ -95,6 +98,9 @@ const loadProfiles = async () => {
     })
     profiles.value = response.data?.records || []
     total.value = response.data?.total || 0
+    profilesLoaded.value = true
+  } catch (error: any) {
+    loadError.value = error?.message || '买家列表读取失败'
   } finally {
     loading.value = false
   }
@@ -274,7 +280,7 @@ watch(() => form.value.blacklisted, blacklisted => {
 onMounted(async () => {
   await loadAccounts()
   await loadProfiles()
-  const buyerAccountId = Number(route.query.buyerAccountId)
+  const buyerAccountId = Number(route.query.buyerAccountId || route.query.accountId || accountId.value)
   const buyerId = String(route.query.buyerId || '')
   if (Number.isSafeInteger(buyerAccountId) && buyerAccountId > 0 && buyerId) {
     await openDetail({ xianyuAccountId: buyerAccountId, buyerUserId: buyerId } as BuyerProfile, true)
@@ -307,9 +313,11 @@ onMounted(async () => {
     </section>
 
     <section class="panel table-panel">
-      <div v-if="loading" class="empty">加载中...</div>
-      <div v-else-if="profiles.length === 0" class="empty">暂无买家记录，收到咨询或订单后会自动建立资料。</div>
-      <div v-else class="table-wrap">
+      <div v-if="loading && !profilesLoaded" class="empty" role="status">正在读取买家资料...</div>
+      <div v-else-if="loadError && !profiles.length" class="empty error-state" role="alert"><strong>买家资料暂时无法读取</strong><span>{{ loadError }}</span><button @click="loadProfiles">重试</button></div>
+      <div v-else-if="profilesLoaded && profiles.length === 0" class="empty">暂无买家记录，收到咨询或订单后会自动建立资料。</div>
+      <div v-if="loadError && profiles.length" class="inline-error" role="alert">{{ loadError }}，已保留上次成功结果。<button @click="loadProfiles">重试</button></div>
+      <div v-if="profiles.length" class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -516,7 +524,7 @@ button { border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 14px; backg
 .table-panel { min-height: 360px; }.table-wrap { overflow: auto; }table { width: 100%; border-collapse: collapse; min-width: 980px; }th, td { padding: 13px 14px; border-bottom: 1px solid #eaecf0; text-align: left; font-size: 13px; vertical-align: top; }th { color: #667085; font-weight: 500; background: #fcfcfd; }
 .buyer-row { cursor: pointer; }.buyer-row:hover { background: #f9fafb; }.buyer-row:focus-visible { outline-offset: -2px; }td strong, td small { display: block; }td small { color: #98a2b3; margin-top: 4px; }.tag { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 4px; background: #fff8d9; color: #9a6200; font-size: 12px; }
 .muted { color: #98a2b3; }.status { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; }.status.normal { color: #067647; background: #ecfdf3; }.status.blocked { color: #b42318; background: #fef3f2; }.blacklist-status { margin-left: 5px; }.link { padding: 0; border: 0; color: #9a6200; }.link.secondary { margin-left: 10px; color: #475467; }
-.empty { padding: 80px 20px; text-align: center; color: #98a2b3; }.empty.compact { padding: 40px 16px; }.pager { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; font-size: 13px; color: #667085; }.pager div { display: flex; align-items: center; gap: 10px; }
+.empty { padding: 80px 20px; text-align: center; color: #98a2b3; }.empty.compact { padding: 40px 16px; }.error-state { display: grid; justify-items: center; gap: 8px; color: #b42318; }.error-state span { max-width: 560px; }.inline-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px; padding: 9px 12px; border: 1px solid #fda29b; border-radius: 7px; color: #b42318; background: #fef3f2; font-size: 12px; }.pager { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; font-size: 13px; color: #667085; }.pager div { display: flex; align-items: center; gap: 10px; }
 .detail-overlay { position: fixed; inset: 0; z-index: 2100; display: grid; place-items: center; padding: 22px; background: rgba(16,24,40,.46); backdrop-filter: blur(4px); }.detail-drawer { display: flex; flex-direction: column; width: min(1440px, calc(100vw - 44px)); height: min(900px, calc(100vh - 44px)); min-height: 620px; overflow: hidden; border: 1px solid #fff; border-radius: 22px; background: #f7f8fa; box-shadow: 0 30px 90px rgba(16,24,40,.28); }
 .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e4e7ec; background: #fff; }.buyer-identity { display: flex; align-items: center; gap: 12px; }.buyer-identity .avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 9px; background: #9a6200; color: #fff; font-weight: 700; }.buyer-identity small, .buyer-identity p { color: #98a2b3; font-size: 11px; }.buyer-identity h3 { margin: 2px 0; font-size: 18px; }.detail-header-actions { display: flex; align-items: center; gap: 7px; }.close { padding: 2px 8px; border: 0; font-size: 23px; }
 .detail-loading { padding: 100px 20px; text-align: center; color: #667085; }.profile-strip { display: grid; grid-template-columns: repeat(5, 1fr); margin: 12px 14px 0; border: 1px solid #e4e7ec; border-radius: 9px; background: #fff; }.profile-strip > div { padding: 13px 15px; border-right: 1px solid #eaecf0; }.profile-strip > div:last-child { border-right: 0; }.profile-strip span { display: block; color: #667085; font-size: 11px; }.profile-strip strong { display: block; margin-top: 5px; font-size: 18px; }.profile-strip .danger { color: #b42318; }

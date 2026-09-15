@@ -25,26 +25,62 @@ const qrCodeUrl = ref('')
 const sessionId = ref('')
 const status = ref<QRLoginSession['status']>('pending')
 const statusText = ref('正在生成二维码...')
+const generatedAt = ref<number | null>(null)
+const expiresAt = ref<number | null>(null)
+const now = ref(Date.now())
+const generating = ref(false)
 let pollTimer: number | null = null
 let pollRequestPending = false
+let countdownTimer: number | null = null
+
+const normalizeEpoch = (value: unknown) => {
+  const epoch = Number(value)
+  return Number.isFinite(epoch) && epoch > 0 ? epoch : null
+}
+const remainingSeconds = computed(() => Math.max(0, Math.ceil(((expiresAt.value || 0) - now.value) / 1000)))
+const remainingText = computed(() => {
+  if (!expiresAt.value) return '有效时间读取中'
+  const minutes = Math.floor(remainingSeconds.value / 60)
+  const seconds = remainingSeconds.value % 60
+  return remainingSeconds.value > 0
+    ? `剩余 ${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+    : '本轮二维码已过期'
+})
+const formatMoment = (value: number | null) => value
+  ? new Date(value).toLocaleString('zh-CN', { hour12: false })
+  : '读取中'
+const canRegenerate = computed(() => !generating.value && status.value !== 'confirmed' && status.value !== 'scanned')
 
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
     checkScreenSize()
     window.addEventListener('resize', checkScreenSize)
+    startCountdown()
     generateQR()
   } else {
     window.removeEventListener('resize', checkScreenSize)
     stopPolling()
+    stopCountdown()
   }
 })
 
 const generateQR = async () => {
+  stopPolling()
+  qrCodeUrl.value = ''
+  sessionId.value = ''
+  generatedAt.value = null
+  expiresAt.value = null
+  status.value = 'pending'
+  statusText.value = '正在生成二维码...'
+  generating.value = true
   try {
     const response = await generateQRCode()
     if (response.code === 0 || response.code === 200) {
       qrCodeUrl.value = response.data?.qrCodeUrl || ''
       sessionId.value = response.data?.sessionId || ''
+      generatedAt.value = normalizeEpoch(response.data?.generatedAt) || Date.now()
+      expiresAt.value = normalizeEpoch(response.data?.expiresAt)
+      now.value = Date.now()
       startPolling()
     } else {
       throw new Error(response.msg || '生成二维码失败')
@@ -54,6 +90,28 @@ const generateQR = async () => {
     status.value = 'error'
     statusText.value = error?.message || '生成二维码失败，请重试'
     showError(statusText.value)
+  } finally {
+    generating.value = false
+  }
+}
+
+const startCountdown = () => {
+  stopCountdown()
+  now.value = Date.now()
+  countdownTimer = window.setInterval(() => {
+    now.value = Date.now()
+    if (expiresAt.value && now.value >= expiresAt.value && status.value !== 'confirmed') {
+      status.value = 'expired'
+      statusText.value = '二维码已过期，请重新生成'
+      stopPolling()
+    }
+  }, 1000)
+}
+
+const stopCountdown = () => {
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
   }
 }
 
@@ -117,6 +175,7 @@ const handleLoginSuccess = async () => {
 
 const handleClose = () => {
   stopPolling()
+  stopCountdown()
   emit('update:modelValue', false)
 }
 </script>
@@ -139,6 +198,10 @@ const handleClose = () => {
 
       <!-- 弹窗内容 -->
       <div class="ios-sheet-content">
+        <div class="account-mode-card">
+          <strong>新增闲鱼账号</strong>
+          <span>扫码后自动读取闲鱼账号 ID；已有账号续期请从“连接管理 → 扫码更新”进入。</span>
+        </div>
         <div class="qr-code-container">
           <img v-if="qrCodeUrl" :src="qrCodeUrl" alt="二维码" class="qr-code" />
           <div v-else class="qr-skeleton">
@@ -153,7 +216,12 @@ const handleClose = () => {
             {{ statusText }}
           </div>
         </div>
-        
+        <p class="qr-expiry" :class="{ 'qr-expiry--expired': remainingSeconds === 0 && !!expiresAt }">{{ remainingText }}</p>
+        <dl class="qr-time-facts">
+          <div><dt>生成时间</dt><dd>{{ formatMoment(generatedAt) }}</dd></div>
+          <div><dt>本地失效时间</dt><dd>{{ formatMoment(expiresAt) }}</dd></div>
+        </dl>
+        <p class="qr-validity-note">本地最长保留 15 分钟；闲鱼平台可能提前使二维码失效，请以最新一张为准。</p>
         <p v-if="sessionId" class="session-id">会话ID: {{ sessionId }}</p>
       </div>
 
@@ -161,6 +229,9 @@ const handleClose = () => {
       <div class="ios-sheet-footer">
         <button class="ios-sheet-btn ios-sheet-btn--cancel" @click="handleClose">
           取消
+        </button>
+        <button v-if="canRegenerate" class="ios-sheet-btn ios-sheet-btn--primary" @click="generateQR">
+          {{ qrCodeUrl ? '刷新二维码' : '重新生成二维码' }}
         </button>
       </div>
     </div>
@@ -282,6 +353,10 @@ const handleClose = () => {
   display: none;
 }
 
+.account-mode-card { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid rgba(203,152,0,.24); border-radius: 10px; background: rgba(255,214,10,.09); }
+.account-mode-card strong { color: #1c1c1e; font-size: 13px; }
+.account-mode-card span { color: rgba(28,28,30,.6); font-size: 11px; line-height: 1.5; }
+
 .qr-code-container {
   display: flex;
   justify-content: center;
@@ -357,6 +432,14 @@ const handleClose = () => {
   color: #FF453A;
 }
 
+.qr-expiry { margin: 4px 0 0; color: #8a6400; font-size: 13px; font-weight: 700; text-align: center; }
+.qr-expiry--expired { color: #c9342f; }
+.qr-time-facts { display: grid; gap: 5px; margin: 10px 0 0; padding: 9px 11px; border-radius: 9px; background: rgba(255,255,255,.5); }
+.qr-time-facts > div { display: flex; justify-content: space-between; gap: 12px; }
+.qr-time-facts dt { color: rgba(28,28,30,.55); font-size: 11px; }
+.qr-time-facts dd { margin: 0; color: #1c1c1e; font-size: 11px; text-align: right; }
+.qr-validity-note { margin: 6px 0 0; color: rgba(28,28,30,.55); font-size: 11px; line-height: 1.5; text-align: center; }
+
 .session-id {
   margin: 12px 0;
   font-size: 12px;
@@ -366,10 +449,14 @@ const handleClose = () => {
 
 /* iOS Sheet 底部 */
 .ios-sheet-footer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
   padding: 12px 16px;
   border-top: 0.5px solid rgba(60,60,67,.12);
   background: transparent;
 }
+.ios-sheet-footer > :only-child { grid-column: 1 / -1; }
 
 .ios-sheet-btn {
   width: 100%;
@@ -392,6 +479,9 @@ const handleClose = () => {
 .ios-sheet-btn--cancel:active {
   background: rgba(255,255,255,0.55);
 }
+
+.ios-sheet-btn--primary { color: #1c1c1e; background: #ffd60a; }
+.ios-sheet-btn--primary:active { background: #f1c400; }
 
 /* 手机端适配 */
 @media screen and (max-width: 768px) {

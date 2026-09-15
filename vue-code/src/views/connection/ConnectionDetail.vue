@@ -337,7 +337,13 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- Desktop: reuse desktop component -->
-  <DesktopDetail v-if="!isMobile" :account-id="accountId" />
+  <DesktopDetail
+    v-if="!isMobile"
+    :account-id="accountId"
+    :account-name="accountName"
+    :account-display-id="accountDisplayId"
+    :account-remark="accountRemark"
+  />
 
   <!-- Mobile: custom native-style page -->
   <div v-else class="page">

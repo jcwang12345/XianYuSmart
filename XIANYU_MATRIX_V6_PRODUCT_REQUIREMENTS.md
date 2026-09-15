@@ -1,6 +1,6 @@
 # XianYuSmart V6 统一产品需求与硬验收基线
 
-版本：6.2
+版本：6.3
 生效日期：2026-09-15
 界面证据：`XIANYU_MATRIX_V6_FEATURE_EVIDENCE_AUDIT_2026-09-15.md`
 

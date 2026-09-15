@@ -345,7 +345,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                         
                         log.info("二维码生成成功");
                         return new QRLoginResponse(true, sessionId, qrDataUrl, null,
-                                session.getCreatedTime() + session.getExpireTime());
+                                session.getCreatedTime(), session.getCreatedTime() + session.getExpireTime());
                     } else {
                         return new QRLoginResponse(false, "获取登录二维码失败");
                     }

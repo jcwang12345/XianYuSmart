@@ -1,6 +1,7 @@
 package com.xianyusmart.service.impl;
 
 import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.controller.dto.QRLoginResponse;
 import com.xianyusmart.controller.dto.QRLoginSession;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,13 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 class QRLoginServiceImplTest {
+    @Test void responseCarriesAuthoritativeLocalGenerationWindow() {
+        QRLoginResponse response = new QRLoginResponse(
+                true, "session-window", "data:image/png;base64,qa", "ok", 1_000L, 901_000L);
+        assertEquals(1_000L, response.getGeneratedAt());
+        assertEquals(901_000L, response.getExpiresAt());
+    }
+
     @Test void localSessionNoLongerExpiresAtFiveMinutesButRemainsBounded() {
         var session=new QRLoginSession("local-window");
         session.setCreatedTime(System.currentTimeMillis()-6*60*1000L);
