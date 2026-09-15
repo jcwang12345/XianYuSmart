@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   createAccountBatch, getAccountBatch, newRequestId, previewAccountBatch,
   type AccountBatchOperation, type AccountBatchPreview, type AccountBatchRequest,
   type AccountBatchResult, type AccountBatchSelectionMode,
 } from '@/api/matrix'
 import { showError, showSuccess } from '@/utils'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 const props=defineProps<{
   modelValue:boolean
@@ -18,6 +19,8 @@ const emit=defineEmits<{(event:'update:modelValue',value:boolean):void;(event:'c
 const operation=ref<AccountBatchOperation>('SYNC')
 const preview=ref<AccountBatchPreview|null>(null)
 const batch=ref<AccountBatchResult|null>(null)
+const errorMessage=ref(''),errorStage=ref<'PREVIEW'|'CREATE'|'POLL'|''>('')
+const errorPanel=ref<HTMLElement|null>(null)
 const loading=ref(false),creating=ref(false),confirmed=ref(false)
 const requestId=ref('')
 let pollTimer:number|undefined
@@ -26,10 +29,15 @@ const terminal=new Set(['SUCCEEDED','FAILED','PARTIAL_SUCCESS','CANCELLED'])
 const canCreate=computed(()=>!!preview.value&&preview.value.executableCount>0&&confirmed.value&&!creating.value&&!batch.value)
 const statusText=(status:number)=>({0:'排队中',1:'执行中',2:'成功',3:'已取消',4:'结果未知','-1':'失败'}[String(status)]||'未知')
 const close=()=>{if(!creating.value)emit('update:modelValue',false)}
+useModalFocusTrap(computed(()=>props.modelValue),()=>document.querySelector<HTMLElement>('.account-batch-dialog'),close)
 const payload=():AccountBatchRequest=>({requestId:requestId.value,operationType:operation.value,selectionMode:props.selectionMode,accountIds:props.accountIds,excludedAccountIds:props.excludedAccountIds,filter:props.filter})
-const runPreview=async()=>{loading.value=true;preview.value=null;batch.value=null;confirmed.value=false;requestId.value=newRequestId('account-batch');try{const result=await previewAccountBatch(payload());preview.value=result.data||null}catch(error:any){showError(error.message||'账号范围预检失败')}finally{loading.value=false}}
-const poll=async()=>{if(!batch.value||terminal.has(batch.value.status))return;try{const result=await getAccountBatch(batch.value.batchId);if(result.data)batch.value=result.data;if(batch.value&&terminal.has(batch.value.status)){emit('completed');return}}catch(error:any){showError(error.message||'任务状态读取失败');return}pollTimer=window.setTimeout(poll,1200)}
-const create=async()=>{if(!preview.value||!canCreate.value)return;creating.value=true;try{const result=await createAccountBatch({...payload(),confirmationText:preview.value.confirmationSummary,previewToken:preview.value.previewToken});batch.value=result.data||null;showSuccess(result.data?.idempotentReplay?'已返回同一批任务':'账号批量任务已创建');void poll()}catch(error:any){showError(error.message||'账号批量任务创建失败')}finally{creating.value=false}}
+const readableError=(error:any,fallback:string)=>error?.response?.data?.message||error?.response?.data?.msg||error?.message||fallback
+const persistError=async(stage:'PREVIEW'|'CREATE'|'POLL',message:string)=>{errorStage.value=stage;errorMessage.value=message;showError(message);await nextTick();errorPanel.value?.focus()}
+const clearError=()=>{errorStage.value='';errorMessage.value=''}
+const runPreview=async()=>{loading.value=true;preview.value=null;batch.value=null;confirmed.value=false;clearError();requestId.value=newRequestId('account-batch');try{const result=await previewAccountBatch(payload());preview.value=result.data||null}catch(error:any){await persistError('PREVIEW',readableError(error,'账号范围预检失败'))}finally{loading.value=false}}
+const poll=async()=>{if(!batch.value||terminal.has(batch.value.status))return;clearError();try{const result=await getAccountBatch(batch.value.batchId);if(result.data)batch.value=result.data;if(batch.value&&terminal.has(batch.value.status)){emit('completed');return}}catch(error:any){await persistError('POLL',readableError(error,'任务状态读取失败'));return}pollTimer=window.setTimeout(poll,1200)}
+const create=async()=>{if(!preview.value||!canCreate.value)return;creating.value=true;clearError();try{const result=await createAccountBatch({...payload(),confirmationText:preview.value.confirmationSummary,previewToken:preview.value.previewToken});batch.value=result.data||null;showSuccess(result.data?.idempotentReplay?'已返回同一批任务':'账号批量任务已创建');void poll()}catch(error:any){await persistError('CREATE',readableError(error,'账号批量任务创建失败'))}finally{creating.value=false}}
+const retryError=()=>errorStage.value==='POLL'?void poll():void runPreview()
 watch(()=>props.modelValue,value=>{if(value)void runPreview();else{if(pollTimer)window.clearTimeout(pollTimer);pollTimer=undefined}},{immediate:true})
 watch(operation,()=>{if(props.modelValue)void runPreview()})
 onBeforeUnmount(()=>{if(pollTimer)window.clearTimeout(pollTimer)})
@@ -42,6 +50,7 @@ onBeforeUnmount(()=>{if(pollTimer)window.clearTimeout(pollTimer)})
       <div class="account-batch-dialog__body">
         <section class="account-batch-options"><label>执行动作<select v-model="operation" :disabled="creating||!!batch"><option value="SYNC">同步运行状态</option><option value="ENABLE">启用账号</option><option value="DISABLE">停用账号</option><option value="RENEW">准备扫码续期</option></select></label><div><span>选择范围</span><strong>{{ selectionMode==='FILTER_SNAPSHOT'?'当前筛选快照':'手动勾选账号' }}</strong><small>{{ selectionMode==='FILTER_SNAPSHOT'?`排除 ${excludedAccountIds.length} 个账号`:`已勾选 ${accountIds.length} 个账号` }}</small></div></section>
         <div v-if="loading" class="account-batch-state">正在预检账号状态与权限…</div>
+        <section v-else-if="errorMessage" ref="errorPanel" class="account-batch-error" role="alert" tabindex="-1"><strong>{{ errorStage==='POLL'?'任务状态读取失败':'预检未通过' }}</strong><p>{{ errorMessage }}</p><small>当前选择范围和动作已保留。可重试；如混合了隔离 QA 与真实账号，请返回列表取消勾选后再操作。</small><div><button class="workbench__btn" @click="close">返回调整选择</button><button class="workbench__btn workbench__btn--primary" @click="retryError">{{ errorStage==='POLL'?'重新读取任务':'重试预检' }}</button></div></section>
         <template v-else-if="preview">
           <section class="account-batch-summary"><div><span>选中</span><strong>{{ preview.selectedCount }}</strong></div><div><span>可执行</span><strong>{{ preview.executableCount }}</strong></div><div><span>冲突</span><strong>{{ preview.conflictCount }}</strong></div><div><span>通道</span><strong>{{ preview.executionChannel==='QA_MOCK'?'隔离 QA':'本机运行时' }}</strong></div></section>
           <p class="account-batch-confirmation">{{ preview.confirmationSummary }}</p>

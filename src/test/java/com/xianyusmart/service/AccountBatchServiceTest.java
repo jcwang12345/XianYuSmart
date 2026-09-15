@@ -3,6 +3,7 @@ package com.xianyusmart.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.entity.MerchantTask;
+import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.MerchantTaskMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -85,25 +86,46 @@ class AccountBatchServiceTest {
 
     @Test
     void idempotentReplayReturnsExistingBatchWithoutRevalidatingChangedAccountState() {
+        when(matrix.accountDetail(101L)).thenReturn(account(101L, 1, "CONNECTED"));
+        when(execution.isQaEligible(1L, 101L)).thenReturn(true);
+        when(tasks.selectByRequestKey(eq(1L), eq("ACCOUNT_SYNC"), anyString())).thenReturn(null);
         MerchantTask stored = new MerchantTask();
         stored.setId(12L);
         stored.setTaskType("ACCOUNT_SYNC");
         stored.setXianyuAccountId(101L);
         stored.setStatus(2);
-        stored.setRequestJson("{\"requestId\":\"qa-replay\",\"operationType\":\"SYNC\","
-                + "\"selectionMode\":\"EXPLICIT\",\"previewToken\":\"saved-token\"}");
-        when(tasks.selectByBatchId(eq(1L), anyString())).thenReturn(List.of(stored));
+        when(tasks.selectByBatchId(eq(1L), anyString())).thenReturn(List.of(), List.of(stored), List.of(stored), List.of(stored), List.of(stored), List.of(stored));
+        doAnswer(invocation -> {
+            MerchantTask inserted = invocation.getArgument(0);
+            stored.setRequestJson(inserted.getRequestJson());
+            return 1;
+        }).when(tasks).insert(any());
+        AccountBatchService.Preview preview = service.preview(request("SYNC", List.of(101L)));
         AccountBatchService.Request replay = new AccountBatchService.Request("qa-replay", "SYNC", "EXPLICIT",
                 List.of(101L), List.of(), new AccountBatchService.Filter(null, null, null, null),
-                "原确认文案", "saved-token");
+                preview.confirmationSummary(), preview.previewToken());
+
+        Map<String, Object> first = service.create(replay);
+        assertEquals(false, first.get("idempotentReplay"));
+        clearInvocations(matrix, access, execution, logs);
 
         Map<String, Object> result = service.create(replay);
 
         assertEquals("SUCCEEDED", result.get("status"));
         assertEquals(true, result.get("idempotentReplay"));
         verifyNoInteractions(matrix);
-        verify(tasks, never()).insert(any());
         verifyNoInteractions(logs);
+
+        AccountBatchService.Request changedAccounts = new AccountBatchService.Request("qa-replay", "SYNC", "EXPLICIT",
+                List.of(102L), List.of(), replay.filter(), replay.confirmationText(), replay.previewToken());
+        AccountBatchService.Request changedExclusions = new AccountBatchService.Request("qa-replay", "SYNC", "EXPLICIT",
+                List.of(101L), List.of(999L), replay.filter(), replay.confirmationText(), replay.previewToken());
+        AccountBatchService.Request changedFilter = new AccountBatchService.Request("qa-replay", "SYNC", "EXPLICIT",
+                List.of(101L), List.of(), new AccountBatchService.Filter("不同筛选", null, null, null),
+                replay.confirmationText(), replay.previewToken());
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedAccounts)).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedExclusions)).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedFilter)).getCode());
     }
 
     private AccountBatchService.Request request(String operation, List<Long> ids) {

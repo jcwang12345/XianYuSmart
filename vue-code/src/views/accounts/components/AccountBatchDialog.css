@@ -18,6 +18,11 @@
 .account-batch-confirmation,.account-batch-notice,.account-batch-state{margin:0;padding:11px 13px;border-radius:10px;background:#fff5c9;color:#694d00}
 .account-batch-notice{background:#eef5ff;color:#28517d}
 .account-batch-state{text-align:center;background:#fff}
+.account-batch-error{display:grid;gap:8px;padding:14px;border:1px solid #f2b8b5;border-radius:11px;background:#fff4f3;color:#8f1d18;outline:none}
+.account-batch-error:focus{box-shadow:0 0 0 3px rgba(185,42,33,.18)}
+.account-batch-error p,.account-batch-error small{margin:0;line-height:1.55}
+.account-batch-error small{color:#7c4a47}
+.account-batch-error>div{display:flex;justify-content:flex-end;gap:8px;margin-top:3px}
 .account-batch-items{min-height:58px;max-height:250px;overflow:auto;border:1px solid #e5e1d6;border-radius:11px;background:#fff}
 .account-batch-items article{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:11px 13px;border-bottom:1px solid #efede6}
 .account-batch-items article:last-child{border-bottom:0}
@@ -35,4 +40,4 @@
 .account-batch-result>div article{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:10px 13px;border-bottom:1px solid #efede7}
 .account-batch-result>div article small{grid-column:1/-1;color:#b42318}
 .account-batch-dialog>footer{display:flex;justify-content:flex-end;gap:8px;padding:13px 20px;border-top:1px solid #e7e3d7;background:#fff}
-@media(max-width:767px){.account-batch-backdrop{padding:0}.account-batch-dialog{width:100vw;height:100dvh;max-height:none;border:0;border-radius:0}.account-batch-dialog>header{padding:15px 16px}.account-batch-dialog__body{padding:12px}.account-batch-options{grid-template-columns:1fr}.account-batch-summary{grid-template-columns:repeat(2,1fr)}.account-batch-dialog>footer{padding:11px 12px}.account-batch-dialog>footer button{flex:1}}
+@media(max-width:767px){.account-batch-backdrop{padding:0}.account-batch-dialog{width:100vw;height:100dvh;max-height:none;border:0;border-radius:0}.account-batch-dialog>header{padding:15px 16px}.account-batch-dialog__body{padding:12px}.account-batch-options{grid-template-columns:1fr}.account-batch-summary{grid-template-columns:repeat(2,1fr)}.account-batch-error>div{display:grid}.account-batch-dialog>footer{padding:11px 12px}.account-batch-dialog>footer button{flex:1}}

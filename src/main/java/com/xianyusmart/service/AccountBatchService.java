@@ -22,6 +22,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /** ACC-10 cross-page account selection, preflight and persistent per-account tasks. */
@@ -90,11 +91,12 @@ public class AccountBatchService {
     public Map<String, Object> create(Request request) {
         Request normalized = normalize(request, true);
         Long tenantId = requireTenant();
+        String payloadFingerprint = requestPayloadFingerprint(normalized);
         String batchId = "AB-" + sha256(normalized.requestId() + "|" + normalized.operationType())
                 .substring(0, 20).toUpperCase(Locale.ROOT);
         List<MerchantTask> existing = tasks.selectByBatchId(tenantId, batchId);
         if (!existing.isEmpty()) {
-            assertReplayMatches(existing.getFirst(), normalized);
+            assertReplayMatches(existing.getFirst(), payloadFingerprint);
             Map<String, Object> response = batch(batchId);
             response.put("idempotentReplay", true);
             return response;
@@ -124,7 +126,8 @@ public class AccountBatchService {
             task.setAttemptCount(0);
             task.setMaxAttempts(1);
             task.setRequestJson(write(Map.of("requestId", normalized.requestId(), "operationType", normalized.operationType(),
-                    "selectionMode", normalized.selectionMode(), "previewToken", normalized.previewToken())));
+                    "selectionMode", normalized.selectionMode(), "previewToken", normalized.previewToken(),
+                    "payloadFingerprint", payloadFingerprint)));
             try {
                 tasks.insert(task);
                 replay = false;
@@ -138,17 +141,34 @@ public class AccountBatchService {
         return response;
     }
 
-    private void assertReplayMatches(MerchantTask task, Request request) {
+    private void assertReplayMatches(MerchantTask task, String payloadFingerprint) {
         try {
             var stored = json.readTree(task.getRequestJson());
-            if (!request.previewToken().equals(stored.path("previewToken").asText())
-                    || !request.selectionMode().equals(stored.path("selectionMode").asText())
-                    || !request.operationType().equals(stored.path("operationType").asText())) {
+            if (!payloadFingerprint.equals(stored.path("payloadFingerprint").asText())) {
                 throw new BusinessException(409, "同一 requestId 已用于不同的账号批量请求");
             }
         } catch (JsonProcessingException error) {
             throw new IllegalStateException("已有账号批量任务数据无法解析", error);
         }
+    }
+
+    private String requestPayloadFingerprint(Request request) {
+        List<Long> accountIds = request.accountIds().stream().filter(Objects::nonNull).distinct().sorted().toList();
+        List<Long> excludedIds = request.excludedAccountIds().stream().filter(Objects::nonNull).distinct().sorted().toList();
+        Map<String, Object> filter = new LinkedHashMap<>();
+        filter.put("search", text(request.filter().search()));
+        filter.put("connectionStatus", upper(request.filter().connectionStatus()));
+        filter.put("riskSeverity", upper(request.filter().riskSeverity()));
+        filter.put("groupId", request.filter().groupId());
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("operationType", request.operationType());
+        payload.put("selectionMode", request.selectionMode());
+        payload.put("accountIds", accountIds);
+        payload.put("excludedAccountIds", excludedIds);
+        payload.put("filter", filter);
+        payload.put("previewToken", request.previewToken());
+        payload.put("confirmationText", text(request.confirmationText()));
+        return sha256(write(payload));
     }
 
     public Map<String, Object> batch(String batchId) {
