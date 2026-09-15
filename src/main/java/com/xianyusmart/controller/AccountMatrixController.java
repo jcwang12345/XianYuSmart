@@ -1,6 +1,7 @@
 package com.xianyusmart.controller;
 
 import com.xianyusmart.common.ResultObject;
+import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.service.AccountBatchService;
 import com.xianyusmart.service.AccountMatrixService;
 import org.springframework.http.ContentDisposition;
@@ -115,7 +116,7 @@ public class AccountMatrixController {
     public ResultObject<Map<String, Object>> createBatch(@PathVariable String operation,
                                                          @RequestBody AccountBatchService.Request request) {
         if (request.operationType() == null || !operation.equalsIgnoreCase(request.operationType())) {
-            throw new IllegalArgumentException("路径操作类型与请求不一致");
+            throw new BusinessException(400, "路径操作类型与请求不一致");
         }
         return ResultObject.success(accountBatchService.create(request));
     }

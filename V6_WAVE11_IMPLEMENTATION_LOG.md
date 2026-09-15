@@ -44,3 +44,4 @@
 - 浏览器只复核受影响页面族、桌面和手机关键断点；全站巡检集中到里程碑门禁。
 - 独立测试使用冻结提交归档并行验收，避免共享工作树和重复机械产物互相覆盖。
 - QA 运行时优先读取磁盘前端产物；`scripts/native-qa.sh frontend-fast` 可在不重打约 290MB JAR、不重启 Java 的情况下刷新纯前端修改，冻结版本仍使用完整 `deploy`。
+- Java 开发回路使用 `-Dmaven.compiler.useIncrementalCompilation=false` 只编译时间戳变化的源码；本轮末次修正只编译 1 个文件并通过，冻结门禁仍执行全量测试。
