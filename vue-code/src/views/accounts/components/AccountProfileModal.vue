@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import type { MatrixAccount } from '@/api/matrix'
 
 const props = defineProps<{ account: MatrixAccount; loading?: boolean }>()
-defineEmits<{ close: []; edit: []; manage: []; refresh: []; dashboard: [] }>()
+defineEmits<{ close: []; edit: []; manage: []; refresh: []; dashboard: []; polish: [] }>()
 const profile = computed<Record<string, any>>(() => props.account.profile || {})
 const runtime = computed<Record<string, any>>(() => props.account.runtimeProfile || {})
 const datasets = computed<Record<string, any>>(() => props.account.datasetEvidence || {})
@@ -42,7 +42,7 @@ const sourceLabel = (v?: unknown) => ({
     <section class="account-profile-modal" role="dialog" aria-modal="true" aria-labelledby="account-profile-title" tabindex="-1">
       <header class="account-profile__header">
         <div class="account-profile__identity"><div class="account-profile__avatar">{{ (account.shopNickname || account.accountNote || '闲').slice(0, 1) }}</div><div><div class="account-profile__title"><h2 id="account-profile-title">{{ account.accountNote || account.shopNickname || `账号 ${account.accountId}` }}</h2><span v-if="profile.shopLevel" class="badge badge--yellow">{{ profile.shopLevel }}</span><span class="badge badge--good">{{ statusLabel(account.authorizationStatus) }}</span></div><p>店铺 ID {{ account.accountId }} <i></i> {{ account.unb || '账号标识未同步' }} <i></i> {{ value(profile.region) }} <i></i> <b :class="tone(account.connectionStatus)">● {{ statusLabel(account.connectionStatus) }}</b></p></div></div>
-        <div class="account-profile__header-actions"><div class="account-profile__live"><span>● 会话 {{ statusLabel(account.connectionStatus) }}</span><span>● 授权 {{ statusLabel(account.authorizationStatus) }}</span></div><button class="workbench__btn" @click="$emit('dashboard')">数据看板</button><button class="workbench__btn" :disabled="loading" @click="$emit('refresh')">↻ 刷新店铺详情</button><button class="account-profile__close" aria-label="关闭店铺详情" @click="$emit('close')">×</button></div>
+        <div class="account-profile__header-actions"><div class="account-profile__live"><span>● 会话 {{ statusLabel(account.connectionStatus) }}</span><span>● 授权 {{ statusLabel(account.authorizationStatus) }}</span></div><button class="workbench__btn" @click="$emit('dashboard')">数据看板</button><button class="workbench__btn" title="进入当前店铺在售商品的擦亮预检，不会直接执行" @click="$emit('polish')">全店擦亮</button><button class="workbench__btn" :disabled="loading" @click="$emit('refresh')">↻ 刷新店铺详情</button><button class="account-profile__close" aria-label="关闭店铺详情" @click="$emit('close')">×</button></div>
       </header>
       <div class="account-profile__body" :aria-busy="loading">
         <div class="account-profile__left">
