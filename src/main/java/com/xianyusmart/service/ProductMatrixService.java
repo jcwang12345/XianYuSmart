@@ -24,6 +24,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -375,6 +376,7 @@ public class ProductMatrixService {
         metricWindows.put("day7", metricWindow(accountId, goodsId, 7));
         metricWindows.put("day30", metricWindow(accountId, goodsId, 30));
         response.put("metrics", metricWindows);
+        response.put("metricTrend", metricTrend(accountId, goodsId, 30));
         List<Map<String, Object>> timeline = events(accountId, goodsId, 200);
         response.put("timeline", timeline);
         response.put("timelineState", timelineState(accountId, goodsId, timeline, Instant.now()));
@@ -385,6 +387,122 @@ public class ProductMatrixService {
                 Map.of("code", "METRICS", "label", "同步罗盘", "available", false, "reason", "平台指标适配器未接入"),
                 Map.of("code", "MARKETING", "label", "同步营销", "available", false, "reason", "平台营销适配器未接入")));
         return response;
+    }
+
+    private Map<String, Object> metricTrend(Long accountId, String goodsId, int days) {
+        List<Map<String, Object>> rows = jdbcTemplate.query("""
+                SELECT metric_date,source,coverage_status,synced_at,
+                       exposure_count,exposure_uv_count,visitor_count,click_count,favorite_count,
+                       inquiry_count,inquiry_buyer_count,paid_order_count,paid_buyer_count,
+                       completed_buyer_count,refund_buyer_count,refund_order_count,paid_amount,refund_amount
+                  FROM xianyu_goods_metric_daily
+                 WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=?
+                   AND metric_date>=DATE_SUB(CURRENT_DATE(), INTERVAL ? DAY)
+                 ORDER BY metric_date,source
+                """, (rs, rowNum) -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("metricDate", rs.getDate("metric_date").toLocalDate());
+            row.put("source", rs.getString("source"));
+            row.put("coverageStatus", rs.getString("coverage_status"));
+            row.put("syncedAt", instant(rs, "synced_at"));
+            for (String field : List.of("exposure_count", "exposure_uv_count", "visitor_count", "click_count",
+                    "favorite_count", "inquiry_count", "inquiry_buyer_count", "paid_order_count",
+                    "paid_buyer_count", "completed_buyer_count", "refund_buyer_count", "refund_order_count")) {
+                row.put(camel(field), nullableLong(rs, field));
+            }
+            row.put("paidAmount", rs.getBigDecimal("paid_amount"));
+            row.put("refundAmount", rs.getBigDecimal("refund_amount"));
+            return row;
+        }, requireTenant(), accountId, goodsId, Math.max(0, days - 1));
+        return metricTrendResponse(rows, days, accountId, goodsId, LocalDate.now(), Instant.now());
+    }
+
+    static Map<String, Object> metricTrendResponse(List<Map<String, Object>> rows, int days, Long accountId,
+                                                   String goodsId, LocalDate endDate, Instant checkedAt) {
+        int safeDays = Math.max(1, Math.min(days, 90));
+        LocalDate startDate = endDate.minusDays(safeDays - 1L);
+        Map<LocalDate, List<Map<String, Object>>> byDate = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows == null ? List.<Map<String, Object>>of() : rows) {
+            LocalDate date = row.get("metricDate") instanceof LocalDate value ? value : null;
+            if (date != null && !date.isBefore(startDate) && !date.isAfter(endDate)) {
+                byDate.computeIfAbsent(date, ignored -> new ArrayList<>()).add(row);
+            }
+        }
+        List<Map<String, Object>> points = new ArrayList<>();
+        Set<String> sources = new LinkedHashSet<>();
+        int knownDays = 0;
+        int conflictDays = 0;
+        Instant latestSyncedAt = null;
+        for (int offset = 0; offset < safeDays; offset++) {
+            LocalDate date = startDate.plusDays(offset);
+            List<Map<String, Object>> candidates = byDate.getOrDefault(date, List.of());
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("date", date);
+            point.put("sampled", !candidates.isEmpty());
+            if (candidates.isEmpty()) {
+                point.put("source", "UNSYNCED");
+                point.put("coverageStatus", "UNSYNCED");
+                point.put("syncedAt", null);
+                copyTrendValues(point, null);
+            } else if (candidates.size() > 1) {
+                LinkedHashSet<String> daySources = new LinkedHashSet<>();
+                candidates.forEach(row -> daySources.add(string(row.get("source"))));
+                sources.addAll(daySources);
+                point.put("source", "MULTIPLE");
+                point.put("sources", List.copyOf(daySources));
+                point.put("coverageStatus", "CONFLICT");
+                point.put("syncedAt", candidates.stream().map(row -> row.get("syncedAt"))
+                        .filter(Instant.class::isInstance).map(Instant.class::cast).max(Instant::compareTo).orElse(null));
+                point.put("reason", "同一自然日存在多条来源记录，趋势值已隐藏以避免重复累计");
+                copyTrendValues(point, null);
+                conflictDays++;
+            } else {
+                Map<String, Object> row = candidates.getFirst();
+                String source = string(row.get("source"));
+                sources.add(source);
+                point.put("source", source);
+                point.put("coverageStatus", string(row.get("coverageStatus")));
+                point.put("syncedAt", row.get("syncedAt"));
+                copyTrendValues(point, row);
+                knownDays++;
+            }
+            if (point.get("syncedAt") instanceof Instant synced
+                    && (latestSyncedAt == null || synced.isAfter(latestSyncedAt))) latestSyncedAt = synced;
+            points.add(point);
+        }
+        String source = sources.isEmpty() ? "UNSYNCED" : sources.size() == 1 ? sources.iterator().next() : "MULTIPLE";
+        String status = knownDays == 0 && conflictDays == 0 ? "UNSYNCED"
+                : knownDays == safeDays && conflictDays == 0 && sources.size() == 1
+                && points.stream().allMatch(point -> "FULL".equals(point.get("coverageStatus"))) ? "FULL" : "PARTIAL";
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("windowDays", safeDays);
+        result.put("startDate", startDate);
+        result.put("endDate", endDate);
+        result.put("knownDays", knownDays);
+        result.put("conflictDays", conflictDays);
+        result.put("coverageStatus", status);
+        result.put("coverage", coverage(status, knownDays, safeDays));
+        result.put("source", source);
+        result.put("sources", List.copyOf(sources));
+        result.put("syncedAt", latestSyncedAt);
+        result.put("lastCheckedAt", checkedAt);
+        result.put("scope", Map.of("accountId", accountId, "goodsId", goodsId,
+                "label", "当前商品 · 最近 " + safeDays + " 天逐日趋势"));
+        result.put("points", points);
+        result.put("message", status.equals("UNSYNCED")
+                ? "最近 " + safeDays + " 天没有已同步的逐日经营指标；缺失日期保持为空，不补 0。"
+                : conflictDays > 0 ? "有 " + conflictDays + " 天存在多来源冲突，冲突日期已隐藏数值。"
+                : "缺失日期保持为空，不补 0；每个点展示自身来源。"
+        );
+        return result;
+    }
+
+    private static void copyTrendValues(Map<String, Object> target, Map<String, Object> source) {
+        for (String field : List.of("exposureCount", "exposureUvCount", "visitorCount", "clickCount",
+                "favoriteCount", "inquiryCount", "inquiryBuyerCount", "paidOrderCount", "paidBuyerCount",
+                "completedBuyerCount", "refundBuyerCount", "refundOrderCount", "paidAmount", "refundAmount")) {
+            target.put(field, source == null ? null : source.get(field));
+        }
     }
 
     private Map<String, Object> orderSummary(Long accountId, String goodsId) {
@@ -467,13 +585,73 @@ public class ProductMatrixService {
         List<Map<String,Object>> products=namedJdbc.query("SELECT goods.*,account.account_note,account.unb "+query.fromWhere()
                 +" ORDER BY goods.updated_time DESC,goods.id DESC LIMIT 10001",query.params(),(rs,row)->productRow(rs));
         if(products.size()>10000)throw new BusinessException(400,"单次最多导出10000个商品，请缩小筛选范围");
-        StringBuilder csv=new StringBuilder("\uFEFF店铺,店铺ID,商品ID,标题,价格,库存,状态,来源,发布通道,同步状态,覆盖度,最后同步\r\n");
-        for(Map<String,Object> item:products)csv.append(csv(item.get("accountNote"))).append(',').append(csv(item.get("accountId"))).append(',')
-                .append(csv(item.get("goodsId"))).append(',').append(csv(item.get("title"))).append(',').append(csv(item.get("price"))).append(',')
-                .append(csv(item.get("stock"))).append(',').append(csv(item.get("status"))).append(',').append(csv(item.get("source"))).append(',')
-                .append(csv(item.get("publishChannel"))).append(',').append(csv(item.get("syncStatus"))).append(',')
-                .append(csv(item.get("coverageStatus"))).append(',').append(csv(item.get("lastSyncedTime"))).append("\r\n");
-        audit(null,"PRODUCT_EXPORT","导出商品经营报表",requestId,"LOCAL_SUCCESS",filter,Map.of("exportedCount",products.size()));return csv.toString();
+        Map<String,Map<String,Object>> metrics=exportMetrics(query,filter.metricWindowDays());
+        StringBuilder csv=new StringBuilder("\uFEFF店铺,店铺ID,商品ID,标题,价格,库存,状态,来源,发布通道,同步状态,商品覆盖度,最后同步,经营窗口,曝光人数,详情访客,咨询买家,支付买家,完成买家,退款买家,支付订单,支付金额,退款订单,退款金额,样本天数,指标来源,指标覆盖度,指标日期,指标同步时间\r\n");
+        for(Map<String,Object> item:products){
+            Map<String,Object> metric=metrics.getOrDefault(productKey(item.get("accountId"),item.get("goodsId")),Map.of());
+            csv.append(csv(item.get("accountNote"))).append(',').append(csv(item.get("accountId"))).append(',')
+                    .append(csv(item.get("goodsId"))).append(',').append(csv(item.get("title"))).append(',').append(csv(item.get("price"))).append(',')
+                    .append(csv(item.get("stock"))).append(',').append(csv(item.get("status"))).append(',').append(csv(item.get("source"))).append(',')
+                    .append(csv(item.get("publishChannel"))).append(',').append(csv(item.get("syncStatus"))).append(',')
+                    .append(csv(item.get("coverageStatus"))).append(',').append(csv(item.get("lastSyncedTime"))).append(',')
+                    .append(csv(filter.metricWindowDays())).append(',')
+                    .append(csv(exportMetricValue(metric,"exposureUvCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"visitorCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"inquiryBuyerCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"paidBuyerCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"completedBuyerCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"refundBuyerCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"paidOrderCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"paidAmount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"refundOrderCount"))).append(',')
+                    .append(csv(exportMetricValue(metric,"refundAmount"))).append(',')
+                    .append(csv(metric.get("sampleDays"))).append(',')
+                    .append(csv(integer(metric.get("sourceCount"))!=null&&integer(metric.get("sourceCount"))>1?"MULTIPLE":metric.get("sources"))).append(',')
+                    .append(csv(metric.getOrDefault("metricCoverageStatus","UNSYNCED"))).append(',')
+                    .append(csv(metric.get("dataDate"))).append(',').append(csv(metric.get("syncedAt"))).append("\r\n");
+        }
+        audit(null,"PRODUCT_EXPORT","导出商品经营报表",requestId,"LOCAL_SUCCESS",filter,
+                Map.of("exportedCount",products.size(),"metricWindowDays",filter.metricWindowDays(),
+                        "unknownMetricValuesRemainBlank",true));return csv.toString();
+    }
+
+    private Map<String, Map<String, Object>> exportMetrics(QueryParts query, int metricWindowDays) {
+        MapSqlParameterSource params=copy(query.params()).addValue("metricDays",Math.max(0,metricWindowDays-1))
+                .addValue("metricWindowDays",metricWindowDays);
+        List<Map<String,Object>> rows=namedJdbc.queryForList("""
+                SELECT filtered.accountId,filtered.goodsId,COUNT(metric.id) sampleRows,
+                       COUNT(DISTINCT metric.metric_date) sampleDays,COUNT(DISTINCT metric.source) sourceCount,
+                       GROUP_CONCAT(DISTINCT metric.source ORDER BY metric.source SEPARATOR ',') sources,
+                       MAX(metric.metric_date) dataDate,MAX(metric.synced_at) syncedAt,
+                       SUM(metric.exposure_uv_count) exposureUvCount,SUM(metric.visitor_count) visitorCount,
+                       SUM(metric.inquiry_buyer_count) inquiryBuyerCount,SUM(metric.paid_buyer_count) paidBuyerCount,
+                       SUM(metric.completed_buyer_count) completedBuyerCount,SUM(metric.refund_buyer_count) refundBuyerCount,
+                       SUM(metric.paid_order_count) paidOrderCount,SUM(metric.paid_amount) paidAmount,
+                       SUM(metric.refund_order_count) refundOrderCount,SUM(metric.refund_amount) refundAmount,
+                       CASE WHEN COUNT(metric.id)=0 THEN 'UNSYNCED'
+                            WHEN COUNT(DISTINCT metric.metric_date)>=:metricWindowDays
+                             AND COUNT(DISTINCT metric.source)=1
+                             AND SUM(metric.coverage_status='FULL')=COUNT(metric.id) THEN 'FULL'
+                            ELSE 'PARTIAL' END metricCoverageStatus
+                  FROM (SELECT goods.tenant_id tenantId,goods.xianyu_account_id accountId,goods.xy_good_id goodsId
+                """+query.fromWhere()+"""
+                       ) filtered
+                  LEFT JOIN xianyu_goods_metric_daily metric
+                    ON metric.tenant_id=filtered.tenantId AND metric.xianyu_account_id=filtered.accountId
+                   AND metric.xy_goods_id=filtered.goodsId
+                   AND metric.metric_date>=DATE_SUB(CURRENT_DATE(),INTERVAL :metricDays DAY)
+                 GROUP BY filtered.tenantId,filtered.accountId,filtered.goodsId
+                """,params);
+        Map<String,Map<String,Object>> result=new LinkedHashMap<>();
+        for(Map<String,Object> row:rows)result.put(productKey(row.get("accountId"),row.get("goodsId")),row);
+        return result;
+    }
+
+    private static String productKey(Object accountId,Object goodsId){return String.valueOf(accountId)+":"+String.valueOf(goodsId);}
+
+    static Object exportMetricValue(Map<String,Object> metric,String field){
+        Integer sourceCount=integer(metric.get("sourceCount"));
+        return sourceCount!=null&&sourceCount==1?metric.get(field):null;
     }
 
     public BatchPreview previewBatch(BatchRequest request) {
@@ -1110,6 +1288,7 @@ public class ProductMatrixService {
                        COUNT(DISTINCT IF(refund_order_count IS NOT NULL,metric_date,NULL)) refund_order_days,
                        COUNT(DISTINCT IF(paid_amount IS NOT NULL,metric_date,NULL)) paid_amount_days,
                        COUNT(DISTINCT IF(refund_amount IS NOT NULL,metric_date,NULL)) refund_amount_days,
+                       COUNT(*)>COUNT(DISTINCT metric_date) same_day_conflict,
                        CASE WHEN COUNT(*)=0 THEN 'UNSYNCED'
                             WHEN COUNT(DISTINCT metric_date)>=? AND COUNT(DISTINCT source)=1
                                  AND SUM(coverage_status='FULL')=COUNT(*)
@@ -1151,6 +1330,7 @@ public class ProductMatrixService {
             row.put("refundOrderDays", rs.getInt("refund_order_days"));
             row.put("paidAmountDays", rs.getInt("paid_amount_days"));
             row.put("refundAmountDays", rs.getInt("refund_amount_days"));
+            row.put("sameDayConflict", rs.getBoolean("same_day_conflict"));
             row.put("coverageStatus", rs.getString("coverage_status"));
             row.put("dataStartDate", rs.getDate("data_start_date") == null ? null : rs.getDate("data_start_date").toLocalDate());
             row.put("dataDate", rs.getDate("data_date") == null ? null : rs.getDate("data_date").toLocalDate());
@@ -1245,23 +1425,28 @@ public class ProductMatrixService {
         String source = sources.isEmpty() ? "UNSYNCED" : sources.size() == 1 ? sources.getFirst() : "MULTIPLE";
         String coverageStatus = samples == 0 ? "UNSYNCED" : string(row.get("coverageStatus"));
         Object syncedAt = samples == 0 ? null : row.get("syncedAt");
+        boolean sameDayConflict = Boolean.TRUE.equals(row.get("sameDayConflict"));
+        boolean valuesAvailable = samples > 0 && !sameDayConflict;
         Map<String, Object> metric = new LinkedHashMap<>();
         metric.put("windowDays", days);
         metric.put("sampleDays", samples == 0 ? null : samples);
-        metric.put("exposureCount", samples == 0 ? null : row.get("exposureCount"));
-        metric.put("exposureUvCount", samples == 0 ? null : row.get("exposureUvCount"));
-        metric.put("visitorCount", samples == 0 ? null : row.get("visitorCount"));
-        metric.put("clickCount", samples == 0 ? null : row.get("clickCount"));
-        metric.put("favoriteCount", samples == 0 ? null : row.get("favoriteCount"));
-        metric.put("inquiryCount", samples == 0 ? null : row.get("inquiryCount"));
-        metric.put("inquiryBuyerCount", samples == 0 ? null : row.get("inquiryBuyerCount"));
-        metric.put("paidOrderCount", samples == 0 ? null : row.get("paidOrderCount"));
-        metric.put("paidBuyerCount", samples == 0 ? null : row.get("paidBuyerCount"));
-        metric.put("completedBuyerCount", samples == 0 ? null : row.get("completedBuyerCount"));
-        metric.put("refundBuyerCount", samples == 0 ? null : row.get("refundBuyerCount"));
-        metric.put("refundOrderCount", samples == 0 ? null : row.get("refundOrderCount"));
-        metric.put("paidAmount", samples == 0 ? null : row.get("paidAmount"));
-        metric.put("refundAmount", samples == 0 ? null : row.get("refundAmount"));
+        metric.put("exposureCount", valuesAvailable ? row.get("exposureCount") : null);
+        metric.put("exposureUvCount", valuesAvailable ? row.get("exposureUvCount") : null);
+        metric.put("visitorCount", valuesAvailable ? row.get("visitorCount") : null);
+        metric.put("clickCount", valuesAvailable ? row.get("clickCount") : null);
+        metric.put("favoriteCount", valuesAvailable ? row.get("favoriteCount") : null);
+        metric.put("inquiryCount", valuesAvailable ? row.get("inquiryCount") : null);
+        metric.put("inquiryBuyerCount", valuesAvailable ? row.get("inquiryBuyerCount") : null);
+        metric.put("paidOrderCount", valuesAvailable ? row.get("paidOrderCount") : null);
+        metric.put("paidBuyerCount", valuesAvailable ? row.get("paidBuyerCount") : null);
+        metric.put("completedBuyerCount", valuesAvailable ? row.get("completedBuyerCount") : null);
+        metric.put("refundBuyerCount", valuesAvailable ? row.get("refundBuyerCount") : null);
+        metric.put("refundOrderCount", valuesAvailable ? row.get("refundOrderCount") : null);
+        metric.put("paidAmount", valuesAvailable ? row.get("paidAmount") : null);
+        metric.put("refundAmount", valuesAvailable ? row.get("refundAmount") : null);
+        metric.put("valueAvailability", samples == 0 ? "UNSYNCED" : sameDayConflict ? "SOURCE_CONFLICT" : "AVAILABLE");
+        metric.put("valueMessage", sameDayConflict
+                ? "同一自然日存在多个来源，汇总值已隐藏；请先确认权威来源后再分析。" : null);
         metric.put("coverageStatus", coverageStatus);
         metric.put("coverage", coverage(coverageStatus, samples, days));
         metric.put("source", source);
@@ -1891,6 +2076,20 @@ public class ProductMatrixService {
     private static String csv(Object value) {
         String text = value == null ? "" : String.valueOf(value);
         return '"' + text.replace("\"", "\"\"") + '"';
+    }
+
+    private static String camel(String value) {
+        StringBuilder result = new StringBuilder(value.length());
+        boolean upperNext = false;
+        for (char current : value.toCharArray()) {
+            if (current == '_') {
+                upperNext = true;
+            } else {
+                result.append(upperNext ? Character.toUpperCase(current) : current);
+                upperNext = false;
+            }
+        }
+        return result.toString();
     }
 
     private record QueryParts(String fromWhere, MapSqlParameterSource params) {}

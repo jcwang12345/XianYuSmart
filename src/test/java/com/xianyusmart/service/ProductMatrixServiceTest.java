@@ -350,6 +350,79 @@ class ProductMatrixServiceTest {
         assertTrue(transitions.stream().allMatch(transition -> "UNAVAILABLE".equals(transition.get("status"))));
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void metricWindowHidesAllAggregatesWhenOneNaturalDayHasMultipleSources() {
+        Map<String, Object> row = fullFunnelRow(1, Instant.parse("2026-09-16T01:30:00Z"),
+                100L, 40L, 10L, 2L, 1L, 0L);
+        row.put("sources", "PLATFORM_API,PLATFORM_WEB");
+        row.put("sameDayConflict", true);
+
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(row, 1, 101L,
+                "QA-GOODS-CONFLICT", Instant.parse("2026-09-16T02:00:00Z"));
+
+        assertEquals("SOURCE_CONFLICT", metric.get("valueAvailability"));
+        assertNull(metric.get("exposureUvCount"));
+        assertNull(metric.get("paidAmount"));
+        assertTrue(String.valueOf(metric.get("valueMessage")).contains("汇总值已隐藏"));
+        Map<String, Object> fields = (Map<String, Object>) metric.get("fields");
+        assertNull(((Map<String, Object>) fields.get("visitorCount")).get("value"));
+        List<Map<String, Object>> stages = (List<Map<String, Object>>)
+                ((Map<String, Object>) metric.get("funnel")).get("stages");
+        assertTrue(stages.stream().allMatch(stage -> stage.get("value") == null));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void metricTrendKeepsMissingNaturalDaysNullInsteadOfInventingZero() {
+        LocalDate end = LocalDate.parse("2026-09-16");
+        Instant checkedAt = Instant.parse("2026-09-16T02:00:00Z");
+        Map<String, Object> trend = ProductMatrixService.metricTrendResponse(List.of(
+                trendRow(end.minusDays(2), "QA_FIXTURE", "FULL", 100L, 20L),
+                trendRow(end, "QA_FIXTURE", "FULL", 120L, 24L)
+        ), 3, 101L, "QA-GOODS-0000", end, checkedAt);
+
+        assertEquals("PARTIAL", trend.get("coverageStatus"));
+        assertEquals(2, trend.get("knownDays"));
+        assertEquals(0, trend.get("conflictDays"));
+        List<Map<String, Object>> points = (List<Map<String, Object>>) trend.get("points");
+        assertEquals(3, points.size());
+        assertEquals(100L, points.get(0).get("exposureUvCount"));
+        assertNull(points.get(1).get("exposureUvCount"));
+        assertEquals("UNSYNCED", points.get(1).get("source"));
+        assertEquals(false, points.get(1).get("sampled"));
+        assertTrue(String.valueOf(trend.get("message")).contains("不补 0"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void metricTrendHidesSameDayMultiSourceValuesAndSurfacesConflict() {
+        LocalDate end = LocalDate.parse("2026-09-16");
+        Map<String, Object> trend = ProductMatrixService.metricTrendResponse(List.of(
+                trendRow(end, "PLATFORM_API", "FULL", 100L, 20L),
+                trendRow(end, "PLATFORM_WEB", "FULL", 90L, 18L)
+        ), 1, 101L, "QA-GOODS-0000", end, Instant.parse("2026-09-16T02:00:00Z"));
+
+        assertEquals("PARTIAL", trend.get("coverageStatus"));
+        assertEquals(0, trend.get("knownDays"));
+        assertEquals(1, trend.get("conflictDays"));
+        assertEquals("MULTIPLE", trend.get("source"));
+        Map<String, Object> point = ((List<Map<String, Object>>) trend.get("points")).getFirst();
+        assertEquals("CONFLICT", point.get("coverageStatus"));
+        assertNull(point.get("exposureUvCount"));
+        assertTrue(String.valueOf(point.get("reason")).contains("隐藏"));
+    }
+
+    @Test
+    void productReportWithholdsUnknownOrMixedSourceMetrics() {
+        assertNull(ProductMatrixService.exportMetricValue(Map.of("sourceCount", 0, "paidBuyerCount", 0L),
+                "paidBuyerCount"));
+        assertNull(ProductMatrixService.exportMetricValue(Map.of("sourceCount", 2, "paidBuyerCount", 8L),
+                "paidBuyerCount"));
+        assertEquals(0L, ProductMatrixService.exportMetricValue(Map.of("sourceCount", 1, "paidBuyerCount", 0L),
+                "paidBuyerCount"));
+    }
+
     private Map<String, Object> fullFunnelRow(int knownDays, Instant syncedAt,
                                                long exposureUv, long visitors, long inquiryBuyers,
                                                long paidBuyers, long completedBuyers, long refundBuyers) {
@@ -371,6 +444,19 @@ class ProductMatrixServiceTest {
                 "refundOrderCount", refundBuyers, "refundOrderDays", knownDays,
                 "paidAmount", new java.math.BigDecimal("99.00"), "paidAmountDays", knownDays,
                 "refundAmount", new java.math.BigDecimal("9.90"), "refundAmountDays", knownDays);
+    }
+
+    private Map<String, Object> trendRow(LocalDate date, String source, String coverage,
+                                         Long exposureUv, Long visitors) {
+        return mapWithNulls(
+                "metricDate", date, "source", source, "coverageStatus", coverage,
+                "syncedAt", Instant.parse("2026-09-16T01:30:00Z"),
+                "exposureCount", exposureUv == null ? null : exposureUv * 2,
+                "exposureUvCount", exposureUv, "visitorCount", visitors,
+                "clickCount", visitors, "favoriteCount", 1L, "inquiryCount", 2L,
+                "inquiryBuyerCount", 2L, "paidOrderCount", 1L, "paidBuyerCount", 1L,
+                "completedBuyerCount", 1L, "refundBuyerCount", 0L, "refundOrderCount", 0L,
+                "paidAmount", new java.math.BigDecimal("29.90"), "refundAmount", new java.math.BigDecimal("0.00"));
     }
 
     @Test

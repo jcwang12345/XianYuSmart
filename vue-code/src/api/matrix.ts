@@ -336,6 +336,13 @@ export function getProductMatrixDetail(accountId: number, goodsId: string) {
   return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}`, method: 'GET' })
 }
 
+export async function exportProductMatrix(filter: ProductFilter, requestId: string) {
+  const response = await service.post('/product-matrix/products/export', { filter, requestId }, {
+    responseType: 'blob', headers: { Authorization: `Bearer ${getAuthToken() || ''}` }
+  })
+  return response.data as Blob
+}
+
 export interface ListingFormSchema {
   accountId: number
   listingType: 'VIRTUAL' | 'PHYSICAL' | 'SERVICE'
