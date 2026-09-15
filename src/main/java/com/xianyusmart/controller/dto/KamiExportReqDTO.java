@@ -7,4 +7,5 @@ public class KamiExportReqDTO {
     private Long kamiConfigId;
     private Boolean includeUnused;
     private Boolean includeUsed;
+    private String requestId;
 }

@@ -6,10 +6,12 @@ import com.xianyusmart.entity.XianyuFixedDeliveryTemplate;
 import com.xianyusmart.mapper.SharedAccountLinkMapper;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuFixedDeliveryTemplateMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
 
@@ -24,6 +26,8 @@ class FixedDeliveryTemplateSharingTest {
     @Mock XianyuAccountMapper accountMapper;
     @Mock BuyerMessageService buyerMessageService;
     @Mock SharedAccountLinkMapper sharedAccountLinkMapper;
+    @Mock OperationLogService operationLogService;
+    @Mock JdbcTemplate jdbcTemplate;
 
     @Test
     void savesOneTemplateAndAssociatesAllSelectedAccounts() {
@@ -44,9 +48,11 @@ class FixedDeliveryTemplateSharingTest {
         request.setTemplateName("资料模板");
         request.setDeliveryContent("下载地址");
         request.setMessageTemplate("{deliveryContent}");
+        request.setRequestId("qa-fixed-template-create");
 
         var result = new FixedDeliveryTemplateService(templateMapper, accountMapper,
-                buyerMessageService, sharedAccountLinkMapper).save(request);
+                buyerMessageService, sharedAccountLinkMapper, operationLogService,
+                jdbcTemplate, new ObjectMapper()).save(request);
 
         assertEquals(200, result.getCode());
         assertEquals(List.of(1L, 2L), result.getData().getXianyuAccountIds());

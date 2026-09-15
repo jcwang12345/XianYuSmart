@@ -775,7 +775,7 @@ public class OrderServiceImpl implements OrderService {
 
         if (voucherDeliveryEnabled && finalDeliveryContent.length() > 200) {
             if (cardDelivery) {
-                kamiConfigService.releaseReservation(orderId);
+                kamiConfigService.releaseReservation(orderId, accountId);
             }
             log.warn("【账号{}】渲染后的发货内容超过凭证接口限制: orderId={}, contentLen={}",
                     accountId, orderId, finalDeliveryContent.length());
@@ -823,7 +823,7 @@ public class OrderServiceImpl implements OrderService {
                 String result = consignDummyDelivery(accountId, orderId, finalDeliveryContent, imageUrls);
                 if (CONSIGN_DEFERRED.equals(result) || CONSIGN_PLATFORM_BUSY.equals(result)) {
                     if (cardDelivery) {
-                        kamiConfigService.releaseReservation(orderId);
+                        kamiConfigService.releaseReservation(orderId, accountId);
                     }
                     if (deliveryMessageHeld) {
                         buyerMessageService.cancelHeldDeliveryMessage(deliveryOrder);
@@ -840,7 +840,7 @@ public class OrderServiceImpl implements OrderService {
                             : "订单已存在发货凭证，请核对凭证与私聊内容";
                     if (cardDelivery) {
                         // 凭证状态不明确时锁定卡密，避免人工核对前再次分配。
-                        kamiConfigService.markReservationReviewRequired(orderId);
+                        kamiConfigService.markReservationReviewRequired(orderId, accountId);
                     }
                     if (deliveryMessageHeld) {
                         buyerMessageService.cancelHeldDeliveryMessage(deliveryOrder);
@@ -853,7 +853,7 @@ public class OrderServiceImpl implements OrderService {
                 }
                 if (!CONSIGN_SUCCESS.equals(result)) {
                     if (cardDelivery) {
-                        kamiConfigService.releaseReservation(orderId);
+                        kamiConfigService.releaseReservation(orderId, accountId);
                     }
                     if (deliveryMessageHeld) {
                         buyerMessageService.cancelHeldDeliveryMessage(deliveryOrder);
@@ -903,9 +903,9 @@ public class OrderServiceImpl implements OrderService {
                     deliveryMessageHeld = false;
                 }
                 if (voucherDeliveryEnabled) {
-                    kamiConfigService.markReservationReviewRequired(orderId);
+                    kamiConfigService.markReservationReviewRequired(orderId, accountId);
                 } else {
-                    kamiConfigService.releaseReservation(orderId);
+                    kamiConfigService.releaseReservation(orderId, accountId);
                 }
             }
             throw e;

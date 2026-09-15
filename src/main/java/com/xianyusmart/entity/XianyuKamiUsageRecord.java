@@ -22,6 +22,12 @@ public class XianyuKamiUsageRecord {
 
     private String orderId;
 
+    private String reservationToken;
+
+    private Long configVersion;
+
+    private String requestId;
+
     private Integer deliveryIndex;
 
     private String deliveryStatus;

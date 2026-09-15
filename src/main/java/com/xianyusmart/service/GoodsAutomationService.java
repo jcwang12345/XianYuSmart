@@ -1,6 +1,7 @@
 package com.xianyusmart.service;
 
 import com.xianyusmart.constants.OperationConstants;
+import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.controller.dto.OrderRateDetailDTO;
 import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
@@ -52,6 +53,8 @@ public class GoodsAutomationService {
     private final BuyerMessageService buyerMessageService;
     private final RatingContentService ratingContentService;
     private final RiskControlService riskControlService;
+    private final OrderEngagementService orderEngagementService;
+    private final OperationalIssueService operationalIssueService;
     private final Map<Long, Integer> rateScanStartPages = new ConcurrentHashMap<>();
     private final Clock clock;
 
@@ -64,10 +67,12 @@ public class GoodsAutomationService {
                                   XianyuGoodsAutoDeliveryConfigMapper autoDeliveryConfigMapper,
                                   BuyerMessageService buyerMessageService,
                                   RatingContentService ratingContentService,
-                                  RiskControlService riskControlService) {
+                                  RiskControlService riskControlService,
+                                  OrderEngagementService orderEngagementService,
+                                  OperationalIssueService operationalIssueService) {
         this(goodsConfigMapper, goodsOrderMapper, accountService, apiCallUtils, operationLogService,
                 autoDeliveryConfigMapper, buyerMessageService, ratingContentService, riskControlService,
-                Clock.system(BUSINESS_ZONE));
+                orderEngagementService, operationalIssueService, Clock.system(BUSINESS_ZONE));
     }
 
     GoodsAutomationService(XianyuGoodsConfigMapper goodsConfigMapper,
@@ -79,6 +84,8 @@ public class GoodsAutomationService {
                            BuyerMessageService buyerMessageService,
                            RatingContentService ratingContentService,
                            RiskControlService riskControlService,
+                           OrderEngagementService orderEngagementService,
+                           OperationalIssueService operationalIssueService,
                            Clock clock) {
         this.goodsConfigMapper = goodsConfigMapper;
         this.goodsOrderMapper = goodsOrderMapper;
@@ -89,6 +96,8 @@ public class GoodsAutomationService {
         this.buyerMessageService = buyerMessageService;
         this.ratingContentService = ratingContentService;
         this.riskControlService = riskControlService;
+        this.orderEngagementService = orderEngagementService;
+        this.operationalIssueService = operationalIssueService;
         this.clock = clock;
     }
 
@@ -158,6 +167,7 @@ public class GoodsAutomationService {
 
         for (XianyuGoodsOrder order : orders) {
             try {
+                TenantContext.set(order.getTenantId());
                 int sentCount = order.getReceiptFollowUpSentCount() == null
                         ? 0 : order.getReceiptFollowUpSentCount();
                 OrderRateDetailDTO detail = rateDetails.get(order.getOrderId());
@@ -189,29 +199,87 @@ public class GoodsAutomationService {
                     continue;
                 }
 
-                boolean success = buyerMessageService.sendReceiptFollowUp(order, messages.get(sentCount));
-                if (!success) {
-                    goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now().plusSeconds(30));
+                String inviteTemplate = messages.get(sentCount);
+                OrderEngagementService.Admission admission = orderEngagementService.beginInvite(
+                        order.getTenantId(), accountId, order.getId(), order.getOrderId(), sentCount, inviteTemplate);
+                if (admission.decision() == OrderEngagementService.Decision.ALREADY_CONFIRMED) {
+                    advanceReceiptFollowUp(order, sentCount, messages.size(), config);
+                    continue;
+                }
+                if (admission.decision() == OrderEngagementService.Decision.DAILY_LIMIT) {
+                    LocalDateTime tomorrow = LocalDate.now(BUSINESS_ZONE).plusDays(1).atTime(0, 5);
+                    goodsOrderMapper.deferReceiptFollowUp(order.getId(), tomorrow);
+                    continue;
+                }
+                if (admission.decision() == OrderEngagementService.Decision.RETRY_LATER) {
+                    goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now().plusMinutes(1));
+                    continue;
+                }
+                if (admission.decision() == OrderEngagementService.Decision.RESULT_UNKNOWN) {
+                    stopInviteForManualReview(order, sentCount, admission.requestId(),
+                            "邀评消息状态未知或已达到重试上限，已停止自动重发");
                     continue;
                 }
 
-                int nextCount = sentCount + 1;
-                boolean completed = nextCount >= messages.size();
-                int intervalSeconds = buyerMessageService.normalizeReceiptFollowUpInterval(
-                        config.getReceiptFollowUpIntervalSeconds());
-                LocalDateTime nextTime = completed ? null : LocalDateTime.now().plusSeconds(intervalSeconds);
-                goodsOrderMapper.updateReceiptFollowUpProgress(
-                        order.getId(), nextCount, completed ? 1 : 0, nextTime, sentCount);
+                boolean success;
+                try {
+                    success = buyerMessageService.sendReceiptFollowUp(order, inviteTemplate);
+                } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+                    orderEngagementService.unknown(order.getTenantId(), admission.eventId(), e.getMessage());
+                    stopInviteForManualReview(order, sentCount, admission.requestId(),
+                            "邀评消息回执未知，请核对买家会话后人工处理");
+                    continue;
+                }
+                if (!success) {
+                    boolean manual = orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
+                            "消息通道未确认发送", admission.attemptCount());
+                    if (manual) {
+                        stopInviteForManualReview(order, sentCount, admission.requestId(),
+                                "邀评消息连续失败，已停止自动重试");
+                    } else {
+                        goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now().plusMinutes(1));
+                    }
+                    continue;
+                }
+                orderEngagementService.success(order.getTenantId(), admission.eventId());
+                advanceReceiptFollowUp(order, sentCount, messages.size(), config);
                 operationLogService.log(accountId, OperationConstants.Type.SEND, OperationConstants.Module.ORDER,
                         "确认收货后话术发送成功", OperationConstants.Status.SUCCESS,
-                        OperationConstants.TargetType.ORDER, order.getOrderId(), messages.get(sentCount),
+                        OperationConstants.TargetType.ORDER, order.getOrderId(),
+                        "{\"requestId\":\"" + admission.requestId() + "\",\"contentStored\":false}",
                         null, null, null);
             } catch (Exception e) {
                 log.warn("【账号{}】发送确认收货后话术失败: orderId={}, error={}",
                         accountId, order.getOrderId(), e.getMessage());
                 goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now().plusMinutes(1));
+            } finally {
+                TenantContext.clear();
             }
         }
+    }
+
+    private void advanceReceiptFollowUp(XianyuGoodsOrder order, int sentCount, int messageCount,
+                                        XianyuGoodsAutoDeliveryConfig config) {
+        int nextCount = sentCount + 1;
+        boolean completed = nextCount >= messageCount;
+        int intervalSeconds = buyerMessageService.normalizeReceiptFollowUpInterval(
+                config.getReceiptFollowUpIntervalSeconds());
+        LocalDateTime nextTime = completed ? null : LocalDateTime.now().plusSeconds(intervalSeconds);
+        goodsOrderMapper.updateReceiptFollowUpProgress(
+                order.getId(), nextCount, completed ? 1 : 0, nextTime, sentCount);
+    }
+
+    private void stopInviteForManualReview(XianyuGoodsOrder order, int sentCount, String requestId,
+                                           String reason) {
+        goodsOrderMapper.updateReceiptFollowUpProgress(order.getId(), sentCount, 1, null, sentCount);
+        operationalIssueService.report("REVIEW_INVITE", "review-invite:" + order.getId() + ":" + sentCount,
+                order.getXianyuAccountId(), "WARNING", "评价邀请需要人工核对", reason,
+                "ORDER", order.getOrderId(), LocalDateTime.now().plusHours(1));
+        operationLogService.log(order.getXianyuAccountId(), OperationConstants.Type.SEND,
+                OperationConstants.Module.ORDER, reason, OperationConstants.Status.FAIL,
+                OperationConstants.TargetType.ORDER, order.getOrderId(),
+                "{\"requestId\":\"" + requestId + "\",\"automaticRetry\":false}",
+                null, reason, null);
     }
 
     private XianyuGoodsAutoDeliveryConfig resolveReceiptFollowUpConfig(XianyuGoodsOrder order) {

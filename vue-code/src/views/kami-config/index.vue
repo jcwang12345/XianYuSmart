@@ -14,9 +14,18 @@ import {
   deleteKamiItem,
   resetKamiItem,
   exportKamiItems,
+  getKamiInventoryEvents,
+  resetExternalSupplyCircuit,
+  getExternalSupplyRequests,
+  previewExternalSupplyResolution,
+  resolveExternalSupplyRequest,
   type KamiConfig,
-  type KamiItem
+  type KamiItem,
+  type KamiInventoryEvent,
+  type ExternalSupplyRequest,
+  type ExternalResolutionPreview
 } from '@/api/kami-config'
+import { newRequestId } from '@/api/matrix'
 import { getAccountList } from '@/api/account'
 import type { Account } from '@/types'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
@@ -46,7 +55,10 @@ const createForm = ref({
   externalApiHeaders: '{}',
   externalApiBody: '{\n  "orderId": "{orderId}",\n  "quantity": {quantity},\n  "requestToken": "{requestToken}"\n}',
   externalApiResultPath: 'data.cards',
-  externalApiTimeoutSeconds: 10
+  externalApiTimeoutSeconds: 10,
+  externalDailyQuota: undefined as number | undefined,
+  externalFailureThreshold: 3,
+  externalCooldownSeconds: 300
 })
 const createLoading = ref(false)
 
@@ -69,6 +81,28 @@ const alertLoading = ref(false)
 
 const showExportDialog = ref(false)
 const exportStatus = ref<{ unused: boolean; used: boolean }>({ unused: true, used: true })
+
+const detailTab = ref<'inventory' | 'events' | 'external'>('inventory')
+const inventoryEvents = ref<KamiInventoryEvent[]>([])
+const eventsLoading = ref(false)
+const eventPage = ref(1)
+const eventTotal = ref(0)
+const circuitResetting = ref(false)
+const externalRequests = ref<ExternalSupplyRequest[]>([])
+const externalRequestsLoading = ref(false)
+const externalRequestPage = ref(1)
+const externalRequestTotal = ref(0)
+const externalRequestStatus = ref('ALL')
+const showResolutionDialog = ref(false)
+const resolutionSaving = ref(false)
+const resolutionRequest = ref<ExternalSupplyRequest | null>(null)
+const resolutionPreview = ref<ExternalResolutionPreview | null>(null)
+const resolutionAcknowledged = ref(false)
+const resolutionForm = ref({
+  decision: 'CONFIRMED_NOT_SUPPLIED' as 'CONFIRMED_SUPPLIED' | 'CONFIRMED_NOT_SUPPLIED',
+  cardContents: '',
+  note: ''
+})
 
 const isMobile = ref(false)
 const rulesExpanded = ref(false)
@@ -136,7 +170,10 @@ const resetConfigForm = () => {
     externalApiHeaders: '{}',
     externalApiBody: '{\n  "orderId": "{orderId}",\n  "quantity": {quantity},\n  "requestToken": "{requestToken}"\n}',
     externalApiResultPath: 'data.cards',
-    externalApiTimeoutSeconds: 10
+    externalApiTimeoutSeconds: 10,
+    externalDailyQuota: undefined,
+    externalFailureThreshold: 3,
+    externalCooldownSeconds: 300
   }
 }
 
@@ -156,9 +193,12 @@ const openSourceConfigDialog = () => {
     sourceType: config.sourceType || 'LOCAL',
     externalApiUrl: config.externalApiUrl || '',
     externalApiHeaders: '',
-    externalApiBody: config.externalApiBody || '{\n  "orderId": "{orderId}",\n  "quantity": {quantity},\n  "requestToken": "{requestToken}"\n}',
+    externalApiBody: config.externalApiBodySensitiveConfigured ? '' : (config.externalApiBody || '{\n  "orderId": "{orderId}",\n  "quantity": {quantity},\n  "requestToken": "{requestToken}"\n}'),
     externalApiResultPath: config.externalApiResultPath || 'data.cards',
-    externalApiTimeoutSeconds: config.externalApiTimeoutSeconds || 10
+    externalApiTimeoutSeconds: config.externalApiTimeoutSeconds || 10,
+    externalDailyQuota: config.externalDailyQuota,
+    externalFailureThreshold: config.externalFailureThreshold || 3,
+    externalCooldownSeconds: config.externalCooldownSeconds || 300
   }
   showCreateDialog.value = true
 }
@@ -232,7 +272,136 @@ const selectConfig = (config: KamiConfig) => {
   selectedConfigId.value = config.id
   filterStatus.value = undefined
   filterKeyword.value = ''
+  detailTab.value = 'inventory'
+  eventPage.value = 1
+  inventoryEvents.value = []
+  externalRequests.value = []
   loadKamiItems()
+}
+
+const loadInventoryEvents = async () => {
+  if (!selectedConfigId.value) return
+  eventsLoading.value = true
+  try {
+    const res = await getKamiInventoryEvents(selectedConfigId.value, eventPage.value, 20)
+    if (res.code === 200 && res.data) {
+      inventoryEvents.value = res.data.events || []
+      eventTotal.value = res.data.total || 0
+    }
+  } catch (e) {
+    toast.error('库存事件加载失败')
+  } finally {
+    eventsLoading.value = false
+  }
+}
+
+const switchDetailTab = (tab: 'inventory' | 'events' | 'external') => {
+  detailTab.value = tab
+  if (tab === 'events') loadInventoryEvents()
+  if (tab === 'external') loadExternalRequests()
+}
+
+const itemStatusLabel = (status: number) => ({ 0: '可用', 1: '已交付', 2: '已预占', 3: '待核对' }[status] || '未知')
+const eventLabel = (type: string) => ({
+  RESERVED: '库存已预占', RESERVED_EXTERNAL: '外部供货已预占', CONSUMED: '库存已消费',
+  RELEASED: '预占已释放', REVIEW_REQUIRED: '转人工核对', SUPPLY_UNKNOWN: '外部供货结果未知',
+  SUPPLY_FAILED: '外部供货失败', CIRCUIT_RESET: '人工重置熔断',
+  MANUAL_SUPPLY_ATTACHED: '人工附加供货并转核对', MANUAL_SUPPLY_NOT_SUPPLIED: '人工确认未出卡',
+  IMPORTED: '库存已导入', DELETED: '库存项已删除', RESET_AVAILABLE: '库存项已重置为可用'
+}[type] || type)
+
+const externalStatusLabel = (status: string) => ({
+  PROCESSING: '处理中', FAILED: '已知失败', REVIEW_REQUIRED: '结果未知', SUCCESS: '供货成功',
+  MANUAL_NOT_SUPPLIED: '人工确认未出卡', MANUAL_SUPPLIED_REVIEW: '已附加，待人工核对'
+}[status] || status)
+
+const externalRequestPageCount = computed(() => Math.max(1, Math.ceil(externalRequestTotal.value / 20)))
+const loadExternalRequests = async () => {
+  if (!selectedConfigId.value || selectedConfig.value?.sourceType !== 'API') return
+  externalRequestsLoading.value = true
+  try {
+    const res = await getExternalSupplyRequests(selectedConfigId.value, externalRequestStatus.value,
+      externalRequestPage.value, 20)
+    if (res.code === 200 && res.data) {
+      externalRequests.value = res.data.requests || []
+      externalRequestTotal.value = res.data.total || 0
+    } else toast.error(res.msg || '外部供货请求加载失败')
+  } catch { toast.error('外部供货请求加载失败') }
+  finally { externalRequestsLoading.value = false }
+}
+
+const changeExternalRequestPage = async (page: number) => {
+  externalRequestPage.value = Math.min(externalRequestPageCount.value, Math.max(1, page))
+  await loadExternalRequests()
+}
+
+const openResolutionDialog = (request: ExternalSupplyRequest) => {
+  resolutionRequest.value = request
+  resolutionPreview.value = null
+  resolutionAcknowledged.value = false
+  resolutionForm.value = { decision: 'CONFIRMED_NOT_SUPPLIED', cardContents: '', note: '' }
+  showResolutionDialog.value = true
+}
+
+const invalidateResolutionPreview = () => {
+  resolutionPreview.value = null
+  resolutionAcknowledged.value = false
+}
+
+const previewResolution = async () => {
+  if (!resolutionRequest.value) return
+  resolutionSaving.value = true
+  try {
+    const res = await previewExternalSupplyResolution(resolutionRequest.value.id, resolutionForm.value.decision)
+    if (res.code === 200 && res.data) resolutionPreview.value = res.data
+    else toast.error(res.msg || '人工处置预检失败')
+  } catch { toast.error('人工处置预检失败') }
+  finally { resolutionSaving.value = false }
+}
+
+const confirmResolution = async () => {
+  if (!resolutionRequest.value || !resolutionPreview.value || !resolutionAcknowledged.value) return
+  const cards = resolutionForm.value.cardContents.split(/\r?\n/).map(item => item.trim()).filter(Boolean)
+  resolutionSaving.value = true
+  try {
+    const res = await resolveExternalSupplyRequest(resolutionRequest.value.id, {
+      decision: resolutionForm.value.decision,
+      confirmationText: resolutionPreview.value.confirmationText,
+      cardContents: cards,
+      note: resolutionForm.value.note || undefined,
+      requestId: newRequestId('external-supply-resolution')
+    })
+    if (res.code === 200) {
+      toast.success(resolutionForm.value.decision === 'CONFIRMED_SUPPLIED'
+        ? '卡密已附加到待人工核对区，不会自动发送' : '已确认未出卡，可安全进入后续重试')
+      showResolutionDialog.value = false
+      await Promise.all([loadExternalRequests(), loadKamiItems(), loadKamiConfigs(), loadInventoryEvents()])
+    } else toast.error(res.msg || '人工处置失败')
+  } catch { toast.error('人工处置失败') }
+  finally { resolutionSaving.value = false }
+}
+
+const handleResetCircuit = async () => {
+  if (!selectedConfigId.value || !selectedConfig.value) return
+  try {
+    await showConfirm(
+      `重置「${selectedConfig.value.aliasName || selectedConfigId.value}」的外部供货熔断？请先确认供应商侧没有未核对订单。`,
+      '重置供货熔断'
+    )
+  } catch { return }
+  circuitResetting.value = true
+  try {
+    const res = await resetExternalSupplyCircuit(selectedConfigId.value, newRequestId('kami-circuit-reset'))
+    if (res.code === 200) {
+      toast.success('熔断已重置，下一笔请求将重新尝试供货')
+      await loadKamiConfigs()
+      if (detailTab.value === 'events') await loadInventoryEvents()
+    } else toast.error(res.msg || '熔断重置失败')
+  } catch (e) {
+    toast.error('熔断重置失败')
+  } finally {
+    circuitResetting.value = false
+  }
 }
 
 const handleCreate = async () => {
@@ -257,9 +426,16 @@ const handleCreate = async () => {
       sourceType: createForm.value.sourceType,
       externalApiUrl: createForm.value.sourceType === 'API' ? createForm.value.externalApiUrl : undefined,
       externalApiHeaders: createForm.value.sourceType === 'API' ? createForm.value.externalApiHeaders : undefined,
-      externalApiBody: createForm.value.sourceType === 'API' ? createForm.value.externalApiBody : undefined,
+      externalApiBody: createForm.value.sourceType === 'API'
+        ? (editingConfigId.value && selectedConfig.value?.externalApiBodySensitiveConfigured
+          && !createForm.value.externalApiBody.trim() ? undefined : createForm.value.externalApiBody)
+        : undefined,
       externalApiResultPath: createForm.value.sourceType === 'API' ? createForm.value.externalApiResultPath : undefined,
-      externalApiTimeoutSeconds: createForm.value.sourceType === 'API' ? createForm.value.externalApiTimeoutSeconds : undefined
+      externalApiTimeoutSeconds: createForm.value.sourceType === 'API' ? createForm.value.externalApiTimeoutSeconds : undefined,
+      externalDailyQuota: createForm.value.sourceType === 'API' ? createForm.value.externalDailyQuota : undefined,
+      externalFailureThreshold: createForm.value.sourceType === 'API' ? createForm.value.externalFailureThreshold : undefined,
+      externalCooldownSeconds: createForm.value.sourceType === 'API' ? createForm.value.externalCooldownSeconds : undefined,
+      requestId: newRequestId('kami-config')
     })
     if (res.code === 200) {
       toast.success(editingConfigId.value ? '卡密来源已更新' : '创建成功')
@@ -286,7 +462,7 @@ const handleDeleteConfig = async (config: KamiConfig) => {
       `确定删除卡密配置「${config.aliasName || config.id}」及其所有卡密？`,
       '删除确认'
     )
-    const res = await deleteKamiConfig(config.id)
+    const res = await deleteKamiConfig(config.id, newRequestId('kami-config-delete'))
     if (res.code === 200) {
       toast.success('删除成功')
       if (selectedConfigId.value === config.id) {
@@ -309,7 +485,8 @@ const handleAddKami = async () => {
   try {
     const res = await addKamiItem({
       kamiConfigId: selectedConfigId.value!,
-      kamiContent: addContent.value.trim()
+      kamiContent: addContent.value.trim(),
+      requestId: newRequestId('kami-item-add')
     })
     if (res.code === 200) {
       toast.success('添加成功')
@@ -336,7 +513,8 @@ const handleBatchImport = async () => {
   try {
     const res = await batchImportKamiItems({
       kamiConfigId: selectedConfigId.value!,
-      kamiContents: importContent.value
+      kamiContents: importContent.value,
+      requestId: newRequestId('kami-batch-import')
     })
     if (res.code === 200) {
       toast.success(res.msg || '导入成功')
@@ -357,7 +535,7 @@ const handleBatchImport = async () => {
 const handleDeleteItem = async (item: KamiItem) => {
   try {
     await showConfirm('确定删除该卡密？', '删除确认')
-    const res = await deleteKamiItem(item.id)
+    const res = await deleteKamiItem(item.id, newRequestId('kami-item-delete'))
     if (res.code === 200) {
       toast.success('删除成功')
       loadKamiItems()
@@ -371,7 +549,7 @@ const handleDeleteItem = async (item: KamiItem) => {
 const handleResetItem = async (item: KamiItem) => {
   try {
     await showConfirm('确定重置该卡密为未使用状态？', '重置确认')
-    const res = await resetKamiItem(item.id)
+    const res = await resetKamiItem(item.id, newRequestId('kami-item-reset'))
     if (res.code === 200) {
       toast.success('重置成功')
       loadKamiItems()
@@ -384,6 +562,14 @@ const handleResetItem = async (item: KamiItem) => {
 
 const handleFilterChange = () => {
   loadKamiItems()
+}
+
+const eventPageCount = computed(() => Math.max(1, Math.ceil(eventTotal.value / 20)))
+const changeEventPage = async (page: number) => {
+  const target = Math.min(eventPageCount.value, Math.max(1, page))
+  if (target === eventPage.value) return
+  eventPage.value = target
+  await loadInventoryEvents()
 }
 
 const openAlertDialog = () => {
@@ -411,6 +597,10 @@ const handleSaveAlert = async () => {
       externalApiBody: selectedConfig.value?.externalApiBody,
       externalApiResultPath: selectedConfig.value?.externalApiResultPath,
       externalApiTimeoutSeconds: selectedConfig.value?.externalApiTimeoutSeconds,
+      externalDailyQuota: selectedConfig.value?.externalDailyQuota,
+      externalFailureThreshold: selectedConfig.value?.externalFailureThreshold,
+      externalCooldownSeconds: selectedConfig.value?.externalCooldownSeconds,
+      requestId: newRequestId('kami-alert'),
       alertEnabled: alertForm.value.alertEnabled,
       alertThresholdType: alertForm.value.alertThresholdType,
       alertThresholdValue: alertForm.value.alertThresholdValue,
@@ -446,7 +636,8 @@ const handleExport = async () => {
     const res = await exportKamiItems({
       kamiConfigId: selectedConfigId.value,
       includeUnused: exportStatus.value.unused,
-      includeUsed: exportStatus.value.used
+      includeUsed: exportStatus.value.used,
+      requestId: newRequestId('kami-export')
     })
     const allItems = res.data || []
 
@@ -562,6 +753,19 @@ onUnmounted(() => {
           </div>
         </header>
 
+        <section v-if="selectedConfig" class="kami-health kami-health--mobile" aria-label="库存状态摘要">
+          <div><strong>r{{ selectedConfig.configVersion || 1 }}</strong><span>配置版本</span></div>
+          <div><strong>{{ selectedConfig.availableCount }}</strong><span>可用</span></div>
+          <div><strong>{{ selectedConfig.reservedCount || 0 }}</strong><span>预占</span></div>
+          <div><strong>{{ selectedConfig.reviewRequiredCount || 0 }}</strong><span>待核对</span></div>
+        </section>
+        <div class="kami-tabs" role="tablist" aria-label="卡密仓库详情">
+          <button role="tab" :aria-selected="detailTab === 'inventory'" :class="{ active: detailTab === 'inventory' }" @click="switchDetailTab('inventory')">库存明细</button>
+          <button role="tab" :aria-selected="detailTab === 'events'" :class="{ active: detailTab === 'events' }" @click="switchDetailTab('events')">事件记录</button>
+          <button v-if="selectedConfig?.sourceType === 'API'" role="tab" :aria-selected="detailTab === 'external'" :class="{ active: detailTab === 'external' }" @click="switchDetailTab('external')">供货请求</button>
+        </div>
+
+        <template v-if="detailTab === 'inventory'">
         <div class="kami-mobile__filters">
           <select
             v-model="filterStatus"
@@ -572,6 +776,8 @@ onUnmounted(() => {
             <option :value="undefined">全部状态</option>
             <option :value="0">未使用</option>
             <option :value="1">已使用</option>
+            <option :value="2">已预占</option>
+            <option :value="3">待核对</option>
           </select>
           <input
             v-model="filterKeyword"
@@ -594,16 +800,43 @@ onUnmounted(() => {
           >
             <div class="kami-item-card__content">{{ item.kamiContent }}</div>
             <div class="kami-item-card__meta">
-              <span :class="item.status === 0 ? 'tag tag--success' : 'tag tag--info'">
-                {{ item.status === 0 ? '未使用' : '已使用' }}
+              <span class="tag" :class="`kami-status--${item.status}`">
+                {{ itemStatusLabel(item.status) }}
               </span>
+              <span v-if="item.sourceConfigVersion">r{{ item.sourceConfigVersion }}</span>
               <span v-if="item.usedTime" class="kami-item-card__time">{{ item.usedTime }}</span>
             </div>
             <div class="kami-item-card__actions">
               <button v-if="item.status === 1" class="btn-warning btn-text btn-sm" @click="handleResetItem(item)">重置</button>
-              <button class="btn-danger btn-text btn-sm" @click="handleDeleteItem(item)">删除</button>
+              <button v-if="item.status !== 2 && item.status !== 3" class="btn-danger btn-text btn-sm" @click="handleDeleteItem(item)">删除</button>
             </div>
           </div>
+        </div>
+        </template>
+        <div v-else-if="detailTab === 'events'" class="kami-event-list" role="tabpanel">
+          <div v-if="eventsLoading" class="kami-page__empty">正在加载库存事件…</div>
+          <div v-else-if="inventoryEvents.length === 0" class="kami-page__empty">暂无库存事件；导入后发生预占、消费或释放时会记录在这里。</div>
+          <article v-for="event in inventoryEvents" :key="event.id" class="kami-event">
+            <div class="kami-event__top"><strong>{{ eventLabel(event.eventType) }}</strong><span>{{ event.createdTime }}</span></div>
+            <div class="kami-event__meta"><span>账号 {{ event.accountId || '—' }}</span><span>订单 {{ event.orderId || '—' }}</span><span>r{{ event.configVersion || '—' }}</span></div>
+            <div class="kami-event__request">请求 {{ event.requestId }}</div>
+          </article>
+          <div v-if="eventTotal > 20" class="kami-event__pager">
+            <button class="btn-default btn-sm" :disabled="eventPage <= 1" @click="changeEventPage(eventPage - 1)">上一页</button>
+            <span>{{ eventPage }} / {{ eventPageCount }}</span>
+            <button class="btn-default btn-sm" :disabled="eventPage >= eventPageCount" @click="changeEventPage(eventPage + 1)">下一页</button>
+          </div>
+        </div>
+        <div v-else class="external-request-list" role="tabpanel">
+          <div class="external-request-toolbar"><select v-model="externalRequestStatus" class="native-select" @change="externalRequestPage=1;loadExternalRequests()"><option value="ALL">全部状态</option><option value="REVIEW_REQUIRED">结果未知</option><option value="FAILED">已知失败</option><option value="SUCCESS">供货成功</option><option value="MANUAL_NOT_SUPPLIED">人工确认未出卡</option><option value="MANUAL_SUPPLIED_REVIEW">已附加待核对</option></select></div>
+          <div v-if="externalRequestsLoading" class="kami-page__empty">正在读取脱敏供货状态…</div>
+          <div v-else-if="!externalRequests.length" class="kami-page__empty">暂无外部供货请求。</div>
+          <article v-for="request in externalRequests" :key="request.id" class="external-request-card">
+            <header><strong>订单 {{ request.orderId }}</strong><span :class="{ danger: request.resultUnknown === 1 }">{{ externalStatusLabel(request.requestStatus) }}</span></header>
+            <p>账号 {{ request.accountId }} · 数量 {{ request.quantity }} · 尝试 {{ request.attemptCount }} 次</p><small>{{ request.errorMessage || '无错误详情' }}</small>
+            <footer><time>{{ request.updateTime }}</time><button v-if="request.resultUnknown === 1 || request.requestStatus === 'REVIEW_REQUIRED'" class="btn-warning btn-sm" @click="openResolutionDialog(request)">人工核对</button></footer>
+          </article>
+          <div v-if="externalRequestTotal > 20" class="kami-event__pager"><button class="btn-default btn-sm" :disabled="externalRequestPage<=1" @click="changeExternalRequestPage(externalRequestPage-1)">上一页</button><span>{{ externalRequestPage }} / {{ externalRequestPageCount }}</span><button class="btn-default btn-sm" :disabled="externalRequestPage>=externalRequestPageCount" @click="changeExternalRequestPage(externalRequestPage+1)">下一页</button></div>
         </div>
       </div>
 
@@ -662,7 +895,10 @@ onUnmounted(() => {
           <div v-if="!selectedConfig" class="kami-page__empty-main">请选择左侧卡密配置</div>
           <template v-else>
             <div class="kami-detail__header">
-              <h2>{{ selectedConfig.aliasName || `配置#${selectedConfig.id}` }}</h2>
+              <div>
+                <h2>{{ selectedConfig.aliasName || `配置#${selectedConfig.id}` }}</h2>
+                <p class="kami-detail__subtitle">{{ selectedConfig.sourceType === 'API' ? '外部接口供货' : '本地原子库存' }} · 配置版本 r{{ selectedConfig.configVersion || 1 }}</p>
+              </div>
               <div class="kami-detail__actions">
                 <button v-if="selectedConfig.sourceType !== 'API'" class="btn-default" @click="showAddDialog = true">添加卡密</button>
                 <button v-if="selectedConfig.sourceType !== 'API'" class="btn-primary" @click="showImportDialog = true">批量导入</button>
@@ -672,6 +908,25 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <section class="kami-health" aria-label="库存状态摘要">
+              <div><strong>{{ selectedConfig.totalCount }}</strong><span>总库存</span></div>
+              <div><strong>{{ selectedConfig.availableCount }}</strong><span>可用</span></div>
+              <div><strong>{{ selectedConfig.reservedCount || 0 }}</strong><span>已预占</span></div>
+              <div :class="{ danger: (selectedConfig.reviewRequiredCount || 0) > 0 }"><strong>{{ selectedConfig.reviewRequiredCount || 0 }}</strong><span>待人工核对</span></div>
+              <div v-if="selectedConfig.sourceType === 'API'" :class="{ danger: selectedConfig.externalCircuitState === 'OPEN', warning: selectedConfig.externalCircuitState === 'HALF_OPEN' }">
+                <strong>{{ selectedConfig.externalCircuitState === 'OPEN' ? '已熔断' : selectedConfig.externalCircuitState === 'HALF_OPEN' ? '探测中' : '正常' }}</strong>
+                <span>外部供货 · 今日 {{ selectedConfig.externalQuotaUsed || 0 }}/{{ selectedConfig.externalDailyQuota || '不限' }}</span>
+              </div>
+              <button v-if="selectedConfig.sourceType === 'API' && selectedConfig.externalCircuitState === 'OPEN'" class="btn-warning btn-sm" :disabled="circuitResetting" @click="handleResetCircuit">人工复核后重置</button>
+            </section>
+
+            <div class="kami-tabs" role="tablist" aria-label="卡密仓库详情">
+              <button role="tab" :aria-selected="detailTab === 'inventory'" :class="{ active: detailTab === 'inventory' }" @click="switchDetailTab('inventory')">库存明细</button>
+              <button role="tab" :aria-selected="detailTab === 'events'" :class="{ active: detailTab === 'events' }" @click="switchDetailTab('events')">事件记录 <span v-if="eventTotal">{{ eventTotal }}</span></button>
+              <button v-if="selectedConfig.sourceType === 'API'" role="tab" :aria-selected="detailTab === 'external'" :class="{ active: detailTab === 'external' }" @click="switchDetailTab('external')">供货请求 <span v-if="externalRequestTotal">{{ externalRequestTotal }}</span></button>
+            </div>
+
+            <template v-if="detailTab === 'inventory'">
             <div class="kami-detail__filters">
               <select
                 v-model="filterStatus"
@@ -682,6 +937,8 @@ onUnmounted(() => {
                 <option :value="undefined">全部状态</option>
                 <option :value="0">未使用</option>
                 <option :value="1">已使用</option>
+                <option :value="2">已预占</option>
+                <option :value="3">待核对</option>
               </select>
               <input
                 v-model="filterKeyword"
@@ -714,8 +971,8 @@ onUnmounted(() => {
                       <td class="kami-table__cell--num">{{ item.sortOrder }}</td>
                       <td class="kami-table__cell--content">{{ item.kamiContent }}</td>
                       <td>
-                        <span class="kami-table__status" :class="item.status === 0 ? 'kami-table__status--unused' : 'kami-table__status--used'">
-                          {{ item.status === 0 ? '未使用' : '已使用' }}
+                        <span class="kami-table__status" :class="`kami-status--${item.status}`">
+                          {{ itemStatusLabel(item.status) }}
                         </span>
                       </td>
                       <td class="kami-table__cell--id">{{ item.orderId || '-' }}</td>
@@ -724,13 +981,40 @@ onUnmounted(() => {
                       <td>
                         <div class="kami-table__actions">
                           <button v-if="item.status === 1" class="kami-table__action-btn kami-table__action-btn--reset" @click="handleResetItem(item)">重置</button>
-                          <button class="kami-table__action-btn kami-table__action-btn--delete" @click="handleDeleteItem(item)">删除</button>
+                          <button v-if="item.status !== 2 && item.status !== 3" class="kami-table__action-btn kami-table__action-btn--delete" @click="handleDeleteItem(item)">删除</button>
                         </div>
                       </td>
                     </tr>
                   </tbody>
                 </table>
               </template>
+            </div>
+            </template>
+            <div v-else-if="detailTab === 'events'" class="kami-event-list kami-event-list--desktop" role="tabpanel">
+              <div v-if="eventsLoading" class="kami-page__empty">正在加载库存事件…</div>
+              <div v-else-if="inventoryEvents.length === 0" class="kami-page__empty">暂无库存事件；预占、消费、释放、待核对和外部供货熔断会记录在这里。</div>
+              <article v-for="event in inventoryEvents" :key="event.id" class="kami-event">
+                <div class="kami-event__top"><strong>{{ eventLabel(event.eventType) }}</strong><span>{{ event.createdTime }}</span></div>
+                <div class="kami-event__meta"><span>账号 {{ event.accountId || '—' }}</span><span>订单 {{ event.orderId || '—' }}</span><span>版本 r{{ event.configVersion || '—' }}</span><span>来源 {{ event.source }}</span></div>
+                <div class="kami-event__request">请求 ID：{{ event.requestId }}</div>
+              </article>
+              <div v-if="eventTotal > 20" class="kami-event__pager">
+                <button class="btn-default btn-sm" :disabled="eventPage <= 1" @click="changeEventPage(eventPage - 1)">上一页</button>
+                <span>{{ eventPage }} / {{ eventPageCount }}</span>
+                <button class="btn-default btn-sm" :disabled="eventPage >= eventPageCount" @click="changeEventPage(eventPage + 1)">下一页</button>
+              </div>
+            </div>
+            <div v-else class="external-request-list external-request-list--desktop" role="tabpanel">
+              <div class="external-request-toolbar"><div><strong>外部供货请求</strong><small>请求密钥、令牌、载荷指纹和卡密内容不会在列表中回显。</small></div><select v-model="externalRequestStatus" class="native-select" @change="externalRequestPage=1;loadExternalRequests()"><option value="ALL">全部状态</option><option value="REVIEW_REQUIRED">结果未知</option><option value="FAILED">已知失败</option><option value="SUCCESS">供货成功</option><option value="MANUAL_NOT_SUPPLIED">人工确认未出卡</option><option value="MANUAL_SUPPLIED_REVIEW">已附加待核对</option></select></div>
+              <div v-if="externalRequestsLoading" class="kami-page__empty">正在读取脱敏供货状态…</div>
+              <div v-else-if="!externalRequests.length" class="kami-page__empty">暂无外部供货请求。</div>
+              <article v-for="request in externalRequests" :key="request.id" class="external-request-card">
+                <header><div><strong>订单 {{ request.orderId }}</strong><small>请求 #{{ request.id }} · 账号 {{ request.accountId }}</small></div><span :class="{ danger: request.resultUnknown === 1 }">{{ externalStatusLabel(request.requestStatus) }}</span></header>
+                <dl><div><dt>请求数量</dt><dd>{{ request.quantity }}</dd></div><div><dt>尝试次数</dt><dd>{{ request.attemptCount }}</dd></div><div><dt>请求时熔断</dt><dd>{{ request.circuitStateAtRequest || '—' }}</dd></div><div><dt>附加待核对</dt><dd>{{ request.attachedReviewCount || 0 }}</dd></div></dl>
+                <p>{{ request.errorMessage || '无错误详情' }}</p>
+                <footer><time>更新 {{ request.updateTime }}</time><button v-if="request.resultUnknown === 1 || request.requestStatus === 'REVIEW_REQUIRED'" class="btn-warning btn-sm" @click="openResolutionDialog(request)">人工核对结果</button></footer>
+              </article>
+              <div v-if="externalRequestTotal > 20" class="kami-event__pager"><button class="btn-default btn-sm" :disabled="externalRequestPage<=1" @click="changeExternalRequestPage(externalRequestPage-1)">上一页</button><span>{{ externalRequestPage }} / {{ externalRequestPageCount }}</span><button class="btn-default btn-sm" :disabled="externalRequestPage>=externalRequestPageCount" @click="changeExternalRequestPage(externalRequestPage+1)">下一页</button></div>
             </div>
           </template>
         </div>
@@ -790,12 +1074,13 @@ onUnmounted(() => {
                 </div>
                 <div class="form-row">
                   <label class="form-label">请求头 JSON</label>
-                  <textarea v-model="createForm.externalApiHeaders" class="form-textarea" rows="3" :placeholder="editingConfigId && selectedConfig?.externalApiHeadersConfigured ? '已保存请求头；留空保持不变' : '{&quot;Authorization&quot;:&quot;Bearer xxx&quot;}'"></textarea>
+                  <textarea v-model="createForm.externalApiHeaders" class="form-textarea" rows="3" autocomplete="new-password" :placeholder="editingConfigId && selectedConfig?.externalApiHeadersConfigured ? '已保存请求头；留空保持不变' : '{&quot;Authorization&quot;:&quot;Bearer xxx&quot;}'"></textarea>
                   <span class="form-suffix">认证请求头不进入业务备份，恢复数据后需要重新填写。</span>
                 </div>
                 <div class="form-row">
                   <label class="form-label">请求体 JSON</label>
-                  <textarea v-model="createForm.externalApiBody" class="form-textarea" rows="6"></textarea>
+                  <textarea v-model="createForm.externalApiBody" class="form-textarea" rows="6" autocomplete="off" :placeholder="editingConfigId && selectedConfig?.externalApiBodySensitiveConfigured ? '旧请求体含敏感字段，已隐藏；留空保持原值，建议把密钥迁移到只写请求头' : 'JSON 请求体模板'"></textarea>
+                  <span v-if="editingConfigId && selectedConfig?.externalApiBodySensitiveConfigured" class="form-suffix">检测到旧请求体含疑似密钥，本页不回显。留空保持原值；填入新模板会替换旧值。</span>
                   <span class="form-suffix">变量：{orderId}、{quantity}、{requestToken}</span>
                 </div>
                 <div class="form-row">
@@ -805,6 +1090,22 @@ onUnmounted(() => {
                 <div class="form-row">
                   <label class="form-label">超时秒数</label>
                   <input v-model.number="createForm.externalApiTimeoutSeconds" type="number" min="3" max="30" class="form-input form-input--num" />
+                </div>
+                <div class="form-section-title">配额与熔断</div>
+                <div class="form-row">
+                  <label class="form-label">每日配额</label>
+                  <input v-model.number="createForm.externalDailyQuota" type="number" min="1" max="100000" class="form-input form-input--num" placeholder="不限" />
+                  <span class="form-suffix">按实际外部请求数量计数；留空不限。</span>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">失败阈值</label>
+                  <input v-model.number="createForm.externalFailureThreshold" type="number" min="1" max="20" class="form-input form-input--num" />
+                  <span class="form-suffix">连续确定性失败达到阈值后停止新请求。</span>
+                </div>
+                <div class="form-row">
+                  <label class="form-label">冷却秒数</label>
+                  <input v-model.number="createForm.externalCooldownSeconds" type="number" min="30" max="86400" class="form-input form-input--num" />
+                  <span class="form-suffix">超时或结果未知会立即熔断，且不会自动重试。</span>
                 </div>
               </template>
             </div>
@@ -844,7 +1145,7 @@ onUnmounted(() => {
               <button class="modal-close" @click="showImportDialog = false">×</button>
             </div>
             <div class="modal-body">
-              <p class="form-hint">每行一条卡密，重复卡密不会跳过</p>
+              <p class="form-hint">每行一条卡密；重复内容会安全跳过，不会生成重复库存。</p>
               <textarea v-model="importContent" class="form-textarea" :rows="10" placeholder="卡密1&#10;卡密2&#10;卡密3"></textarea>
             </div>
             <div class="modal-footer">
@@ -920,12 +1221,36 @@ onUnmounted(() => {
                   </label>
                 </div>
               </div>
-              <p class="form-hint form-hint--indent">导出为Excel格式（.txt文件，Excel可直接打开）</p>
+              <div class="export-warning">
+                <strong>敏感数据导出</strong>
+                <span>文件包含完整卡密内容。本次范围、数量、操作者和请求 ID 会写入不可丢失审计。</span>
+              </div>
+              <p class="form-hint form-hint--indent">导出为制表符文本（.txt，Excel 可直接打开）。</p>
             </div>
             <div class="modal-footer">
               <button class="btn btn-secondary" @click="showExportDialog = false">取消</button>
               <button class="btn btn-primary" @click="handleExport">导出</button>
             </div>
+          </div>
+        </div>
+      </Transition>
+
+      <!-- 外部供货结果未知：人工补偿 -->
+      <Transition name="modal">
+        <div v-if="showResolutionDialog" class="modal-overlay" @click.self="showResolutionDialog = false">
+          <div class="modal-container modal-container--lg external-resolution-dialog" role="dialog" aria-modal="true" aria-labelledby="external-resolution-title">
+            <div class="modal-header">
+              <div><h2 id="external-resolution-title" class="modal-title">人工核对外部供货</h2><p>订单 {{ resolutionRequest?.orderId }} · 请求 {{ resolutionRequest?.id }} · 应出 {{ resolutionRequest?.quantity }} 条</p></div>
+              <button class="modal-close" aria-label="关闭" @click="showResolutionDialog = false">×</button>
+            </div>
+            <div class="modal-body">
+              <div class="external-resolution-warning"><strong>先到供应商后台核对真实结果</strong><span>这里不会再次调用供应商，也不会向买家自动发送。错误结论可能造成重复取卡或漏发。</span></div>
+              <div class="form-row"><label class="form-label">核对结论</label><select v-model="resolutionForm.decision" class="form-input" @change="invalidateResolutionPreview"><option value="CONFIRMED_NOT_SUPPLIED">确认供应商未出卡，可安全重试</option><option value="CONFIRMED_SUPPLIED">确认供应商已出卡，附加后转人工核对</option></select></div>
+              <div v-if="resolutionForm.decision === 'CONFIRMED_SUPPLIED'" class="form-row"><label class="form-label">供应商实际返回的卡密</label><textarea v-model="resolutionForm.cardContents" class="form-textarea" rows="7" autocomplete="off" :placeholder="`每行一条，必须正好 ${resolutionRequest?.quantity || 0} 条`" @input="invalidateResolutionPreview"></textarea><span class="form-suffix">完整卡密仅写入库存；操作日志只记录数量，不记录内容。</span></div>
+              <div class="form-row"><label class="form-label">核对备注（选填）</label><textarea v-model="resolutionForm.note" class="form-textarea" rows="3" maxlength="500" placeholder="例如：供应商后台工单号、核对时间；不要填写密钥"></textarea></div>
+              <section v-if="resolutionPreview" class="external-resolution-preview"><strong>最终影响</strong><p>{{ resolutionPreview.effect }}</p><code>{{ resolutionPreview.confirmationText }}</code><label><input v-model="resolutionAcknowledged" type="checkbox">我已在供应商侧核对订单和数量，并确认执行以上处置。</label></section>
+            </div>
+            <div class="modal-footer"><button class="btn btn-secondary" @click="showResolutionDialog = false">取消</button><button v-if="!resolutionPreview" class="btn btn-primary" :disabled="resolutionSaving" @click="previewResolution">生成确认范围</button><button v-else class="btn btn-primary" :disabled="resolutionSaving || !resolutionAcknowledged" @click="confirmResolution">{{ resolutionSaving ? '处理中…' : '确认并记录' }}</button></div>
           </div>
         </div>
       </Transition>
@@ -1058,6 +1383,129 @@ onUnmounted(() => {
   color: #1c1c1e;
   margin: 0;
 }
+.kami-detail__subtitle {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: rgba(28,28,30,.55);
+}
+.kami-health {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(60,60,67,.1);
+  border-radius: 12px;
+  background: rgba(255,255,255,.58);
+  flex-shrink: 0;
+}
+.kami-health > div {
+  min-width: 92px;
+  padding: 2px 10px;
+  border-right: 1px solid rgba(60,60,67,.1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.kami-health > div:last-of-type { border-right: 0; }
+.kami-health strong { font-size: 16px; color: #1c1c1e; }
+.kami-health span { font-size: 11px; color: rgba(28,28,30,.58); }
+.kami-health .danger strong { color: #d92d20; }
+.kami-health .warning strong { color: #9a6700; }
+.kami-health button { margin-left: auto; align-self: center; }
+.kami-health--mobile {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 10px 0 8px;
+}
+.kami-health--mobile > div { min-width: 0; padding: 0 6px; }
+.kami-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  margin-bottom: 10px;
+  border-radius: 10px;
+  background: rgba(60,60,67,.08);
+  width: fit-content;
+  flex-shrink: 0;
+}
+.kami-tabs button {
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 14px;
+  background: transparent;
+  color: rgba(28,28,30,.64);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.kami-tabs button.active {
+  color: #1c1c1e;
+  background: rgba(255,255,255,.9);
+  box-shadow: 0 1px 3px rgba(0,0,0,.08);
+}
+.kami-tabs button:focus-visible { outline: 3px solid rgba(255,204,0,.55); outline-offset: 2px; }
+.kami-event-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.kami-event-list--desktop { padding-right: 6px; }
+.kami-event {
+  border: 1px solid rgba(60,60,67,.1);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,.56);
+}
+.kami-event__top { display: flex; justify-content: space-between; gap: 12px; }
+.kami-event__top strong { font-size: 13px; color: #1c1c1e; }
+.kami-event__top span, .kami-event__request { font-size: 11px; color: rgba(28,28,30,.5); }
+.kami-event__meta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 7px; font-size: 12px; color: rgba(28,28,30,.72); }
+.kami-event__request { margin-top: 5px; overflow-wrap: anywhere; }
+.kami-event__pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 0 2px;
+  color: rgba(28,28,30,.62);
+  font-size: 12px;
+}
+.external-request-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 5px;
+}
+.external-request-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.external-request-toolbar > div { display: grid; gap: 3px; }
+.external-request-toolbar small { color: rgba(28,28,30,.55); font-size: 11px; }
+.external-request-card { padding: 14px; border: 1px solid rgba(60,60,67,.1); border-radius: 13px; background: rgba(255,255,255,.62); }
+.external-request-card > header, .external-request-card > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.external-request-card header div { display: grid; gap: 3px; }
+.external-request-card header small, .external-request-card time { color: rgba(28,28,30,.5); font-size: 11px; }
+.external-request-card header > span { padding: 4px 9px; border-radius: 999px; background: rgba(60,60,67,.09); font-size: 11px; }
+.external-request-card header > span.danger { color: #b42318; background: #fff0ef; }
+.external-request-card dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin: 12px 0; }
+.external-request-card dl div { padding: 9px; border-radius: 9px; background: rgba(60,60,67,.05); }
+.external-request-card dt { color: rgba(28,28,30,.5); font-size: 10px; }
+.external-request-card dd { margin: 4px 0 0; font-size: 12px; font-weight: 650; }
+.external-request-card > p { margin: 10px 0; color: rgba(28,28,30,.68); font-size: 12px; }
+.external-request-card > small { display: block; margin: 8px 0; color: rgba(28,28,30,.58); }
+.external-resolution-dialog { max-width: 640px; }
+.modal-header p { margin: 4px 0 0; color: rgba(28,28,30,.55); font-size: 11px; }
+.external-resolution-warning { display: grid; gap: 4px; padding: 12px; border: 1px solid rgba(255,159,10,.28); border-radius: 11px; background: rgba(255,159,10,.08); color: #724600; }
+.external-resolution-warning span { font-size: 11px; line-height: 1.5; }
+.external-resolution-preview { display: grid; gap: 8px; padding: 13px; border: 1px solid rgba(255,204,0,.5); border-radius: 12px; background: rgba(255,251,224,.72); }
+.external-resolution-preview p { margin: 0; font-size: 12px; line-height: 1.5; }
+.external-resolution-preview code { padding: 9px; border-radius: 8px; background: rgba(255,255,255,.75); overflow-wrap: anywhere; white-space: normal; }
+.external-resolution-preview label { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; }
 .kami-detail__actions {
   display: flex;
   gap: 8px;
@@ -1158,6 +1606,10 @@ onUnmounted(() => {
   background: rgba(120,120,128,0.12);
   color: rgba(28,28,30,.55);
 }
+.kami-status--0 { background: rgba(48,209,88,.12); color: #147a35; }
+.kami-status--1 { background: rgba(120,120,128,.12); color: rgba(28,28,30,.66); }
+.kami-status--2 { background: rgba(0,122,255,.12); color: #0059b3; }
+.kami-status--3 { background: rgba(255,69,58,.12); color: #b42318; }
 
 .kami-table__actions {
   display: flex;
@@ -1453,6 +1905,26 @@ onUnmounted(() => {
 
 .form-hint--indent {
   margin-left: 70px;
+}
+.form-section-title {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(60,60,67,.1);
+  font-size: 13px;
+  font-weight: 700;
+  color: #1c1c1e;
+}
+.export-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255,159,10,.25);
+  border-radius: 10px;
+  background: rgba(255,159,10,.08);
+  color: #784c00;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .form-suffix {

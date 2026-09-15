@@ -19,6 +19,7 @@ public class AccountDataPermissionHandler implements MultiDataPermissionHandler 
             "xianyu_cookie", "xianyu_goods", "xianyu_chat_message", "xianyu_goods_config",
             "xianyu_goods_auto_delivery_config", "xianyu_goods_order", "xianyu_goods_auto_reply_record",
             "xianyu_operation_log", "xianyu_kami_config", "xianyu_kami_usage_record",
+            "xianyu_kami_inventory_event",
             "xianyu_keyword_reply_rule", "xianyu_goods_sku", "xianyu_goods_sku_property",
             "xianyu_human_intervention_record", "xianyu_buyer_profile", "xianyu_kami_external_request",
             "xianyu_order_confirmation", "xianyu_device_profile", "operational_issue",
@@ -28,6 +29,7 @@ public class AccountDataPermissionHandler implements MultiDataPermissionHandler 
             "xianyu_goods_event", "xianyu_goods_metric_daily", "xianyu_goods_batch_item",
             "xianyu_order_event", "xianyu_refund_case", "xianyu_refund_action", "xianyu_return_shipment",
             "xianyu_message_send_attempt", "xianyu_notification_event",
+            "xianyu_order_engagement_event",
             "xianyu_ai_handoff_task",
             "xianyu_account_group_member", "xianyu_shop_metric_daily"
     );

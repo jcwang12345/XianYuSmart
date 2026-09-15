@@ -23,6 +23,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -177,6 +178,10 @@ public class OrderMatrixService {
         boolean rated = order != null && number(order.get("rateStatus")) == 1;
         result.put("rating", Map.of("status", order == null ? "REQUIRES_ORDER" : rated ? "COMPLETED" : completed ? "READY_AUTOMATION" : "WAITING_ORDER_STATE",
                 "reason", rated ? "评价已记录" : completed ? "订单状态满足自动评价条件" : "需等待确认收货/交易完成"));
+        result.put("reviewInvitation", Map.of("status", order == null ? "REQUIRES_ORDER" : completed ? "READY_AUTOMATION" : "WAITING_ORDER_STATE",
+                "reason", completed ? "按商品配置发送邀评话术；账号日频控、幂等和未知保护已启用" : "需等待平台确认收货"));
+        result.put("followUpReview", Map.of("status", "UNAVAILABLE",
+                "reason", "当前接入通道未验证闲鱼追评接口，不提供假入口；可在平台处理后同步评价事实"));
         return result;
     }
 
@@ -521,6 +526,26 @@ public class OrderMatrixService {
         }, tenant(), orderRecordId));
         if (orderId != null && !orderId.isBlank()) {
             timeline.addAll(jdbcTemplate.query("""
+                    SELECT event_type,status,attempt_count,request_id,error_message,
+                           next_retry_time,sent_time,created_time,updated_time
+                      FROM xianyu_order_engagement_event
+                     WHERE tenant_id=? AND order_id=?
+                     ORDER BY created_time DESC,id DESC LIMIT 100
+                    """, (rs, rowNum) -> {
+                Map<String, Object> event = new LinkedHashMap<>();
+                event.put("eventType", rs.getString("event_type"));
+                event.put("outcomeState", rs.getString("status"));
+                event.put("dataSource", "LOCAL_AUTOMATION");
+                event.put("requestId", rs.getString("request_id"));
+                event.put("attemptCount", rs.getInt("attempt_count"));
+                event.put("error", rs.getString("error_message"));
+                event.put("nextRetryTime", instant(rs, "next_retry_time"));
+                event.put("sentTime", instant(rs, "sent_time"));
+                event.put("createdTime", instant(rs, "created_time"));
+                event.put("updatedTime", instant(rs, "updated_time"));
+                return event;
+            }, tenant(), orderId));
+            timeline.addAll(jdbcTemplate.query("""
                     SELECT operation_type,operation_desc,operation_status,outcome_state,data_source,
                            operator_username,request_id,error_message,create_time
                       FROM xianyu_operation_log
@@ -536,11 +561,21 @@ public class OrderMatrixService {
                 event.put("operatorUsername", rs.getString("operator_username"));
                 event.put("requestId", rs.getString("request_id"));
                 event.put("error", rs.getString("error_message"));
-                event.put("createdTimeEpochMs", nullableLong(rs, "create_time"));
+                Long createdTime = nullableLong(rs, "create_time");
+                event.put("createdTimeEpochMs", createdTime);
+                event.put("createdTime", createdTime == null ? null : Instant.ofEpochMilli(createdTime));
                 return event;
             }, tenant(), orderId));
         }
+        timeline.sort(Comparator.comparingLong(this::timelineTimestamp).reversed());
         return timeline;
+    }
+
+    private long timelineTimestamp(Map<String, Object> event) {
+        Object value = event.get("createdTime");
+        if (value instanceof Instant instant) return instant.toEpochMilli();
+        Object epoch = event.get("createdTimeEpochMs");
+        return epoch instanceof Number number ? number.longValue() : 0L;
     }
 
     private Map<String, Object> requireOrder(Long id) {

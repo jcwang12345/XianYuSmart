@@ -21,19 +21,40 @@ class AutomationSafetyTest {
         var tenant = (com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor) interceptors.getFirst();
         com.xianyusmart.context.TenantContext.set(7L);
         try {
-            for(var mapper:List.of(DeliveryExecutionMapper.class,OrderConfirmationMapper.class,OrderOperationsMapper.class,ReplyPreferenceMapper.class)) {
+            for(var mapper:List.of(DeliveryExecutionMapper.class,OrderConfirmationMapper.class,
+                    OrderOperationsMapper.class,ReplyPreferenceMapper.class,
+                    XianyuKamiItemMapper.class,XianyuKamiExternalRequestMapper.class)) {
                 for(var method:mapper.getMethods()) {
                     String[] sql = null;
                     if(method.isAnnotationPresent(org.apache.ibatis.annotations.Select.class))sql=method.getAnnotation(org.apache.ibatis.annotations.Select.class).value();
                     if(method.isAnnotationPresent(org.apache.ibatis.annotations.Update.class))sql=method.getAnnotation(org.apache.ibatis.annotations.Update.class).value();
                     if(method.isAnnotationPresent(org.apache.ibatis.annotations.Insert.class))sql=method.getAnnotation(org.apache.ibatis.annotations.Insert.class).value();
                     if(sql!=null) {
-                        String query=String.join(" ",sql).replaceAll("#\\{[^}]+}","?");
+                        String query=String.join(" ",sql)
+                                .replaceAll("(?s)<foreach[^>]*>.*?</foreach>", "(?)")
+                                .replaceAll("(?s)</?(if|choose|when|otherwise)[^>]*>", "")
+                                .replace("<script>", "").replace("</script>", "")
+                                .replaceAll("#\\{[^}]+}","?");
                         assertDoesNotThrow(()->tenant.parserSingle(query,null),mapper.getSimpleName()+"."+method.getName());
                     }
                 }
             }
         } finally {com.xianyusmart.context.TenantContext.clear();}
+    }
+    @Test void cardReservationMutationsAreScopedByAccountAndOrder() throws Exception {
+        String commit = String.join(" ", XianyuKamiItemMapper.class
+                .getMethod("commitReservation", Long.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+        String release = String.join(" ", XianyuKamiItemMapper.class
+                .getMethod("releaseReservation", Long.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+        String review = String.join(" ", XianyuKamiItemMapper.class
+                .getMethod("markReservationReviewRequired", Long.class, String.class)
+                .getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+        for (String sql : List.of(commit, release, review)) {
+            assertTrue(sql.contains("reserved_account_id"));
+            assertTrue(sql.contains("order_id"));
+        }
     }
     @Test void expiredLeaseCannotStartExternalWorkAndScopeIsCleared() {
         AtomicInteger begins=new AtomicInteger();

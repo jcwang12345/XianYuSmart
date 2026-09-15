@@ -13,4 +13,7 @@ public class KamiItemReqDTO {
 
     @NotBlank(message = "卡密内容不能为空")
     private String kamiContent;
+
+    @NotBlank(message = "requestId不能为空")
+    private String requestId;
 }

@@ -26,8 +26,13 @@ public class XianyuFixedDeliveryTemplate {
 
     private Long xianyuAccountId;
 
+    private Long templateVersion;
+
     @TableField(exist = false)
     private List<Long> xianyuAccountIds;
+
+    @TableField(exist = false)
+    private Integer referenceCount;
 
     private String templateName;
 

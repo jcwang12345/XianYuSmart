@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.entity.XianyuKamiConfig;
 import com.xianyusmart.service.notification.PinnedHttpsClient;
+import com.xianyusmart.service.PlatformWritePolicy;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -19,13 +20,19 @@ public class ExternalKamiGateway {
 
     private final ObjectMapper objectMapper;
     private final PinnedHttpsClient httpsClient;
+    private final PlatformWritePolicy platformWritePolicy;
 
-    public ExternalKamiGateway(ObjectMapper objectMapper, PinnedHttpsClient httpsClient) {
+    public ExternalKamiGateway(ObjectMapper objectMapper, PinnedHttpsClient httpsClient,
+                               PlatformWritePolicy platformWritePolicy) {
         this.objectMapper = objectMapper;
         this.httpsClient = httpsClient;
+        this.platformWritePolicy = platformWritePolicy;
     }
 
     public String request(XianyuKamiConfig config, String orderId, int quantity, String requestToken) {
+        if (!platformWritePolicy.enabled()) {
+            throw new ExternalKamiException("QA环境禁止调用真实外部供货接口", false);
+        }
         try {
             String body = replaceVariables(config.getExternalApiBody(), orderId, quantity, requestToken);
             Map<String, String> headers = new LinkedHashMap<>();
@@ -40,7 +47,9 @@ public class ExternalKamiGateway {
                     config.getExternalApiUrl(), headers, body,
                     Duration.ofSeconds(config.getExternalApiTimeoutSeconds()));
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new ExternalKamiException("外部卡密接口返回 HTTP " + response.statusCode(), true);
+                int status = response.statusCode();
+                boolean uncertain = status == 408 || status == 409 || status == 425 || status == 429 || status >= 500;
+                throw new ExternalKamiException("外部卡密接口返回 HTTP " + status, uncertain);
             }
             return response.body();
         } catch (ExternalKamiException e) {

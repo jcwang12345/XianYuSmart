@@ -36,6 +36,7 @@ class KamiConfigSharingTest {
         ReflectionTestUtils.setField(service, "xianyuAccountMapper", accountMapper);
         ReflectionTestUtils.setField(service, "sharedAccountLinkMapper", sharedAccountLinkMapper);
         ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
+        ReflectionTestUtils.setField(service, "operationLogService", mock(com.xianyusmart.service.OperationLogService.class));
 
         when(accountMapper.selectById(anyLong())).thenAnswer(invocation -> {
             XianyuAccount account = new XianyuAccount();
@@ -57,6 +58,7 @@ class KamiConfigSharingTest {
         request.setSharingMode("SHARED");
         request.setAliasName("共享卡密");
         request.setSourceType("LOCAL");
+        request.setRequestId("qa-kami-sharing-create");
 
         var result = service.createOrUpdateConfig(request);
 

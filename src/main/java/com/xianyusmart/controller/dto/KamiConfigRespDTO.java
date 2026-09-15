@@ -16,6 +16,8 @@ public class KamiConfigRespDTO {
 
     private String sharingMode;
 
+    private Long configVersion;
+
     private String aliasName;
 
     private String sourceType;
@@ -28,9 +30,25 @@ public class KamiConfigRespDTO {
 
     private String externalApiBody;
 
+    private Boolean externalApiBodySensitiveConfigured;
+
     private String externalApiResultPath;
 
     private Integer externalApiTimeoutSeconds;
+
+    private Integer externalDailyQuota;
+
+    private Integer externalFailureThreshold;
+
+    private Integer externalCooldownSeconds;
+
+    private String externalCircuitState;
+
+    private Integer externalConsecutiveFailures;
+
+    private LocalDateTime externalCircuitOpenedAt;
+
+    private Integer externalQuotaUsed;
 
     private Integer alertEnabled;
 
@@ -45,6 +63,10 @@ public class KamiConfigRespDTO {
     private Integer usedCount;
 
     private Integer availableCount;
+
+    private Integer reservedCount;
+
+    private Integer reviewRequiredCount;
 
     private LocalDateTime createTime;
 

@@ -29,6 +29,14 @@ public class KamiConfigReqDTO {
 
     private Integer externalApiTimeoutSeconds;
 
+    private Integer externalDailyQuota;
+
+    private Integer externalFailureThreshold;
+
+    private Integer externalCooldownSeconds;
+
+    private String requestId;
+
     private Integer alertEnabled;
 
     private Integer alertThresholdType;

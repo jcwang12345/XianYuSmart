@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @RestController
@@ -50,9 +51,10 @@ public class KamiConfigController {
     }
 
     @PostMapping("/delete")
-    public ResultObject<Void> deleteConfig(@RequestParam("id") Long id) {
+    public ResultObject<Void> deleteConfig(@RequestParam("id") Long id,
+                                           @RequestParam("requestId") String requestId) {
         try {
-            return kamiConfigService.deleteConfig(id);
+            return kamiConfigService.deleteConfig(id, requestId);
         } catch (Exception e) {
             log.error("删除卡密配置失败", e);
             return ResultObject.failed("删除卡密配置失败: " + e.getMessage());
@@ -100,9 +102,10 @@ public class KamiConfigController {
     }
 
     @PostMapping("/item/delete")
-    public ResultObject<Void> deleteKamiItem(@RequestParam("id") Long id) {
+    public ResultObject<Void> deleteKamiItem(@RequestParam("id") Long id,
+                                             @RequestParam("requestId") String requestId) {
         try {
-            return kamiConfigService.deleteKamiItem(id);
+            return kamiConfigService.deleteKamiItem(id, requestId);
         } catch (Exception e) {
             log.error("删除卡密失败", e);
             return ResultObject.failed("删除卡密失败: " + e.getMessage());
@@ -110,9 +113,10 @@ public class KamiConfigController {
     }
 
     @PostMapping("/item/reset")
-    public ResultObject<Void> resetKamiItem(@RequestParam("id") Long id) {
+    public ResultObject<Void> resetKamiItem(@RequestParam("id") Long id,
+                                            @RequestParam("requestId") String requestId) {
         try {
-            return kamiConfigService.resetKamiItem(id);
+            return kamiConfigService.resetKamiItem(id, requestId);
         } catch (Exception e) {
             log.error("重置卡密状态失败", e);
             return ResultObject.failed("重置卡密状态失败: " + e.getMessage());
@@ -127,5 +131,48 @@ public class KamiConfigController {
             log.error("导出卡密失败", e);
             return ResultObject.failed("导出卡密失败: " + e.getMessage());
         }
+    }
+
+    @PostMapping("/external/circuit/reset")
+    public ResultObject<KamiConfigRespDTO> resetExternalCircuit(@RequestBody CircuitResetRequest request) {
+        return kamiConfigService.resetExternalCircuit(request.kamiConfigId(), request.requestId());
+    }
+
+    @GetMapping("/{kamiConfigId}/events")
+    public ResultObject<Map<String, Object>> inventoryEvents(@PathVariable Long kamiConfigId,
+                                                              @RequestParam(defaultValue = "1") Integer page,
+                                                              @RequestParam(defaultValue = "20") Integer pageSize) {
+        return kamiConfigService.getInventoryEvents(kamiConfigId, page, pageSize);
+    }
+
+    @GetMapping("/{kamiConfigId}/external/requests")
+    public ResultObject<Map<String, Object>> externalRequests(@PathVariable Long kamiConfigId,
+                                                               @RequestParam(required = false) String status,
+                                                               @RequestParam(defaultValue = "1") Integer page,
+                                                               @RequestParam(defaultValue = "20") Integer pageSize) {
+        return kamiConfigService.getExternalRequests(kamiConfigId, status, page, pageSize);
+    }
+
+    @PostMapping("/external/requests/{externalRequestId}/resolution-preview")
+    public ResultObject<Map<String, Object>> externalResolutionPreview(@PathVariable Long externalRequestId,
+                                                                        @RequestBody ResolutionPreviewRequest request) {
+        return kamiConfigService.previewExternalResolution(externalRequestId, request.decision());
+    }
+
+    @PostMapping("/external/requests/{externalRequestId}/resolve")
+    public ResultObject<Map<String, Object>> resolveExternalRequest(@PathVariable Long externalRequestId,
+                                                                     @RequestBody ExternalResolutionRequest request) {
+        return kamiConfigService.resolveExternalRequest(externalRequestId, request.decision(),
+                request.confirmationText(), request.cardContents(), request.note(), request.requestId());
+    }
+
+    public record CircuitResetRequest(Long kamiConfigId, String requestId) {
+    }
+
+    public record ResolutionPreviewRequest(String decision) {
+    }
+
+    public record ExternalResolutionRequest(String decision, String confirmationText,
+                                            List<String> cardContents, String note, String requestId) {
     }
 }

@@ -20,6 +20,8 @@ public class XianyuKamiConfig {
 
     private String sharingMode;
 
+    private Long configVersion;
+
     private String aliasName;
 
     private String sourceType;
@@ -34,6 +36,22 @@ public class XianyuKamiConfig {
     private String externalApiResultPath;
 
     private Integer externalApiTimeoutSeconds;
+
+    private Integer externalDailyQuota;
+
+    private Integer externalFailureThreshold;
+
+    private Integer externalCooldownSeconds;
+
+    private String externalCircuitState;
+
+    private Integer externalConsecutiveFailures;
+
+    private LocalDateTime externalCircuitOpenedAt;
+
+    private java.time.LocalDate externalQuotaDate;
+
+    private Integer externalQuotaUsed;
 
     private Integer alertEnabled;
 

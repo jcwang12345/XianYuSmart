@@ -7,6 +7,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
+import java.util.Map;
 
 @Mapper
 public interface XianyuFixedDeliveryTemplateMapper extends BaseMapper<XianyuFixedDeliveryTemplate> {
@@ -27,4 +28,13 @@ public interface XianyuFixedDeliveryTemplateMapper extends BaseMapper<XianyuFixe
 
     @Select("SELECT COUNT(*) FROM xianyu_goods_auto_delivery_config WHERE fixed_template_id = #{templateId}")
     int countReferencedConfigs(@Param("templateId") Long templateId);
+
+    @Select("SELECT * FROM xianyu_fixed_delivery_template WHERE id = #{id} FOR UPDATE")
+    XianyuFixedDeliveryTemplate lockById(@Param("id") Long id);
+
+    @Select("SELECT config.id AS configId,config.xianyu_account_id AS accountId," +
+            "config.xy_goods_id AS goodsId,config.sku_id AS skuId,config.sku_name AS skuName " +
+            "FROM xianyu_goods_auto_delivery_config config " +
+            "WHERE config.fixed_template_id = #{templateId} ORDER BY config.id DESC")
+    List<Map<String, Object>> findReferences(@Param("templateId") Long templateId);
 }

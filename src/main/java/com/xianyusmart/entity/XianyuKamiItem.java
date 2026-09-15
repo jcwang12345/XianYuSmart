@@ -20,6 +20,16 @@ public class XianyuKamiItem {
 
     private String orderId;
 
+    private Long reservedAccountId;
+
+    private String reservationToken;
+
+    private LocalDateTime reservationExpireTime;
+
+    private Long sourceConfigVersion;
+
+    private Long rowVersion;
+
     private LocalDateTime reservedTime;
 
     private LocalDateTime usedTime;

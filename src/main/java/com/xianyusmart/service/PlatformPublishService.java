@@ -47,6 +47,7 @@ public class PlatformPublishService {
     private final GoodsInfoService goodsInfoService;
     private final PlatformMarketplaceParser responseParser;
     private final PublishAddressCatalog addressCatalog;
+    private final PlatformWritePolicy platformWritePolicy;
 
     public PlatformPublishService(PlaywrightManager playwrightManager,
                                   AccountService accountService,
@@ -54,7 +55,8 @@ public class PlatformPublishService {
                                   XianyuApiCallUtils apiCallUtils,
                                   RiskControlService riskControlService,
                                   ImageUploadService imageUploadService,
-                                  GoodsInfoService goodsInfoService) {
+                                  GoodsInfoService goodsInfoService,
+                                  PlatformWritePolicy platformWritePolicy) {
         this.playwrightManager = playwrightManager;
         this.accountService = accountService;
         this.objectMapper = objectMapper;
@@ -62,6 +64,7 @@ public class PlatformPublishService {
         this.riskControlService = riskControlService;
         this.imageUploadService = imageUploadService;
         this.goodsInfoService = goodsInfoService;
+        this.platformWritePolicy = platformWritePolicy;
         this.responseParser = new PlatformMarketplaceParser(objectMapper);
         this.addressCatalog = new PublishAddressCatalog(objectMapper);
     }
@@ -71,6 +74,9 @@ public class PlatformPublishService {
     }
 
     public Map<String, Object> publish(MerchantResource material, Long accountId, Map<String, Object> address) {
+        if (!platformWritePolicy.enabled()) {
+            throw new IllegalStateException("QA环境禁止真实商品发布，请使用 QA_LOCAL 隔离通道");
+        }
         String cookieText = accountService.getCookieByAccountId(accountId);
         if (cookieText == null || cookieText.isBlank()) {
             throw new IllegalStateException("账号Cookie不可用");

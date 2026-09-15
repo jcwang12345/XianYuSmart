@@ -29,15 +29,25 @@ public class XianyuKamiExternalRequest {
 
     private String requestToken;
 
+    private String payloadFingerprint;
+
     private Integer quantity;
 
     private String requestStatus;
+
+    private Integer resultUnknown;
 
     private Integer attemptCount;
 
     private String responseExcerpt;
 
     private String errorMessage;
+
+    private LocalDateTime nextRetryTime;
+
+    private String circuitStateAtRequest;
+
+    private Integer quotaUsedAfter;
 
     private LocalDateTime createTime;
 

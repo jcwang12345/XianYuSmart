@@ -142,11 +142,18 @@ export function useAutoDelivery() {
   })
 
   const hasSku = computed(() => skuList.value.length > 0)
-  const declaredSkuCount = computed(() => Number(selectedGoods.value?.item.skuCount ?? 0))
+  const declaredSkuCount = computed<number | null>(() => {
+    const raw = selectedGoods.value?.item.skuCount
+    return raw == null ? null : Number(raw)
+  })
   const skuCoverageIncomplete = computed(() => {
     const declared = declaredSkuCount.value
+    if (declared == null || !Number.isInteger(declared) || declared < 0) return true
     return declared > 0 ? skuList.value.length !== declared : skuList.value.length > 0
   })
+  const skuCoverageMessage = computed(() => declaredSkuCount.value == null
+    ? `SKU 主档数量尚未同步，已验证 ${skuList.value.length} 个；请同步完整商品详情`
+    : `SKU 同步不完整：主档 ${declaredSkuCount.value} 个，已验证 ${skuList.value.length} 个`)
   const configuredSkuCount = computed(() => skuList.value
     .filter(sku => sku.skuId && skuConfigs.value.has(sku.skuId)).length)
   const skuConfigurationComplete = computed(() => !skuCoverageIncomplete.value
@@ -689,7 +696,7 @@ export function useAutoDelivery() {
       return
     }
     if (skuCoverageIncomplete.value) {
-      showInfo(`SKU 同步不完整：主档 ${declaredSkuCount.value} 个，已验证 ${skuList.value.length} 个，请重新同步后再保存`)
+      showInfo(`${skuCoverageMessage.value}，请重新同步后再保存`)
       return
     }
 
@@ -780,7 +787,7 @@ export function useAutoDelivery() {
     }
     if (value && !skuConfigurationComplete.value) {
       showInfo(skuCoverageIncomplete.value
-        ? `SKU 同步不完整：主档 ${declaredSkuCount.value} 个，已验证 ${skuList.value.length} 个`
+        ? skuCoverageMessage.value
         : `请先完成全部 ${skuList.value.length} 个规格的发货配置`)
       return
     }
@@ -1063,6 +1070,7 @@ export function useAutoDelivery() {
     configLoadError,
     hasSku,
     declaredSkuCount,
+    skuCoverageMessage,
     skuCoverageIncomplete,
     skuConfigurationComplete,
     configuredSkuCount,

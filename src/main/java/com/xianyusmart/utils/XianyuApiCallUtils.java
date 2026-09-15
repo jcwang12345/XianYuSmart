@@ -30,6 +30,9 @@ public class XianyuApiCallUtils {
 
     @Autowired
     private AccountBrowserProfileService accountBrowserProfileService;
+
+    @Autowired
+    private com.xianyusmart.service.PlatformWritePolicy platformWritePolicy;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -104,6 +107,10 @@ public class XianyuApiCallUtils {
                                            Map<String, String> extraQueryParams,
                                            int retryCount) {
         try {
+            if (platformWritePolicy.blocksApi(apiName)) {
+                log.warn("【账号{}】QA 环境已阻止真实平台写请求: apiName={}", accountId, apiName);
+                return new ApiCallResult(false, null, "QA环境禁止真实平台写操作", false);
+            }
             RiskControlService.GuardDecision guard = riskControlService.checkApiWrite(accountId, apiName);
             if (!guard.allowed()) {
                 log.warn("【账号{}】平台写请求等待恢复: apiName={}, remainingSeconds={}",

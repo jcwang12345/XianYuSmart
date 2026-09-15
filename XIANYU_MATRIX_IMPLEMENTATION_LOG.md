@@ -917,3 +917,39 @@
 - 测试：`./mvnw -q test` 为 227/227 通过；前端 `vue-tsc --build` 通过；Vite 357 modules 生产构建通过；Flyway 校验 52 个迁移并确认 schema v52；`git diff --check` 通过。
 - 设计 QA：1920×1080、390×844、3840×2160；空草稿、错误、已保存、预检、令牌失效、发布成功、图片失败和重复提交均已检查；滚轮不回顶。详情见 `design-qa.md`。
 - 残余降级：目录是本地版本化参考子集，不是官方完整类目库；真实平台高级字段适配证据不足时禁止真实提交；50 SKU 长表与只读角色留给独立测试回归。
+
+## 批次 24：Wave 5 履约库存、固定模板与订单互动候选（v3.2.0-rc.1）
+
+### 需求编号与交付结果
+
+- `V6-FUL-01`：卡密仓库支持私有/共享账号范围、本地/外部来源、配置版本、可用/交付/预占/待核对状态、低库存、脱敏导出、库存事件和强制审计；预占、消费、释放保留订单与配置版本证据。
+- `V6-FUL-02`：固定内容模板支持多账号范围、搜索、买家/订单/内容变量、服务端预览、版本快照、商品引用、字段级审计和 requestId 载荷绑定。
+- `V6-FUL-03`：自动发货启用继续要求声明 SKU 数与已验证 SKU 数一致，且每个 SKU 都有履约映射；0/4、2/4 均在服务端和界面阻断。
+- `V6-FUL-04`：订单事件、履约记录和发送结果共用幂等状态；重复付款消息、网络波动和进程恢复不会再次发送“待发货”或重复发货。
+- `V6-FUL-05`：外部供货增加超时、确定失败/结果未知、按日配额、失败阈值、熔断、冷却、半开探测与人工补偿。结果未知必须由人工在供应商侧核对；已出卡只能附加为待人工核对，未出卡才允许后续安全重试。
+- `V6-ORD-01～07`：订单全屏 360、平台事实/本地状态、能力矩阵、售后/物流/消息/时间线继续保留；新增评价邀请与跟进持久事件，显示尝试次数、错误和下次重试时间，平台不可用能力明确降级。
+
+### 变更文件、迁移与 API
+
+- 迁移：`src/main/resources/db/migration/V53__fulfillment_inventory_and_supply_policy.sql`；扩展卡密配置、明细、使用记录和外部请求，新增库存事件、固定模板版本、订单互动事件及对应索引/约束。MySQL 5.7 从 V52 成功升级并验证至 V53。
+- 后端核心：`KamiConfigServiceImpl`、`ExternalKamiProvisionService`、`ExternalSupplyPolicy`、`KamiSecretMasker`、`FixedDeliveryTemplateService`、`OrderEngagementService`、`OrderMatrixService`、`GoodsAutomationService`、`PlatformWritePolicy` 及底层平台调用守卫。
+- QA：新增 `application-qa.yaml` 和 `QaFulfillmentController`；只允许 Tenant 1 / 账号 101/102/103 / `qa-` requestId，构造本地库存、事件、熔断和结果未知请求，`platformNetworkCalls=false`。
+- API：库存事件、外部供货请求、人工处置预检/执行；固定模板关键字检索、预览、版本和引用；库存新增/导入/删除/重置/导出均增加 requestId 或审计范围。
+- 前端：卡密仓库三页签、供货结果未知与人工补偿工作流、固定模板多账号/变量/预览/证据、自动发货 SKU 阻断、订单互动时间线、订单全屏详情，以及最终生产静态资源。
+- 版本：Maven、应用和前端包统一升级为 `3.2.0-rc.1`。
+
+### 安全、测试、部署与 Product Design QA
+
+- 平台写入守卫位于发布服务、闲鱼 API 调用、WebSocket 发送、外部供货网关等最终执行点；QA profile 只允许白名单 QA 对象。真实账号 202/203 本轮只读展示和自动恢复连接，未对其发送任何业务写请求。
+- 外部请求头为只写字段；请求体中出现 password/secret/apiKey/accessToken/refreshToken/authorization/credential/cookie 等敏感键时拒绝保存；历史敏感请求体只显示“已配置”，列表不返回 request token、载荷指纹或卡密正文。
+- Maven 全量测试：247 项，0 failures、0 errors、0 skipped；覆盖 SKU 完整性、重复订单事件、平台写保护、外部供货配额/熔断/未知结果、人工补偿、审计脱敏和 QA 夹具白名单。
+- 前端类型检查通过；最终 Vite 生产构建 `357 modules transformed`；静态资源在最后一次源码修改后重新生成，没有采用独立测试任务 13:55 的中间产物。
+- MySQL 5.7 只读验证：53/53 个迁移成功；QA 仓库 4 条库存中包含 1 条预占、1 条待核对，外部请求状态 `REVIEW_REQUIRED/resultUnknown=1`。
+- QA API/浏览器：供货列表 `secretFieldsReturned=false`；已出卡预检要求精确 2 条并返回 `platformWrite=NOT_PERFORMED`。300 条订单、120 条库存事件、空模板、加载、结果未知、无权限门禁、1920×1080、390×844、3840×2160 和滚轮均完成设计 QA；最终控制台无 warning/error。
+- 最终不可变制品：`/Volumes/Data/codex/xianyu/.tools/native-qa/releases/xianyusmart-3.2.0-rc.1-20260915T093205Z-aad66c9c02e2.jar`；裸机服务 `127.0.0.1:3000`，Docker 仅运行 MySQL `127.0.0.1:13306`。
+
+### 残余安全降级
+
+- 实物平台发货、退款同意/拒绝、订单改价、平台原生收货提醒、追评与营销动作仍缺可靠适配证据，继续显示“尚未验证 / 不可用 / 仅本地”，不提供假成功入口。
+- 外部供货“结果未知”无法由系统自动判断供应商是否出卡，必须人工核对；这是安全设计，不会以自动重试掩盖未知。
+- 本批完成 Wave 5 候选，不声明 V6 长期目标全部完成；独立验收通过后才能转正式版本。

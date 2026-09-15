@@ -45,6 +45,7 @@ const {
   configLoadError,
   hasSku,
   declaredSkuCount,
+  skuCoverageMessage,
   skuCoverageIncomplete,
   skuConfigurationComplete,
   configuredSkuCount,
@@ -395,7 +396,7 @@ onMounted(() => {
               <button type="button" @click="retrySkuLoad">重新加载</button>
             </div>
             <div v-else-if="skuCoverageIncomplete" class="ad__sku-state ad__sku-state--error" role="alert">
-              <span>SKU 同步不完整：主档 {{ declaredSkuCount }} 个，已验证 {{ skuList.length }} 个。为避免错发，配置保存和自动发货已停用。</span>
+              <span>{{ skuCoverageMessage }}。为避免错发，配置保存和自动发货已停用。</span>
               <button type="button" @click="syncCurrentGoodsSku">重新同步规格</button>
             </div>
             <div v-else-if="!hasSku" class="ad__sku-state">

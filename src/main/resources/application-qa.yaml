@@ -1,0 +1,5 @@
+app:
+  # 裸机 3000 仅用于开发验收：允许真实账号保持连接和只读同步，禁止任何真实平台写入。
+  # 需要真实写入必须在非 qa 环境显式运行，不能通过 QA 夹具绕过。
+  platform-writes:
+    enabled: ${QA_PLATFORM_WRITES_ENABLED:false}

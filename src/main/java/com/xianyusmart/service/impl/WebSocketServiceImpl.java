@@ -78,6 +78,9 @@ public class WebSocketServiceImpl implements WebSocketService {
     @Autowired
     private OfflineRecoveryService offlineRecoveryService;
 
+    @Autowired
+    private com.xianyusmart.service.PlatformWritePolicy platformWritePolicy;
+
     // 存储WebSocket客户端
     private final Map<Long, XianyuWebSocketClient> webSocketClients = new ConcurrentHashMap<>();
 
@@ -936,7 +939,11 @@ public class WebSocketServiceImpl implements WebSocketService {
     @Override
     public boolean sendMessage(Long accountId, String cid, String toId, String text) {
         try {
-            log.info("发送消息: accountId={}, cid={}, toId={}, text={}", accountId, cid, toId, text);
+            if (!platformWritePolicy.enabled()) {
+                log.warn("QA 环境已阻止真实消息发送: accountId={}, cid={}", accountId, cid);
+                return false;
+            }
+            log.info("发送消息: accountId={}, cid={}, toId={}", accountId, cid, toId);
             
             // 获取WebSocket客户端
             XianyuWebSocketClient client = webSocketClients.get(accountId);
@@ -963,7 +970,11 @@ public class WebSocketServiceImpl implements WebSocketService {
     @Override
     public boolean sendMessageWithResult(Long accountId, String cid, String toId, String text) {
         try {
-            log.info("发送消息(等待结果): accountId={}, cid={}, toId={}, text={}", accountId, cid, toId, text);
+            if (!platformWritePolicy.enabled()) {
+                log.warn("QA 环境已阻止真实消息发送: accountId={}, cid={}", accountId, cid);
+                return false;
+            }
+            log.info("发送消息(等待结果): accountId={}, cid={}, toId={}", accountId, cid, toId);
             
             XianyuWebSocketClient client = webSocketClients.get(accountId);
             if (client == null) {
@@ -1006,8 +1017,12 @@ public class WebSocketServiceImpl implements WebSocketService {
     @Override
     public boolean sendImageMessage(Long accountId, String cid, String toId, String imageUrl, int width, int height) {
         try {
-            log.info("发送图片消息: accountId={}, cid={}, toId={}, url={}, size={}x{}", 
-                    accountId, cid, toId, imageUrl, width, height);
+            if (!platformWritePolicy.enabled()) {
+                log.warn("QA 环境已阻止真实图片发送: accountId={}, cid={}", accountId, cid);
+                return false;
+            }
+            log.info("发送图片消息: accountId={}, cid={}, toId={}, size={}x{}",
+                    accountId, cid, toId, width, height);
             
             XianyuWebSocketClient client = webSocketClients.get(accountId);
             if (client == null) {
@@ -1032,8 +1047,12 @@ public class WebSocketServiceImpl implements WebSocketService {
     @Override
     public boolean sendImageMessageWithResult(Long accountId, String cid, String toId, String imageUrl, int width, int height) {
         try {
-            log.info("发送图片消息(等待结果): accountId={}, cid={}, toId={}, url={}, size={}x{}",
-                    accountId, cid, toId, imageUrl, width, height);
+            if (!platformWritePolicy.enabled()) {
+                log.warn("QA 环境已阻止真实图片发送: accountId={}, cid={}", accountId, cid);
+                return false;
+            }
+            log.info("发送图片消息(等待结果): accountId={}, cid={}, toId={}, size={}x{}",
+                    accountId, cid, toId, width, height);
 
             XianyuWebSocketClient client = webSocketClients.get(accountId);
             if (client == null) {

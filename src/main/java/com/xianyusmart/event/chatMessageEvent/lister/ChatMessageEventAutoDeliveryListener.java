@@ -185,7 +185,7 @@ public class ChatMessageEventAutoDeliveryListener {
         }
         String reason = "买家已发起退款，已停止自动发货";
         if (orderMapper.skipPendingTaskForRefund(accountId, orderId, reason) == 1) {
-            kamiConfigService.releaseReservation(orderId);
+            kamiConfigService.releaseReservation(orderId, accountId);
             log.info("【账号{}】检测到买家退款，已停止自动发货: orderId={}", accountId, orderId);
         }
     }

@@ -3,6 +3,7 @@ package com.xianyusmart.controller.dto;
 import lombok.Data;
 
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotBlank;
 
 @Data
 public class KamiBatchImportReqDTO {
@@ -11,4 +12,7 @@ public class KamiBatchImportReqDTO {
     private Long kamiConfigId;
 
     private String kamiContents;
+
+    @NotBlank(message = "requestId不能为空")
+    private String requestId;
 }

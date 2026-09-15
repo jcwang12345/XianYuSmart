@@ -21,4 +21,6 @@ public class FixedDeliveryTemplateReqDTO {
     private String deliveryContent;
 
     private String messageTemplate;
+
+    private String requestId;
 }

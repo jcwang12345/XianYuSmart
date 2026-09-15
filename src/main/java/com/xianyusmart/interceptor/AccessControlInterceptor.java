@@ -103,6 +103,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/qa/notification-trace")) return PermissionCatalog.MENU_HEALTH;
         if (uri.startsWith("/api/qa/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
         if (uri.startsWith("/api/qa/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
+        if (uri.startsWith("/api/qa/fulfillment")) return PermissionCatalog.MENU_KAMI;
         if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/account-groups")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
@@ -192,6 +193,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         }
         if (uri.startsWith("/api/qa/business-analytics") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
+        if (uri.startsWith("/api/qa/fulfillment") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_DELIVERY_WRITE;
         }
         if (uri.equals("/api/business-analytics/refresh-local") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
@@ -307,8 +311,15 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.equals("/api/buyers/save")) {
             return PermissionCatalog.ACTION_BUYER_WRITE;
         }
-        if ((uri.startsWith("/api/kami-config") && !KAMI_READ_PATHS.contains(uri))
-                || (uri.startsWith("/api/fixed-delivery-template") && !uri.endsWith("/list"))
+        boolean kamiEventRead = "GET".equalsIgnoreCase(method)
+                && uri.matches("/api/kami-config/\\d+/events");
+        boolean kamiExternalRequestRead = "GET".equalsIgnoreCase(method)
+                && uri.matches("/api/kami-config/\\d+/external/requests");
+        boolean fixedTemplateRead = "GET".equalsIgnoreCase(method)
+                || uri.equals("/api/fixed-delivery-template/preview");
+        if ((uri.startsWith("/api/kami-config") && !KAMI_READ_PATHS.contains(uri)
+                && !kamiEventRead && !kamiExternalRequestRead)
+                || (uri.startsWith("/api/fixed-delivery-template") && !fixedTemplateRead)
                 || (uri.startsWith("/api/auto-delivery-config")
                     && !uri.endsWith("/get") && !uri.endsWith("/list") && !uri.endsWith("/listbygoods"))
                 || uri.startsWith("/api/autodelivery")) {

@@ -17,6 +17,14 @@ public class KamiItemRespDTO {
 
     private String orderId;
 
+    private Long reservedAccountId;
+
+    private LocalDateTime reservationExpireTime;
+
+    private Long sourceConfigVersion;
+
+    private Long rowVersion;
+
     private LocalDateTime usedTime;
 
     private Integer sortOrder;
