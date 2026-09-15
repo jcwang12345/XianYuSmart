@@ -155,6 +155,15 @@ public class OperationsDiagnosticsService {
                 updateAgentStatus = "UNKNOWN";
                 unknownCount++;
             }
+            // “远程版本接口没有发现新版本”只能证明查询结果本身；当本机更新代理
+            // 不可用时，不能把完整更新能力误报为绿色“当前已是最新版本”。
+            // 已明确发现新版本时仍保留 WARNING；远程查询或代理任一环节不能形成
+            // 可执行闭环时，健康结论降级为 UNKNOWN 并纳入顶部未知计数。
+            if (!updateAgentAvailable && "HEALTHY".equals(versionStatus)) {
+                versionStatus = "UNKNOWN";
+                versionAction = "远程版本查询已完成，但自动更新代理未就绪，完整更新状态未知";
+                unknownCount++;
+            }
         }
 
         List<Map<String, Object>> checks = new ArrayList<>(List.of(

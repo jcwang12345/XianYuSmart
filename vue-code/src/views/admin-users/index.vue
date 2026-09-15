@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 import {
   getPermissionOptions,
   getPlatformUsers,
@@ -25,6 +26,8 @@ const accounts = ref<Account[]>([])
 const accountGroups = ref<AccountGroup[]>([])
 const editing = ref<PlatformUser | null>()
 const passwordTarget = ref<PlatformUser | null>()
+const editorDialog = ref<HTMLElement | null>(null)
+const passwordDialog = ref<HTMLElement | null>(null)
 const newPassword = ref('')
 const form = ref({
   username: '',
@@ -131,6 +134,13 @@ function closeEditor() {
   editing.value = undefined
 }
 
+function closePassword() {
+  passwordTarget.value = null
+}
+
+useModalFocusTrap(computed(() => editing.value !== undefined), editorDialog, closeEditor)
+useModalFocusTrap(computed(() => Boolean(passwordTarget.value)), passwordDialog, closePassword)
+
 function toggleGroup(groupOptions: PermissionOption[]) {
   const codes = groupOptions.map(option => option.code)
   const selected = codes.every(code => form.value.permissions.includes(code))
@@ -180,7 +190,7 @@ async function resetPassword() {
     requestId: newRequestId('team-password')
   })
   toast.success('密码已重置，该账号需要重新登录')
-  passwordTarget.value = null
+  closePassword()
 }
 
 function formatTime(value?: string) {
@@ -272,11 +282,11 @@ onMounted(load)
 
     <Teleport to="body">
       <div v-if="editing !== undefined" class="overlay" @click.self="closeEditor">
-        <section class="editor">
+        <section ref="editorDialog" class="editor" role="dialog" aria-modal="true" aria-labelledby="team-editor-title" tabindex="-1">
           <header>
             <div>
               <span class="eyebrow">{{ isCreating ? 'CREATE ACCOUNT' : 'ACCESS POLICY' }}</span>
-              <h3>{{ isCreating ? '创建平台账号' : `设置 ${editing?.username}` }}</h3>
+              <h3 id="team-editor-title">{{ isCreating ? '创建平台账号' : `设置 ${editing?.username}` }}</h3>
             </div>
             <button class="icon-button" type="button" aria-label="关闭账号编辑弹窗" @click="closeEditor">×</button>
           </header>
@@ -374,12 +384,12 @@ onMounted(load)
         </section>
       </div>
 
-      <div v-if="passwordTarget" class="overlay" @click.self="passwordTarget = null">
-        <section class="password-dialog">
-          <header><div><h3>重置密码</h3><p>{{ passwordTarget.username }}</p></div><button class="icon-button" @click="passwordTarget = null">×</button></header>
+      <div v-if="passwordTarget" class="overlay" @click.self="closePassword">
+        <section ref="passwordDialog" class="password-dialog" role="dialog" aria-modal="true" aria-labelledby="team-password-title" tabindex="-1">
+          <header><div><h3 id="team-password-title">重置密码</h3><p>{{ passwordTarget.username }}</p></div><button class="icon-button" type="button" aria-label="关闭密码重置弹窗" @click="closePassword">×</button></header>
           <label>新密码<input v-model="newPassword" type="password" maxlength="72" placeholder="8-72位" @keyup.enter="resetPassword" /></label>
           <p class="hint">保存后会清除该账号的登录状态，需要使用新密码重新登录。</p>
-          <footer><button @click="passwordTarget = null">取消</button><button class="primary" @click="resetPassword">确认重置</button></footer>
+          <footer><button @click="closePassword">取消</button><button class="primary" @click="resetPassword">确认重置</button></footer>
         </section>
       </div>
     </Teleport>

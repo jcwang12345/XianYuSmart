@@ -53,3 +53,16 @@
 - AI 总开关关闭时只允许保存配置，不宣称服务可用；连通性测试要求用户重新输入密钥，后台保存值不会回显到浏览器。
 - 菜单排序只影响展示，不授予后端权限；成员权限仍由角色、动作和账号范围在服务端校验。
 - 真实平台写操作不属于本轮验证范围，现有真实商品未被修改。
+
+## 独立测试缺陷回归
+
+| 缺陷 | 修复与运行证据 |
+|---|---|
+| `V6-W8-QA-001` | 当远程版本查询成功但自动更新代理未就绪时，版本检查由绿色“正常”降级为“未知”，并纳入顶部未知计数；`OperationsDiagnosticsServiceTest` 新增代理不可用与代理异常两条用例。裸机 `3000` 实测顶部显示“状态未知 1”，版本卡显示“未知”及可执行说明。 |
+| `V6-W8-QA-002` | 团队账号创建/编辑与密码重置统一补齐 `dialog`、`aria-modal`、可读标题、初始聚焦、Tab 焦点约束、Esc 关闭和焦点恢复。裸机 `3000` 实测权限设置与密码重置均只有一个活动对话框，焦点位于弹窗内，Esc 后回到原按钮；未保存权限、未重置密码。 |
+
+- targeted backend: `scripts/local-toolchain.sh ./mvnw -q -Dtest=OperationsDiagnosticsServiceTest test` — passed。
+- targeted frontend: `scripts/local-toolchain.sh npm --prefix vue-code run type-check` — passed。
+- final package/deploy: `scripts/native-qa.sh deploy` — passed，359 modules transformed，健康检查通过。
+- regression artifact: `.tools/native-qa/releases/xianyusmart-4.0.0-rc.1-20260915T143356Z-69355c2f0ff9.jar`。
+- regression runtime: `http://127.0.0.1:3000`，本机应用 PID 24524；Docker MySQL `127.0.0.1:13306`。
