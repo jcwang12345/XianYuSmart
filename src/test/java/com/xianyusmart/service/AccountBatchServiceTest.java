@@ -143,9 +143,11 @@ class AccountBatchServiceTest {
         second.setStatus(2);
         second.setRequestJson(first.getRequestJson());
         when(tasks.selectByBatchId(eq(1L), anyString())).thenReturn(List.of(first, second));
+        when(execution.isQaEligible(1L, 101L)).thenReturn(true);
+        when(execution.isQaEligible(1L, 102L)).thenReturn(true);
         AccountBatchService.Request exact = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
                 List.of(102L, 101L), List.of(), new AccountBatchService.Filter(null, null, null, null),
-                "legacy confirmation", "legacy-token");
+                "确认对2个账号执行同步运行状态，可执行2个，冲突0个；隔离 QA Mock，不触达闲鱼平台", "legacy-token");
 
         Map<String, Object> replay = service.create(exact);
         assertEquals(true, replay.get("idempotentReplay"));
@@ -157,10 +159,13 @@ class AccountBatchServiceTest {
         AccountBatchService.Request changedFilter = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
                 exact.accountIds(), List.of(), new AccountBatchService.Filter("changed", null, null, null),
                 exact.confirmationText(), exact.previewToken());
+        AccountBatchService.Request changedConfirmation = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
+                exact.accountIds(), List.of(), exact.filter(), "changed confirmation", exact.previewToken());
         assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedAccounts)).getCode());
         assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedExclusions)).getCode());
         assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedFilter)).getCode());
-        verifyNoInteractions(matrix, access, execution, logs);
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedConfirmation)).getCode());
+        verifyNoInteractions(matrix, access, logs);
     }
 
     private AccountBatchService.Request request(String operation, List<Long> ids) {

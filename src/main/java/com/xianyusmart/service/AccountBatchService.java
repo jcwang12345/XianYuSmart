@@ -177,7 +177,13 @@ public class AccountBatchService {
                 .filter(Objects::nonNull).distinct().sorted().toList();
         List<Long> storedAccounts = existing.stream()
                 .map(MerchantTask::getXianyuAccountId).filter(Objects::nonNull).distinct().sorted().toList();
-        return requestedAccounts.equals(storedAccounts);
+        boolean qaBatch = !storedAccounts.isEmpty() && storedAccounts.stream()
+                .allMatch(accountId -> execution.isQaEligible(requireTenant(), accountId));
+        String expectedConfirmation = "确认对" + storedAccounts.size() + "个账号执行" + label(request.operationType())
+                + "，可执行" + storedAccounts.size() + "个，冲突0个"
+                + (qaBatch ? "；隔离 QA Mock，不触达闲鱼平台" : "");
+        return requestedAccounts.equals(storedAccounts)
+                && expectedConfirmation.equals(text(request.confirmationText()));
     }
 
     private boolean filterIsEmpty(Filter filter) {
