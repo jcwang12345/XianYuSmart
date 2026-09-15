@@ -67,7 +67,8 @@ public class MerchantOperationsService {
     );
     public static final Set<String> TASK_TYPES = Set.of(
             "COLLECT", "SELECT", "PUBLISH", "DELETE", "COMPENSATE", "REFRESH_PROMOTION", "WORKFLOW",
-            "BARGAIN_FREE_SHIPPING", "CONFIRM_SHIPMENT"
+            "BARGAIN_FREE_SHIPPING", "CONFIRM_SHIPMENT", "ACCOUNT_ENABLE", "ACCOUNT_DISABLE",
+            "ACCOUNT_SYNC", "ACCOUNT_RENEW"
     );
 
     private final MerchantResourceMapper resourceMapper;
@@ -92,6 +93,7 @@ public class MerchantOperationsService {
     private final PublishCapabilityService publishCapabilityService;
     private final PublishQaMockService publishQaMockService;
     private final ProductEventService productEventService;
+    private final AccountBatchExecutionService accountBatchExecutionService;
     private final ObjectMapper objectMapper;
 
     public MerchantOperationsService(MerchantResourceMapper resourceMapper,
@@ -116,6 +118,7 @@ public class MerchantOperationsService {
                                      PublishCapabilityService publishCapabilityService,
                                      PublishQaMockService publishQaMockService,
                                      ProductEventService productEventService,
+                                     AccountBatchExecutionService accountBatchExecutionService,
                                      ObjectMapper objectMapper) {
         this.resourceMapper = resourceMapper;
         this.taskMapper = taskMapper;
@@ -139,6 +142,7 @@ public class MerchantOperationsService {
         this.publishCapabilityService = publishCapabilityService;
         this.publishQaMockService = publishQaMockService;
         this.productEventService = productEventService;
+        this.accountBatchExecutionService = accountBatchExecutionService;
         this.objectMapper = objectMapper;
     }
 
@@ -876,6 +880,13 @@ public class MerchantOperationsService {
         }
     }
 
+    /** Interactive account batches use the same persistent executor but do not wait for the one-minute rule scan. */
+    public void processDueAccountTasks() {
+        for (MerchantTask task : taskMapper.selectDueAccountTasks(20)) {
+            if (taskMapper.claim(task.getId()) == 1) executeTask(task);
+        }
+    }
+
     private void claimAndExecute(MerchantTask task) {
         if (taskMapper.claim(task.getId()) != 1) {
             throw new IllegalStateException("任务已被其他执行器处理");
@@ -896,6 +907,8 @@ public class MerchantOperationsService {
                 case "WORKFLOW" -> executeWorkflow(task);
                 case "BARGAIN_FREE_SHIPPING" -> executeBargainFreeShipping(task);
                 case "CONFIRM_SHIPMENT" -> executeConfirmShipment(task);
+                case "ACCOUNT_ENABLE", "ACCOUNT_DISABLE", "ACCOUNT_SYNC", "ACCOUNT_RENEW" ->
+                        accountBatchExecutionService.execute(task.getTaskType().replace("ACCOUNT_", ""), task.getXianyuAccountId());
                 default -> throw new IllegalArgumentException("不支持的任务类型");
             };
             taskMapper.complete(task.getId(), writeJson(result));

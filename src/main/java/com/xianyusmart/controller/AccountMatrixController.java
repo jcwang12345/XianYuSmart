@@ -1,6 +1,7 @@
 package com.xianyusmart.controller;
 
 import com.xianyusmart.common.ResultObject;
+import com.xianyusmart.service.AccountBatchService;
 import com.xianyusmart.service.AccountMatrixService;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -25,9 +26,12 @@ import java.util.Map;
 public class AccountMatrixController {
 
     private final AccountMatrixService accountMatrixService;
+    private final AccountBatchService accountBatchService;
 
-    public AccountMatrixController(AccountMatrixService accountMatrixService) {
+    public AccountMatrixController(AccountMatrixService accountMatrixService,
+                                   AccountBatchService accountBatchService) {
         this.accountMatrixService = accountMatrixService;
+        this.accountBatchService = accountBatchService;
     }
 
     @GetMapping("/summary")
@@ -100,5 +104,24 @@ public class AccountMatrixController {
             @PathVariable String channelCode,
             @RequestBody AccountMatrixService.AccessChannelInput input) {
         return ResultObject.success(accountMatrixService.upsertAccessChannel(accountId, channelCode, input));
+    }
+
+    @PostMapping("/batches/preview")
+    public ResultObject<AccountBatchService.Preview> previewBatch(@RequestBody AccountBatchService.Request request) {
+        return ResultObject.success(accountBatchService.preview(request));
+    }
+
+    @PostMapping("/batches/{operation}/create")
+    public ResultObject<Map<String, Object>> createBatch(@PathVariable String operation,
+                                                         @RequestBody AccountBatchService.Request request) {
+        if (request.operationType() == null || !operation.equalsIgnoreCase(request.operationType())) {
+            throw new IllegalArgumentException("路径操作类型与请求不一致");
+        }
+        return ResultObject.success(accountBatchService.create(request));
+    }
+
+    @GetMapping("/batches/{batchId}")
+    public ResultObject<Map<String, Object>> batch(@PathVariable String batchId) {
+        return ResultObject.success(accountBatchService.batch(batchId));
     }
 }

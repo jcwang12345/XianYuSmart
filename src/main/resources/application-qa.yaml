@@ -3,3 +3,17 @@ app:
   # 需要真实写入必须在非 qa 环境显式运行，不能通过 QA 夹具绕过。
   platform-writes:
     enabled: ${QA_PLATFORM_WRITES_ENABLED:false}
+  account-batch:
+    qa-mock:
+      enabled: ${ACCOUNT_BATCH_QA_MOCK_ENABLED:true}
+      tenant-id: ${ACCOUNT_BATCH_QA_MOCK_TENANT_ID:1}
+      account-ids: ${ACCOUNT_BATCH_QA_MOCK_ACCOUNT_IDS:101,102,103}
+
+spring:
+  web:
+    resources:
+      # QA 开发态优先读取磁盘构建产物；纯前端调整无需重打约 290MB 的后端包。
+      # classpath 仍作为冻结制品与回滚的兜底来源。
+      static-locations:
+        - file:${user.dir}/src/main/resources/static/
+        - classpath:/static/

@@ -61,7 +61,9 @@ import_qa_environment() {
     PRODUCT_BATCH_QA_MOCK_GOODS_PREFIX PUBLISH_QA_MOCK_ENABLED
     PUBLISH_QA_MOCK_TENANT_ID PUBLISH_QA_MOCK_ACCOUNT_IDS
     PUBLISH_QA_MOCK_TITLE_PREFIX BACKUP_QA_MOCK_ENABLED
-    BACKUP_QA_MOCK_TENANT_ID AI_ENABLED PRINT_RAW_MESSAGE
+    BACKUP_QA_MOCK_TENANT_ID ACCOUNT_BATCH_QA_MOCK_ENABLED
+    ACCOUNT_BATCH_QA_MOCK_TENANT_ID ACCOUNT_BATCH_QA_MOCK_ACCOUNT_IDS
+    AI_ENABLED PRINT_RAW_MESSAGE
   )
   for key in $keys; do
     value="$(container_env "$key")"
@@ -78,6 +80,9 @@ import_qa_environment() {
   export SPRING_PROFILES_ACTIVE="qa"
   export BACKUP_QA_MOCK_ENABLED="${BACKUP_QA_MOCK_ENABLED:-true}"
   export BACKUP_QA_MOCK_TENANT_ID="${BACKUP_QA_MOCK_TENANT_ID:-${PRODUCT_BATCH_QA_MOCK_TENANT_ID:--1}}"
+  export ACCOUNT_BATCH_QA_MOCK_ENABLED="${ACCOUNT_BATCH_QA_MOCK_ENABLED:-true}"
+  export ACCOUNT_BATCH_QA_MOCK_TENANT_ID="${ACCOUNT_BATCH_QA_MOCK_TENANT_ID:-${PRODUCT_BATCH_QA_MOCK_TENANT_ID:-1}}"
+  export ACCOUNT_BATCH_QA_MOCK_ACCOUNT_IDS="${ACCOUNT_BATCH_QA_MOCK_ACCOUNT_IDS:-${PRODUCT_BATCH_QA_MOCK_ACCOUNT_IDS:-101,102,103}}"
   export ALLOWED_ORIGINS="http://localhost:${APP_PORT},http://127.0.0.1:${APP_PORT}"
   export MEDIA_STORAGE_DIR="$RUNTIME_DIR/data/media"
   export VECTOR_STORE_FILE="$RUNTIME_DIR/data/vectorstore.json"
@@ -190,6 +195,19 @@ deploy_app() {
   return 1
 }
 
+refresh_frontend() {
+  local run_type_check="${1:-false}"
+  if [[ "$run_type_check" == "true" ]]; then
+    "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run type-check
+  fi
+  "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run build-only
+  if ! curl -fsS "http://127.0.0.1:${APP_PORT}/actuator/health" >/dev/null 2>&1; then
+    echo "Frontend built, but Native QA is not healthy; run: scripts/native-qa.sh start" >&2
+    return 1
+  fi
+  echo "Frontend refreshed without repackaging the backend: http://127.0.0.1:${APP_PORT}"
+}
+
 status() {
   local pid=""
   if pid="$(running_pid)"; then
@@ -214,6 +232,8 @@ case "${1:-status}" in
     ;;
   deploy) deploy_app true ;;
   deploy-backend) deploy_app false ;;
+  frontend) refresh_frontend true ;;
+  frontend-fast) refresh_frontend false ;;
   start) start_app ;;
   restart) stop_app; start_app ;;
   stop) stop_app ;;
@@ -224,7 +244,7 @@ case "${1:-status}" in
   status) status ;;
   logs) tail -n "${2:-120}" "$LOG_FILE" ;;
   *)
-    echo "Usage: scripts/native-qa.sh {deploy|deploy-backend|start|restart|stop|stop-all|status|logs [lines]}" >&2
+    echo "Usage: scripts/native-qa.sh {deploy|deploy-backend|frontend|frontend-fast|start|restart|stop|stop-all|status|logs [lines]}" >&2
     exit 2
     ;;
 esac

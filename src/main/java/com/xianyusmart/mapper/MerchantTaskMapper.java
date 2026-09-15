@@ -36,6 +36,9 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
                                     @Param("taskType") String taskType,
                                     @Param("requestKey") String requestKey);
 
+    @Select("SELECT * FROM merchant_task WHERE tenant_id = #{tenantId} AND batch_id = #{batchId} ORDER BY id")
+    List<MerchantTask> selectByBatchId(@Param("tenantId") Long tenantId, @Param("batchId") String batchId);
+
     // 直接返回任务汇总，概览页无需加载任务明细再计算。
     @Select("SELECT COUNT(*) AS taskCount, COALESCE(SUM(CASE WHEN status = -1 THEN 1 ELSE 0 END), 0) AS failedTaskCount FROM merchant_task")
     Map<String, Object> selectOverviewCounts();
@@ -45,6 +48,13 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "OR (status = 1 AND attempt_count < max_attempts AND updated_time <= DATE_SUB(NOW(3), INTERVAL 10 MINUTE))) " +
             "ORDER BY scheduled_time, id LIMIT #{limit}")
     List<MerchantTask> selectDue(@Param("limit") int limit);
+
+    @Select("SELECT * FROM merchant_task WHERE task_type IN " +
+            "('ACCOUNT_ENABLE', 'ACCOUNT_DISABLE', 'ACCOUNT_SYNC', 'ACCOUNT_RENEW') " +
+            "AND ((status = 0 AND scheduled_time <= NOW(3)) " +
+            "OR (status = 1 AND updated_time <= DATE_SUB(NOW(3), INTERVAL 10 MINUTE))) " +
+            "ORDER BY xianyu_account_id, scheduled_time, id LIMIT #{limit}")
+    List<MerchantTask> selectDueAccountTasks(@Param("limit") int limit);
 
     @Update("UPDATE merchant_task SET status = 1, attempt_count = attempt_count + 1 " +
             "WHERE id = #{id} AND (status IN (0, -1) OR (status = 1 AND updated_time <= DATE_SUB(NOW(3), INTERVAL 10 MINUTE)))")
@@ -60,7 +70,7 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "THEN COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.outcomeState')), ''), 'QA_CONFIRMED') " +
             "WHEN JSON_VALID(#{resultJson}) AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
             "THEN 'PLATFORM_CONFIRMED_LOCAL_PENDING' ELSE 'PLATFORM_CONFIRMED' END, " +
-            "data_source = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
+            "data_source = CASE WHEN JSON_VALID(#{resultJson}) " +
             "AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' THEN 'QA_FIXTURE' " +
             "WHEN task_type='PUBLISH' THEN 'PLATFORM_WEB' ELSE 'LOCAL' END, " +
             "recovery_hint = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +

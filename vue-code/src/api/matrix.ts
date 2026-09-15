@@ -125,6 +125,78 @@ export function getAccountMatrixDetail(accountId: number) {
   return request<MatrixAccount>({ url: `/account-matrix/accounts/${accountId}`, method: 'GET' })
 }
 
+export type AccountBatchOperation = 'ENABLE' | 'DISABLE' | 'SYNC' | 'RENEW'
+export type AccountBatchSelectionMode = 'EXPLICIT' | 'FILTER_SNAPSHOT'
+
+export interface AccountBatchCandidate {
+  accountId: number
+  accountName: string
+  accountStatus?: number
+  connectionStatus: string
+  authorizationStatus: string
+  executable: boolean
+  conflictMessage?: string
+}
+
+export interface AccountBatchRequest {
+  requestId: string
+  operationType: AccountBatchOperation
+  selectionMode: AccountBatchSelectionMode
+  accountIds: number[]
+  excludedAccountIds: number[]
+  filter: { search?: string; connectionStatus?: string; riskSeverity?: string; groupId?: number }
+  confirmationText?: string
+  previewToken?: string
+}
+
+export interface AccountBatchPreview {
+  operationType: AccountBatchOperation
+  selectionMode: AccountBatchSelectionMode
+  selectedCount: number
+  conflictCount: number
+  executableCount: number
+  confirmationSummary: string
+  previewToken: string
+  executionChannel: 'QA_MOCK' | 'LOCAL_RUNTIME'
+  executionNotice?: string
+  items: AccountBatchCandidate[]
+}
+
+export interface AccountBatchTask {
+  id: number
+  xianyuAccountId: number
+  taskType: string
+  status: number
+  resultJson?: string
+  errorMessage?: string
+}
+
+export interface AccountBatchResult {
+  batchId: string
+  operationType: AccountBatchOperation
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'PARTIAL_SUCCESS' | 'CANCELLED'
+  totalCount: number
+  queuedCount: number
+  runningCount: number
+  succeededCount: number
+  failedCount: number
+  cancelledCount: number
+  items: AccountBatchTask[]
+  idempotentReplay?: boolean
+}
+
+export function previewAccountBatch(data: AccountBatchRequest) {
+  return request<AccountBatchPreview>({ url: '/account-matrix/batches/preview', method: 'POST', data })
+}
+
+export function createAccountBatch(data: AccountBatchRequest) {
+  return request<AccountBatchResult>({ url: `/account-matrix/batches/${data.operationType.toLowerCase()}/create`, method: 'POST', data })
+}
+
+export function getAccountBatch(batchId: string) {
+  return request<AccountBatchResult>({ url: `/account-matrix/batches/${batchId}`, method: 'GET' })
+}
+
 export function getAccountGroups() {
   return request<AccountGroup[]>({ url: '/account-groups', method: 'GET' })
 }
