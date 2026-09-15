@@ -186,7 +186,10 @@ public class DataBackupServiceImpl implements DataBackupService {
         preview.put("writePerformed", false);
         preview.put("scope", "当前经营主体 " + tenant());
         preview.put("modules", comparisons);
-        preview.put("warnings", List.of("这是安全合并预检；执行前会按模块创建恢复点", "潜在新增/覆盖数量为保守估算，执行仍受事务保护"));
+        preview.put("warnings", List.of(
+                "这是安全合并预检；执行前会按模块创建恢复点",
+                "潜在新增/覆盖数量为保守估算，执行仍受事务保护",
+                "恢复点可还原已有记录；安全合并中新建的业务记录不会被回滚动作自动删除"));
 
         jdbcTemplate.update("""
                 INSERT INTO xianyu_backup_restore_job

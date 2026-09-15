@@ -100,6 +100,16 @@ class DataBackupServiceImplTest {
     }
 
     @Test
+    void previewRejectsBackupLargerThanFiftyMegabytesBeforeParsing() {
+        BackupImportReqBO request = restoreRequest("x".repeat(DataBackupServiceImpl.MAX_BACKUP_CHARS + 1), List.of("account"));
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.previewRestore(request));
+
+        assertEquals(413, error.getCode());
+        assertTrue(error.getMessage().contains("50 MB"));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void previewRejectsCrossTenantBackup() throws Exception {
         Map<String, Object> root = exportedRoot();
