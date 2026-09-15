@@ -29,4 +29,7 @@ public class BuyerProfileSaveReqDTO {
     private Boolean automationBlocked;
 
     private String blockedReason;
+
+    /** null 表示兼容旧客户端并保留现状。 */
+    private Boolean blacklisted;
 }

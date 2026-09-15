@@ -8,6 +8,7 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -105,4 +106,27 @@ public interface XianyuBuyerProfileMapper extends BaseMapper<XianyuBuyerProfile>
             "ORDER BY last_order_time DESC")
     List<BuyerRelatedGoodsDTO> selectRelatedGoods(@Param("accountId") Long accountId,
                                                   @Param("buyerUserId") String buyerUserId);
+
+    @Update("UPDATE conversation_assignment SET customer_blacklisted = #{blacklisted} " +
+            "WHERE tenant_id = #{tenantId} AND xianyu_account_id = #{accountId} " +
+            "AND buyer_user_id = #{buyerUserId}")
+    int updateConversationBlacklist(@Param("tenantId") Long tenantId,
+                                    @Param("accountId") Long accountId,
+                                    @Param("buyerUserId") String buyerUserId,
+                                    @Param("blacklisted") int blacklisted);
+
+    /** 显式写入可空原因，避免 MyBatis-Plus 的 null 忽略策略留下陈旧黑名单文案。 */
+    @Update("UPDATE xianyu_buyer_profile SET automation_blocked = #{automationBlocked}, " +
+            "blocked_reason = #{blockedReason}, blacklisted = #{blacklisted}, " +
+            "blacklist_source = #{blacklistSource}, blacklist_updated_time = #{blacklistUpdatedTime} " +
+            "WHERE tenant_id = #{tenantId} AND xianyu_account_id = #{accountId} " +
+            "AND buyer_user_id = #{buyerUserId}")
+    int updateAutomationAndBlacklist(@Param("tenantId") Long tenantId,
+                                     @Param("accountId") Long accountId,
+                                     @Param("buyerUserId") String buyerUserId,
+                                     @Param("automationBlocked") int automationBlocked,
+                                     @Param("blockedReason") String blockedReason,
+                                     @Param("blacklisted") int blacklisted,
+                                     @Param("blacklistSource") String blacklistSource,
+                                     @Param("blacklistUpdatedTime") LocalDateTime blacklistUpdatedTime);
 }

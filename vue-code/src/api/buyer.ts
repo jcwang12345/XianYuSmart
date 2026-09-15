@@ -9,9 +9,13 @@ export interface BuyerProfile {
   note?: string
   automationBlocked: boolean
   blockedReason?: string
+  blacklisted: boolean
+  blacklistSource?: string
+  blacklistUpdatedTime?: string
   messageCount: number
   orderCount: number
-  totalAmount: string
+  totalAmount?: string | null
+  amountKnownOrderCount?: number
   lastInteractionTime?: string
 }
 
@@ -68,7 +72,8 @@ export interface BuyerRelatedGoods {
   coverPic?: string
   soldPrice?: string
   orderCount: number
-  totalAmount: string
+  totalAmount?: string | null
+  amountKnownOrderCount?: number
   lastOrderTime?: string
 }
 
@@ -101,6 +106,7 @@ export function saveBuyerProfile(data: {
   note?: string
   automationBlocked?: boolean
   blockedReason?: string
+  blacklisted?: boolean
 }) {
   return request<BuyerProfile>({
     url: '/buyers/save',

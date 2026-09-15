@@ -32,6 +32,12 @@ public class BuyerProfileRespDTO {
 
     private String blockedReason;
 
+    private Boolean blacklisted;
+
+    private String blacklistSource;
+
+    private LocalDateTime blacklistUpdatedTime;
+
     private LocalDateTime lastInteractionTime;
 
     private Long messageCount;

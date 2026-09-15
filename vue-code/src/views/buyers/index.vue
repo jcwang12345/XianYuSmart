@@ -15,6 +15,7 @@ import { queryOrderRateDetails, type OrderRateDetail } from '@/api/order'
 import type { Account } from '@/types'
 import { hasPermission } from '@/utils/permission'
 import { toast } from '@/utils/toast'
+import { formatTime as formatDateTime } from '@/utils'
 import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 
 type DetailTab = 'orders' | 'messages' | 'goods' | 'ratings'
@@ -47,7 +48,8 @@ const form = ref({
   tagsText: '',
   note: '',
   automationBlocked: false,
-  blockedReason: ''
+  blockedReason: '',
+  blacklisted: false
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
@@ -109,7 +111,8 @@ const openEdit = (profile: BuyerProfile) => {
     tagsText: (profile.tags || []).join('，'),
     note: profile.note || '',
     automationBlocked: profile.automationBlocked,
-    blockedReason: profile.blockedReason || ''
+    blockedReason: profile.blockedReason || '',
+    blacklisted: profile.blacklisted
   }
 }
 
@@ -127,7 +130,8 @@ const save = async () => {
     tags: normalizedTags.value,
     note: form.value.note,
     automationBlocked: form.value.automationBlocked,
-    blockedReason: form.value.blockedReason
+    blockedReason: form.value.blockedReason,
+    blacklisted: form.value.blacklisted
   })
   toast.success('买家资料已保存')
   editing.value = undefined
@@ -221,9 +225,30 @@ const orderStatus = (order: BuyerOrder) => {
 }
 
 const formatTime = (value?: string | number) => {
-  if (!value) return '-'
-  if (typeof value === 'number') return new Date(value).toLocaleString('zh-CN', { hour12: false })
-  return value.replace('T', ' ').slice(0, 19)
+  if (value == null || value === '') return '—'
+  const formatted = formatDateTime(value)
+  return formatted === '-' ? '—' : formatted
+}
+
+const formatMoney = (value?: string | number | null) => {
+  if (value == null || value === '') return '—'
+  const amount = Number(value)
+  return Number.isFinite(amount)
+    ? `¥${amount.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '—'
+}
+
+const formatQuantity = (value?: number | null) => value == null ? '—' : String(value)
+
+const openBuyerConversation = async () => {
+  if (!detailProfile.value) return
+  await router.push({
+    path: '/messages',
+    query: {
+      accountId: String(detailProfile.value.xianyuAccountId),
+      buyerId: detailProfile.value.buyerUserId
+    }
+  })
 }
 
 const messageSender = (message: BuyerMessage) =>
@@ -231,6 +256,15 @@ const messageSender = (message: BuyerMessage) =>
 
 watch(detailTab, tab => {
   if (detailProfile.value) void router.replace({ query: { ...route.query, detailTab: tab } })
+})
+
+watch(() => form.value.blacklisted, blacklisted => {
+  if (blacklisted) {
+    form.value.automationBlocked = true
+    if (!form.value.blockedReason.trim()) form.value.blockedReason = '[买家] 已加入客户黑名单'
+  } else if (form.value.blockedReason.startsWith('[买家]') || form.value.blockedReason.startsWith('[会话]')) {
+    form.value.blockedReason = ''
+  }
 })
 
 onMounted(async () => {
@@ -295,11 +329,12 @@ onMounted(async () => {
                 <span v-if="!profile.tags?.length" class="muted">未设置</span>
               </td>
               <td><strong>{{ profile.messageCount || 0 }} 条消息</strong><small>{{ profile.orderCount || 0 }} 笔订单</small></td>
-              <td>¥{{ profile.totalAmount || '0.00' }}</td>
+              <td><strong>{{ formatMoney(profile.totalAmount) }}</strong><small>{{ Number(profile.amountKnownOrderCount || 0) > 0 ? `已核对 ${profile.amountKnownOrderCount} 笔` : '暂无可核对金额' }}</small></td>
               <td>
                 <span :class="profile.automationBlocked ? 'status blocked' : 'status normal'">
                   {{ profile.automationBlocked ? '已暂停' : '正常' }}
                 </span>
+                <span v-if="profile.blacklisted" class="status blocked blacklist-status">黑名单</span>
                 <small v-if="profile.blockedReason">{{ profile.blockedReason }}</small>
               </td>
               <td>{{ formatTime(profile.lastInteractionTime) }}</td>
@@ -330,6 +365,7 @@ onMounted(async () => {
               <span><small>买家全链路</small><h3 id="buyer-detail-title">{{ detailProfile.buyerUserName || '未命名买家' }}</h3><p>{{ detailProfile.buyerUserId }}</p></span>
             </div>
             <div class="detail-header-actions">
+              <button @click="openBuyerConversation">打开客服会话</button>
               <button v-if="hasPermission('action:buyer-write')" @click="openEdit(detailProfile)">编辑资料</button>
               <button class="close" aria-label="关闭买家详情" @click="closeDetail">×</button>
             </div>
@@ -338,11 +374,11 @@ onMounted(async () => {
           <div v-if="detailLoading" class="detail-loading">正在汇总订单、会话、商品与评价...</div>
           <template v-else-if="detail">
             <section class="profile-strip">
-              <div><span>成交金额</span><strong>{{ detail.profile.totalAmount == null ? '—' : `¥${detail.profile.totalAmount}` }}</strong></div>
+              <div><span>成交金额</span><strong>{{ formatMoney(detail.profile.totalAmount) }}</strong></div>
               <div><span>订单</span><strong>{{ detail.orders.length }}</strong></div>
               <div><span>消息</span><strong>{{ detail.messages.length }}</strong></div>
               <div><span>关联商品</span><strong>{{ detail.goods.length }}</strong></div>
-              <div><span>自动化</span><strong :class="{ danger: detail.profile.automationBlocked }">{{ detail.profile.automationBlocked ? '已暂停' : '正常' }}</strong></div>
+              <div><span>{{ detail.profile.blacklisted ? '客户黑名单' : '自动化' }}</span><strong :class="{ danger: detail.profile.automationBlocked || detail.profile.blacklisted }">{{ detail.profile.blacklisted ? '已加入' : (detail.profile.automationBlocked ? '已暂停' : '正常') }}</strong><small v-if="detail.profile.blacklisted">{{ detail.profile.blacklistSource === 'MESSAGE_WORKSPACE' ? '会话工作台' : '买家 360' }} · {{ formatTime(detail.profile.blacklistUpdatedTime) }}</small></div>
             </section>
 
             <section v-if="detail.profile.tags?.length || detail.profile.note" class="profile-note">
@@ -364,7 +400,7 @@ onMounted(async () => {
                     <span class="order-title"><strong>{{ order.goodsTitle || '未命名商品' }}</strong><small>{{ order.skuName || '默认规格' }}</small></span>
                     <span><small>订单号</small><strong>{{ order.orderId || '-' }}</strong></span>
                     <span><small>下单时间</small><strong>{{ formatTime(order.orderCreateTime || order.createTime) }}</strong></span>
-                    <span><small>实付 / 数量</small><strong>¥{{ order.totalPrice || '0.00' }} · {{ order.buyNum || 1 }} 件</strong></span>
+                    <span><small>实付 / 数量</small><strong>{{ formatMoney(order.totalPrice) }} · {{ formatQuantity(order.buyNum) }} 件</strong></span>
                     <span :class="['order-state', orderStatus(order)]">{{ orderStatus(order) }}</span>
                   </div>
                   <div class="order-links">
@@ -401,7 +437,7 @@ onMounted(async () => {
                   <img v-if="goods.coverPic" :src="goods.coverPic" alt="" />
                   <span v-else class="goods-placeholder">商品</span>
                   <div><strong>{{ goods.title || '未命名商品' }}</strong><small>ID {{ goods.xyGoodsId }}</small></div>
-                  <dl><div><dt>订单</dt><dd>{{ goods.orderCount }}</dd></div><div><dt>成交</dt><dd>¥{{ goods.totalAmount || '0.00' }}</dd></div><div><dt>最近</dt><dd>{{ formatTime(goods.lastOrderTime) }}</dd></div></dl>
+                  <dl><div><dt>订单</dt><dd>{{ goods.orderCount }}</dd></div><div><dt>成交</dt><dd>{{ formatMoney(goods.totalAmount) }}</dd></div><div><dt>最近</dt><dd>{{ formatTime(goods.lastOrderTime) }}</dd></div></dl>
                 </article>
                 <div v-if="detail.goods.length === 0" class="empty compact">暂无关联商品</div>
               </section>
@@ -455,6 +491,10 @@ onMounted(async () => {
             <span><strong>暂停自动化</strong><small>开启后不再自动回复，新订单进入人工复核。</small></span>
             <input v-model="form.automationBlocked" type="checkbox" />
           </label>
+          <label class="switch-row blacklist-switch">
+            <span><strong>加入客户黑名单</strong><small>同步到该账号的所有买家会话，并立即暂停自动回复与自动发货。</small></span>
+            <input v-model="form.blacklisted" type="checkbox" />
+          </label>
           <label v-if="form.automationBlocked">暂停原因<input v-model="form.blockedReason" maxlength="200" /><small>{{ form.blockedReason.length }} / 200</small></label>
           <footer><button @click="editing = undefined">取消</button><button class="primary" :disabled="Boolean(tagsError)" @click="save">保存</button></footer>
         </section>
@@ -471,18 +511,18 @@ h2, h3, h4, p { margin: 0; } h2 { margin-top: 2px; font-size: 19px; }.eyebrow { 
 button { border: 1px solid #d0d5dd; border-radius: 6px; padding: 8px 14px; background: #fff; cursor: pointer; color: #344054; }button:disabled { opacity: .45; cursor: default; }.primary { border-color: #9a6200; background: #9a6200; color: #fff; }
 .table-panel { min-height: 360px; }.table-wrap { overflow: auto; }table { width: 100%; border-collapse: collapse; min-width: 980px; }th, td { padding: 13px 14px; border-bottom: 1px solid #eaecf0; text-align: left; font-size: 13px; vertical-align: top; }th { color: #667085; font-weight: 500; background: #fcfcfd; }
 .buyer-row { cursor: pointer; }.buyer-row:hover { background: #f9fafb; }.buyer-row:focus-visible { outline-offset: -2px; }td strong, td small { display: block; }td small { color: #98a2b3; margin-top: 4px; }.tag { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 4px; background: #fff8d9; color: #9a6200; font-size: 12px; }
-.muted { color: #98a2b3; }.status { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; }.status.normal { color: #067647; background: #ecfdf3; }.status.blocked { color: #b42318; background: #fef3f2; }.link { padding: 0; border: 0; color: #9a6200; }.link.secondary { margin-left: 10px; color: #475467; }
+.muted { color: #98a2b3; }.status { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; }.status.normal { color: #067647; background: #ecfdf3; }.status.blocked { color: #b42318; background: #fef3f2; }.blacklist-status { margin-left: 5px; }.link { padding: 0; border: 0; color: #9a6200; }.link.secondary { margin-left: 10px; color: #475467; }
 .empty { padding: 80px 20px; text-align: center; color: #98a2b3; }.empty.compact { padding: 40px 16px; }.pager { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; font-size: 13px; color: #667085; }.pager div { display: flex; align-items: center; gap: 10px; }
 .detail-overlay { position: fixed; inset: 0; z-index: 2100; display: grid; place-items: center; padding: 22px; background: rgba(16,24,40,.46); backdrop-filter: blur(4px); }.detail-drawer { display: flex; flex-direction: column; width: min(1440px, calc(100vw - 44px)); height: min(900px, calc(100vh - 44px)); min-height: 620px; overflow: hidden; border: 1px solid #fff; border-radius: 22px; background: #f7f8fa; box-shadow: 0 30px 90px rgba(16,24,40,.28); }
 .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid #e4e7ec; background: #fff; }.buyer-identity { display: flex; align-items: center; gap: 12px; }.buyer-identity .avatar { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 9px; background: #9a6200; color: #fff; font-weight: 700; }.buyer-identity small, .buyer-identity p { color: #98a2b3; font-size: 11px; }.buyer-identity h3 { margin: 2px 0; font-size: 18px; }.detail-header-actions { display: flex; align-items: center; gap: 7px; }.close { padding: 2px 8px; border: 0; font-size: 23px; }
 .detail-loading { padding: 100px 20px; text-align: center; color: #667085; }.profile-strip { display: grid; grid-template-columns: repeat(5, 1fr); margin: 12px 14px 0; border: 1px solid #e4e7ec; border-radius: 9px; background: #fff; }.profile-strip > div { padding: 13px 15px; border-right: 1px solid #eaecf0; }.profile-strip > div:last-child { border-right: 0; }.profile-strip span { display: block; color: #667085; font-size: 11px; }.profile-strip strong { display: block; margin-top: 5px; font-size: 18px; }.profile-strip .danger { color: #b42318; }
-.profile-note { margin: 10px 14px 0; padding: 10px 13px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.profile-note p { margin-top: 6px; color: #667085; font-size: 12px; }.detail-tabs { display: flex; gap: 2px; margin: 12px 14px 0; padding: 4px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.detail-tabs button { flex: 1; border: 0; }.detail-tabs button.active { background: #fff8d9; color: #9a6200; font-weight: 600; }
+.profile-note { margin: 10px 14px 0; padding: 10px 13px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.profile-note p { margin-top: 6px; color: #667085; font-size: 12px; }.detail-tabs { display: flex; gap: 2px; margin: 12px 14px 0; padding: 4px; border: 1px solid #e4e7ec; border-radius: 8px; background: #fff; }.detail-tabs button { flex: 1; border: 0; }.detail-tabs button.active { background: #fff8d9; color: #9a6200; font-weight: 600; }.profile-strip small { display: block; margin-top: 4px; color: #98a2b3; font-size: 10px; font-weight: 400; }
 .detail-body { flex: 1; margin: 10px 14px 14px; overflow: auto; }.order-list, .rating-list { display: grid; gap: 8px; }.order-card, .conversation-view, .goods-grid article, .rating-card { border: 1px solid #e4e7ec; border-radius: 9px; background: #fff; }.order-main { display: grid; grid-template-columns: minmax(210px, 1.4fr) minmax(170px, 1fr) minmax(150px, .8fr) 130px 90px; align-items: center; gap: 14px; padding: 14px 16px; }.order-main span strong, .order-main span small { display: block; }.order-main small { color: #98a2b3; font-size: 11px; }.order-main strong { margin-top: 4px; font-size: 12px; font-weight: 500; }.order-title > strong { margin-top: 0; color: #101828; font-size: 14px; font-weight: 600; }
 .order-state { width: fit-content; padding: 3px 8px; border-radius: 999px; color: #344054; background: #f2f4f7; font-size: 11px; }.order-state.已交付 { color: #067647; background: #ecfdf3; }.order-state.交付失败 { color: #b42318; background: #fef3f2; }.order-state.待人工复核 { color: #b54708; background: #fffaeb; }.order-links { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px 14px; border-top: 1px solid #f2f4f7; color: #667085; font-size: 12px; }.order-links button { padding: 5px 9px; font-size: 12px; }
 .conversation-view { overflow: hidden; }.conversation-view > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid #eaecf0; }.conversation-view header strong, .conversation-view header small { display: block; }.conversation-view header small { margin-top: 3px; color: #98a2b3; font-size: 11px; }.conversation-view select { max-width: 420px; }.message-timeline { display: flex; flex-direction: column; gap: 9px; padding: 16px; }.message { width: min(72%, 680px); padding: 10px 12px; border: 1px solid #e4e7ec; border-radius: 8px; background: #f9fafb; }.message.seller { align-self: flex-end; border-color: #efd77f; background: #eff4ff; }.message > div { display: flex; justify-content: space-between; gap: 12px; }.message strong { font-size: 12px; }.message time, .message small { color: #98a2b3; font-size: 10px; }.message p { margin: 6px 0; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.55; }
 .goods-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }.goods-grid article { display: grid; grid-template-columns: 62px 1fr; gap: 12px; padding: 13px; }.goods-grid img, .goods-placeholder { grid-row: 1 / 3; width: 62px; height: 62px; border-radius: 7px; object-fit: cover; }.goods-placeholder { display: grid; place-items: center; background: #f2f4f7; color: #98a2b3; font-size: 12px; }.goods-grid strong, .goods-grid small { display: block; }.goods-grid small { margin-top: 4px; color: #98a2b3; font-size: 11px; }.goods-grid dl { grid-column: 2; display: flex; gap: 20px; margin: 0; }.goods-grid dl div { display: flex; gap: 5px; }.goods-grid dt { color: #98a2b3; font-size: 11px; }.goods-grid dd { margin: 0; font-size: 11px; }
 .sync-tip { padding: 9px 12px; border: 1px solid #efd77f; border-radius: 7px; background: #eff4ff; color: #9a6200; font-size: 12px; }.rating-card { overflow: hidden; }.rating-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 14px; border-bottom: 1px solid #eaecf0; }.rating-card header strong, .rating-card header small { display: block; }.rating-card header small, .rating-card header > span:last-child { margin-top: 3px; color: #667085; font-size: 11px; }.rating-status { display: flex; align-items: center; gap: 8px; }.rating-status button { padding: 4px 8px; color: #9a6200; font-size: 11px; }.rating-columns { display: grid; grid-template-columns: 1fr 1fr; }.rating-columns > section { padding: 13px 14px; }.rating-columns > section + section { border-left: 1px solid #eaecf0; }.rating-columns h4 { margin-bottom: 9px; font-size: 12px; }.rate-content { padding: 9px 10px; border-radius: 6px; background: #f9fafb; }.rate-content + .rate-content { margin-top: 6px; }.rate-content p { font-size: 12px; line-height: 1.55; }.rate-content small { display: block; margin-top: 5px; color: #98a2b3; font-size: 10px; }.clear-filter { justify-self: start; }
-.overlay { position: fixed; inset: 0; z-index: 2300; display: grid; place-items: center; padding: 20px; background: rgba(16,24,40,.45); }.dialog { width: min(520px, 100%); padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px rgba(16,24,40,.2); }.dialog header, .dialog footer, .switch-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }.dialog header { margin-bottom: 18px; }.dialog header p, .dialog label, .switch-row small { color: #667085; font-size: 13px; }.dialog label { display: grid; gap: 6px; margin: 13px 0; }.dialog label input, .dialog label textarea { width: 100%; }.dialog .switch-row { display: flex; padding: 12px; border: 1px solid #eaecf0; border-radius: 8px; color: #344054; }.switch-row span, .switch-row small { display: block; }.switch-row input { width: auto; }.dialog footer { justify-content: flex-end; margin-top: 18px; }
+.overlay { position: fixed; inset: 0; z-index: 2300; display: grid; place-items: center; padding: 20px; background: rgba(16,24,40,.45); }.dialog { width: min(520px, 100%); max-height: calc(100dvh - 40px); overflow: auto; padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px rgba(16,24,40,.2); }.dialog header, .dialog footer, .switch-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }.dialog header { margin-bottom: 18px; }.dialog header p, .dialog label, .switch-row small { color: #667085; font-size: 13px; }.dialog label { display: grid; gap: 6px; margin: 13px 0; }.dialog label input, .dialog label textarea { width: 100%; }.dialog .switch-row { display: flex; padding: 12px; border: 1px solid #eaecf0; border-radius: 8px; color: #344054; }.dialog .blacklist-switch { border-color: #f0b2aa; background: #fff8f7; }.switch-row span, .switch-row small { display: block; }.switch-row input { width: auto; }.dialog footer { justify-content: flex-end; margin-top: 18px; }
 @media (max-width: 1000px) { .toolbar { align-items: stretch; flex-direction: column; }.filters > * { flex: 1; min-width: 140px; }.filters input { width: auto; }.profile-strip { grid-template-columns: repeat(3, 1fr); }.profile-strip > div:nth-child(3) { border-right: 0; }.order-main { grid-template-columns: 1fr 1fr; }.goods-grid { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .buyer-page { padding: 10px; }.detail-overlay { padding: 0; }.detail-drawer { width: 100vw; height: 100dvh; min-height: 0; border: 0; border-radius: 0; }.detail-header { padding: 12px; }.profile-strip { grid-template-columns: 1fr 1fr; }.profile-strip > div { border-bottom: 1px solid #eaecf0; }.detail-tabs { overflow-x: auto; }.detail-tabs button { min-width: 90px; }.order-main { grid-template-columns: 1fr; }.order-links { align-items: stretch; flex-direction: column; }.conversation-view > header { align-items: stretch; flex-direction: column; }.conversation-view select { max-width: none; }.message { width: 85%; }.rating-columns { grid-template-columns: 1fr; }.rating-columns > section + section { border-left: 0; border-top: 1px solid #eaecf0; } }
 </style>

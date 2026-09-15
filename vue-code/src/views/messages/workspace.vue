@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useMessageManager } from './useMessageManager'
 import {
   getContextMessages,
@@ -31,6 +32,8 @@ import {
 import MultiImageUploader from '@/components/MultiImageUploader.vue'
 import { showError, showSuccess, showWarning } from '@/utils'
 import '@/styles/merchant-workbench.css'
+
+const route = useRoute()
 
 const {
   loading,
@@ -627,7 +630,28 @@ watch([selectedAccountId, () => selected.value?.sid], async ([accountId, sid]) =
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(async () => {
   await loadAccounts()
-  await Promise.all([loadWorkspaceInbox(true), loadSupportNotifications(true), loadHandoffs(true)])
+  const routeAccountId = Number(route.query.accountId)
+  const hasRouteAccount = Number.isSafeInteger(routeAccountId)
+    && routeAccountId > 0
+    && accounts.value.some(account => account.id === routeAccountId)
+  if (hasRouteAccount && selectedAccountId.value !== routeAccountId) {
+    selectedAccountId.value = routeAccountId
+    await changeAccount()
+  } else {
+    await Promise.all([loadWorkspaceInbox(true), loadSupportNotifications(true), loadHandoffs(true)])
+  }
+  const routeBuyerId = String(route.query.buyerId || '').trim()
+  if (routeBuyerId) {
+    searchText.value = routeBuyerId
+    await loadWorkspaceInbox(true)
+    const linkedConversation = workspaceInboxRecords.value.find(record => record.buyerUserId === routeBuyerId)
+    if (linkedConversation) {
+      inboxMode.value = 'conversations'
+      selectedSid.value = linkedConversation.sessionId
+    } else {
+      showWarning('未找到该买家的已同步会话，已保留账号范围供人工查询')
+    }
+  }
   timer = setInterval(() => {
     if (inboxMode.value === 'notifications') loadSupportNotifications(true)
     else if (inboxMode.value === 'handoffs') loadHandoffs(true)

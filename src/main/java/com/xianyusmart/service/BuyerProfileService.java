@@ -91,13 +91,36 @@ public class BuyerProfileService {
         profile.setBuyerUserName(buyerUserName);
         profile.setTagsJson(writeTags(BuyerProfilePolicy.normalizeTags(request.getTags())));
         profile.setNote(note);
-        profile.setAutomationBlocked(Boolean.TRUE.equals(request.getAutomationBlocked()) ? 1 : 0);
+        boolean blacklisted = request.getBlacklisted() == null
+                ? Integer.valueOf(1).equals(profile.getBlacklisted())
+                : Boolean.TRUE.equals(request.getBlacklisted());
+        boolean automationBlocked = blacklisted || Boolean.TRUE.equals(request.getAutomationBlocked());
+        if (blacklisted && blockedReason == null) {
+            blockedReason = "[买家] 已加入客户黑名单";
+        } else if (!blacklisted && (blockedReason != null)
+                && (blockedReason.startsWith("[买家]") || blockedReason.startsWith("[会话]"))) {
+            blockedReason = null;
+        }
+        boolean blacklistChanged = !java.util.Objects.equals(
+                Integer.valueOf(blacklisted ? 1 : 0), profile.getBlacklisted());
+        profile.setAutomationBlocked(automationBlocked ? 1 : 0);
         profile.setBlockedReason(blockedReason);
+        profile.setBlacklisted(blacklisted ? 1 : 0);
+        if (blacklistChanged) {
+            profile.setBlacklistSource("BUYER_360");
+            profile.setBlacklistUpdatedTime(LocalDateTime.now());
+        }
         if (profile.getId() == null) {
             profileMapper.insert(profile);
         } else {
             profileMapper.updateById(profile);
         }
+        Long tenantId = requireTenantId();
+        profileMapper.updateAutomationAndBlacklist(tenantId, profile.getXianyuAccountId(),
+                profile.getBuyerUserId(), profile.getAutomationBlocked(), profile.getBlockedReason(),
+                profile.getBlacklisted(), profile.getBlacklistSource(), profile.getBlacklistUpdatedTime());
+        profileMapper.updateConversationBlacklist(tenantId, profile.getXianyuAccountId(),
+                profile.getBuyerUserId(), blacklisted ? 1 : 0);
         BuyerProfileQueryReqDTO query = new BuyerProfileQueryReqDTO();
         query.setXianyuAccountId(profile.getXianyuAccountId());
         query.setKeyword(profile.getBuyerUserId());

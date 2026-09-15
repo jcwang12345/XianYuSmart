@@ -103,6 +103,32 @@ class MessageWorkspaceServiceTest {
         verify(webSocketService, never()).sendMessageWithResult(any(), anyString(), anyString(), anyString());
     }
 
+    @Test
+    void conversationBlacklistProjectsStatusAndSourceIntoBuyerProfile() {
+        when(jdbcTemplate.queryForMap(org.mockito.ArgumentMatchers.contains("buyer_user_id"),
+                any(Object[].class))).thenReturn(Map.of("buyerUserId", "buyer-1"));
+
+        Map<String, Object> result = service.updateConversation(new MessageWorkspaceService.ConversationUpdate(
+                9L, "session-1", false, "NONE", "高风险客户", true, "request-blacklist"));
+
+        assertEquals(true, result.get("blacklisted"));
+        verify(jdbcTemplate).update(org.mockito.ArgumentMatchers.contains("blacklist_source='MESSAGE_WORKSPACE'"),
+                any(Object[].class));
+    }
+
+    @Test
+    void conversationUnblacklistPreservesUnrelatedManualAutomationBlock() {
+        when(jdbcTemplate.queryForMap(org.mockito.ArgumentMatchers.contains("buyer_user_id"),
+                any(Object[].class))).thenReturn(Map.of("buyerUserId", "buyer-1"));
+
+        service.updateConversation(new MessageWorkspaceService.ConversationUpdate(
+                9L, "session-1", false, "NONE", null, false, "request-unblacklist"));
+
+        verify(jdbcTemplate).update(org.mockito.ArgumentMatchers.contains(
+                        "automation_blocked=CASE WHEN blocked_reason LIKE '[会话]%'"),
+                any(Object[].class));
+    }
+
     private MessageWorkspaceService.SendCommand command(String requestId) {
         return new MessageWorkspaceService.SendCommand(9L, "session-1", "buyer-1", "goods-1",
                 "你好", null, null, requestId);

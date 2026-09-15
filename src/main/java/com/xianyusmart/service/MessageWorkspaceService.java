@@ -218,16 +218,20 @@ public class MessageWorkspaceService {
         if (buyerId != null && blacklisted) {
             jdbcTemplate.update("""
                     INSERT INTO xianyu_buyer_profile
-                    (tenant_id,xianyu_account_id,buyer_user_id,note,automation_blocked,blocked_reason,last_interaction_time)
-                    VALUES (?,?,?,?,1,?,NOW(3))
+                    (tenant_id,xianyu_account_id,buyer_user_id,note,automation_blocked,blocked_reason,
+                     blacklisted,blacklist_source,blacklist_updated_time,last_interaction_time)
+                    VALUES (?,?,?,?,1,?,1,'MESSAGE_WORKSPACE',NOW(3),NOW(3))
                     ON DUPLICATE KEY UPDATE note=COALESCE(VALUES(note),note),automation_blocked=1,
-                     blocked_reason=VALUES(blocked_reason)
+                     blocked_reason=VALUES(blocked_reason),blacklisted=1,
+                     blacklist_source='MESSAGE_WORKSPACE',blacklist_updated_time=NOW(3)
                     """, tenant(), accountId, buyerId, note, "[会话] 已加入客户黑名单");
         } else if (buyerId != null) {
             jdbcTemplate.update("""
-                    UPDATE xianyu_buyer_profile SET automation_blocked=0,blocked_reason=NULL
+                    UPDATE xianyu_buyer_profile SET blacklisted=0,blacklist_source='MESSAGE_WORKSPACE',
+                     blacklist_updated_time=NOW(3),
+                     automation_blocked=CASE WHEN blocked_reason LIKE '[会话]%' THEN 0 ELSE automation_blocked END,
+                     blocked_reason=CASE WHEN blocked_reason LIKE '[会话]%' THEN NULL ELSE blocked_reason END
                      WHERE tenant_id=? AND xianyu_account_id=? AND buyer_user_id=?
-                       AND blocked_reason LIKE '[会话]%'
                     """, tenant(), accountId, buyerId);
         }
         XianyuOperationLog log = new XianyuOperationLog();
