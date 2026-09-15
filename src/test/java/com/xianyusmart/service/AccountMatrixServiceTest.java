@@ -42,6 +42,7 @@ class AccountMatrixServiceTest {
     private AccountAccessService accountAccessService;
     private OperationLogService operationLogService;
     private NotificationCenterService notificationCenterService;
+    private AccountBrowserProfileService accountBrowserProfileService;
     private AccountMatrixService service;
 
     @BeforeEach
@@ -54,8 +55,9 @@ class AccountMatrixServiceTest {
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
         notificationCenterService = mock(NotificationCenterService.class);
+        accountBrowserProfileService = mock(AccountBrowserProfileService.class);
         service = new AccountMatrixService(accountMapper, cookieMapper, jdbcTemplate, webSocketService, accountAccessService,
-                operationLogService, notificationCenterService, new ObjectMapper());
+                operationLogService, notificationCenterService, accountBrowserProfileService, new ObjectMapper());
         UserContext.set(31L, "tester", 9L);
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class))).thenReturn(List.of());
         when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(0);
@@ -166,6 +168,72 @@ class AccountMatrixServiceTest {
         assertTrue(detail.containsKey("datasetEvidence"));
         assertFalse(detail.toString().contains("browserStorageState"));
         assertFalse(detail.toString().contains("cookieText"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void runtimeProfilePublishesStableIdAndIsolationEvidenceWithoutStateFingerprint() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "A"));
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0, String.class);
+            if (!sql.contains("xianyu_device_profile")) return List.of();
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("profileKey", "12345678-90ab-cdef-1234-567890abcdef");
+            row.put("profileType", "DESKTOP_WEB");
+            row.put("platform", "WINDOWS");
+            row.put("viewportWidth", 1365);
+            row.put("viewportHeight", 768);
+            row.put("storageStateFingerprint", "secret-derived-fingerprint");
+            row.put("browserStateReady", 1);
+            row.put("status", 1);
+            return List.of(row);
+        });
+        when(jdbcTemplate.queryForObject(
+                org.mockito.ArgumentMatchers.contains("xianyu_device_profile"),
+                eq(Integer.class), any(Object[].class))).thenReturn(0);
+
+        Map<String, Object> detail = service.accountDetail(5L);
+        Map<String, Object> runtime = (Map<String, Object>) detail.get("runtimeProfile");
+
+        assertEquals("BPR-1234567890AB", runtime.get("browserProfileId"));
+        assertEquals("ACCOUNT", runtime.get("storageScope"));
+        assertEquals("ISOLATED", runtime.get("isolationStatus"));
+        assertEquals(0, runtime.get("isolationConflictCount"));
+        assertEquals("BPR-1234567890AB", detail.get("runtimeProfileId"));
+        assertEquals("ISOLATED", detail.get("runtimeIsolationStatus"));
+        assertFalse(runtime.containsKey("storageStateFingerprint"));
+        assertFalse(detail.toString().contains("secret-derived-fingerprint"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void duplicateBrowserIdentityIsExposedAsConflictWithoutLeakingOtherAccounts() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "A"));
+        when(jdbcTemplate.queryForList(anyString(), any(Object[].class))).thenAnswer(invocation -> {
+            String sql = invocation.getArgument(0, String.class);
+            if (!sql.contains("xianyu_device_profile")) return List.of();
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("profileKey", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+            row.put("profileType", "DESKTOP_WEB");
+            row.put("platform", "MACOS");
+            row.put("viewportWidth", 1440);
+            row.put("viewportHeight", 900);
+            row.put("storageStateFingerprint", "duplicate-state-fingerprint");
+            row.put("browserStateReady", 1);
+            row.put("status", 1);
+            return List.of(row);
+        });
+        when(jdbcTemplate.queryForObject(
+                org.mockito.ArgumentMatchers.contains("xianyu_device_profile"),
+                eq(Integer.class), any(Object[].class))).thenReturn(2);
+
+        Map<String, Object> detail = service.accountDetail(5L);
+        Map<String, Object> runtime = (Map<String, Object>) detail.get("runtimeProfile");
+
+        assertEquals("CONFLICT", runtime.get("isolationStatus"));
+        assertEquals(2, runtime.get("isolationConflictCount"));
+        assertTrue(String.valueOf(runtime.get("isolationMessage")).contains("停止相关账号"));
+        assertFalse(detail.toString().contains("duplicate-state-fingerprint"));
     }
 
     @Test

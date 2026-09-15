@@ -1,6 +1,7 @@
 package com.xianyusmart.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
 import com.google.gson.Gson;
@@ -16,7 +17,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
+import java.util.HexFormat;
 import java.util.Map;
 import java.util.List;
 import java.util.UUID;
@@ -88,8 +92,25 @@ public class AccountBrowserProfileService {
         if (accountId == null) {
             return null;
         }
-        return profileMapper.selectOne(new LambdaQueryWrapper<XianyuDeviceProfile>()
+        XianyuDeviceProfile profile = profileMapper.selectOne(new LambdaQueryWrapper<XianyuDeviceProfile>()
                 .eq(XianyuDeviceProfile::getXianyuAccountId, accountId));
+        ensureStorageFingerprint(profile);
+        return profile;
+    }
+
+    private void ensureStorageFingerprint(XianyuDeviceProfile profile) {
+        if (profile == null || profile.getBrowserStorageState() == null
+                || profile.getBrowserStorageState().isBlank()) {
+            return;
+        }
+        String fingerprint = storageStateFingerprint(profile.getBrowserStorageState());
+        if (fingerprint.equals(profile.getStorageStateFingerprint())) {
+            return;
+        }
+        profileMapper.update(null, new UpdateWrapper<XianyuDeviceProfile>()
+                .eq("id", profile.getId())
+                .set("storage_state_fingerprint", fingerprint));
+        profile.setStorageStateFingerprint(fingerprint);
     }
 
     public Browser.NewContextOptions contextOptions(Long accountId, String browserVersion) {
@@ -119,6 +140,7 @@ public class AccountBrowserProfileService {
                     new BrowserContext.StorageStateOptions().setIndexedDB(true));
             XianyuDeviceProfile profile = getOrCreate(accountId);
             profile.setBrowserStorageState(state);
+            profile.setStorageStateFingerprint(storageStateFingerprint(state));
             profile.setStorageStateUpdatedTime(LocalDateTime.now());
             profileMapper.updateById(profile);
         } catch (Exception e) {
@@ -222,6 +244,18 @@ public class AccountBrowserProfileService {
 
     static String platformForAccount(Long accountId) {
         return accountId != null && accountId % 2 == 0 ? "MACOS" : "WINDOWS";
+    }
+
+    static String storageStateFingerprint(String state) {
+        if (state == null || state.isBlank()) {
+            return null;
+        }
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(state.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            throw new IllegalStateException("无法生成浏览器状态隔离指纹", e);
+        }
     }
 
     private static String normalizedVersion(String browserVersion) {

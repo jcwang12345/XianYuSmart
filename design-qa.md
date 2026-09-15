@@ -35,6 +35,18 @@
 
 final result: passed（P0/P1 = 0）
 
+### Wave 9 — ACC-11 账号运行档案隔离证据
+
+- scope: 账号矩阵 → 店铺 360 → 账号运行档案卡。
+- desktop: `BPR-xxxxxxxxxxxx` 档案 ID 使用整行等宽展示；隔离状态、账号级存储范围、平台、视口、时区和浏览器状态层级清楚。
+- mobile: 390×844 下详情全屏单列，dialog/document 宽度均为 390px，无页面级横向溢出；固定底部操作仍可用。
+- states: 正常状态显示“隔离正常”；冲突显示红色“发现冲突”与停止相关账号/重建档案建议；检测异常显示“隔离待检测”，不会误报正常。
+- privacy: 页面只显示稳定短 ID 和不可逆结论，不返回 Cookie、Token、storage state 或其 SHA-256。
+- iteration: 首轮截图发现短 ID 被两栏拆行、结论与隐私说明缺少分隔；修正为整行 ID 和完整句号后复核通过。
+- evidence limit: 浏览器工具提供本轮内联桌面/390px截图但不提供持久化路径；未为视觉截图人为制造数据库冲突。
+
+result: passed（ACC-11 增量设计 QA）
+
 ---
 
 ## 历史：v3.4.0-rc.1 素材、增长与工作流

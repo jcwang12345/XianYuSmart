@@ -1,7 +1,15 @@
 package com.xianyusmart.service;
 
 import com.xianyusmart.entity.XianyuDeviceProfile;
+import com.xianyusmart.mapper.XianyuAccountMapper;
+import com.xianyusmart.mapper.XianyuDeviceProfileMapper;
 import org.junit.jupiter.api.Test;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -48,5 +56,37 @@ class AccountBrowserProfileServiceTest {
                 .contains("Chrome/149.0.7827.55"));
         assertFalse(AccountBrowserProfileService.userAgentOverride("MACOS", null).toString()
                 .contains("Linux"));
+    }
+
+    @Test
+    void browserStorageFingerprintIsStableWithoutExposingState() {
+        String first = AccountBrowserProfileService.storageStateFingerprint("{\"cookies\":[{\"name\":\"a\"}]}");
+        String replay = AccountBrowserProfileService.storageStateFingerprint("{\"cookies\":[{\"name\":\"a\"}]}");
+        String other = AccountBrowserProfileService.storageStateFingerprint("{\"cookies\":[{\"name\":\"b\"}]}");
+
+        assertEquals(64, first.length());
+        assertEquals(first, replay);
+        assertNotEquals(first, other);
+        assertNull(AccountBrowserProfileService.storageStateFingerprint(" "));
+        assertFalse(first.contains("cookies"));
+    }
+
+    @Test
+    void readingLegacyProfileRepairsFingerprintFromDecryptedState() {
+        XianyuDeviceProfileMapper profiles = mock(XianyuDeviceProfileMapper.class);
+        XianyuAccountMapper accounts = mock(XianyuAccountMapper.class);
+        XianyuDeviceProfile profile = new XianyuDeviceProfile();
+        profile.setId(7L);
+        profile.setXianyuAccountId(27L);
+        profile.setBrowserStorageState("{\"cookies\":[{\"name\":\"legacy\"}]}");
+        profile.setStorageStateFingerprint("ciphertext-derived-legacy-value");
+        when(profiles.selectOne(any())).thenReturn(profile);
+        AccountBrowserProfileService service = new AccountBrowserProfileService(profiles, accounts);
+
+        XianyuDeviceProfile result = service.find(27L);
+
+        assertEquals(AccountBrowserProfileService.storageStateFingerprint(profile.getBrowserStorageState()),
+                result.getStorageStateFingerprint());
+        verify(profiles).update(isNull(), any());
     }
 }

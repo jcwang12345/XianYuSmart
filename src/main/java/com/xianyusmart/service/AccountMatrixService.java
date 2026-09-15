@@ -50,6 +50,7 @@ public class AccountMatrixService {
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
     private final NotificationCenterService notificationCenterService;
+    private final AccountBrowserProfileService accountBrowserProfileService;
     private final ObjectMapper objectMapper;
 
     public AccountMatrixService(XianyuAccountMapper accountMapper,
@@ -59,6 +60,7 @@ public class AccountMatrixService {
                                 AccountAccessService accountAccessService,
                                 OperationLogService operationLogService,
                                 NotificationCenterService notificationCenterService,
+                                AccountBrowserProfileService accountBrowserProfileService,
                                 ObjectMapper objectMapper) {
         this.accountMapper = accountMapper;
         this.cookieMapper = cookieMapper;
@@ -67,6 +69,7 @@ public class AccountMatrixService {
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
         this.notificationCenterService = notificationCenterService;
+        this.accountBrowserProfileService = accountBrowserProfileService;
         this.objectMapper = objectMapper;
     }
 
@@ -393,26 +396,70 @@ public class AccountMatrixService {
         result.put("runtimePlatform", runtime.get("platform"));
         result.put("runtimeViewport", runtime.get("viewport"));
         result.put("browserStateReady", runtime.get("browserStateReady"));
+        result.put("runtimeProfileId", runtime.get("browserProfileId"));
+        result.put("runtimeIsolationStatus", runtime.get("isolationStatus"));
         result.put("runtimeProfile", runtime);
         if (includeProfile) result.put("profile", profile);
         return result;
     }
 
     private Map<String, Object> runtimeProfile(Long accountId) {
+        // Reading through the encrypted entity repairs pre-V57 rows with a digest
+        // computed from plaintext state; the API query below still returns no state.
+        accountBrowserProfileService.find(accountId);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT profile_key profileKey,profile_type profileType,platform,locale,timezone_id timezoneId,
                        viewport_width viewportWidth,viewport_height viewportHeight,device_scale_factor deviceScaleFactor,
                        color_scheme colorScheme,browser_version browserVersion,
+                       storage_state_fingerprint storageStateFingerprint,
                        CASE WHEN browser_storage_state IS NULL OR browser_storage_state='' THEN 0 ELSE 1 END browserStateReady,
                        storage_state_updated_time storageStateUpdatedTime,status,created_time createdTime,updated_time updatedTime
                   FROM xianyu_device_profile WHERE tenant_id=? AND xianyu_account_id=? LIMIT 1
                 """, requireTenant(), accountId);
         if (rows.isEmpty()) return Map.of("status", "UNSYNCED", "browserStateReady", false);
         Map<String, Object> runtime = new LinkedHashMap<>(rows.get(0));
+        String profileKey = string(runtime.get("profileKey"));
+        String storageFingerprint = string(runtime.remove("storageStateFingerprint"));
+        runtime.put("browserProfileId", browserProfileId(profileKey));
+        runtime.put("storageScope", "ACCOUNT");
+        addIsolationEvidence(runtime, accountId, profileKey, storageFingerprint);
         runtime.put("viewport", runtime.get("viewportWidth") + "x" + runtime.get("viewportHeight"));
         Object storedStatus = runtime.get("status");
         runtime.put("status", storedStatus instanceof Number number && number.intValue() == 1 ? "ACTIVE" : "DISABLED");
         return runtime;
+    }
+
+    private void addIsolationEvidence(Map<String, Object> runtime, Long accountId,
+                                      String profileKey, String storageFingerprint) {
+        if (profileKey == null || profileKey.isBlank()) {
+            runtime.put("isolationStatus", "UNKNOWN");
+            runtime.put("isolationConflictCount", null);
+            runtime.put("isolationMessage", "运行档案标识缺失，无法确认账号隔离");
+            return;
+        }
+        try {
+            Integer conflicts = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*) FROM xianyu_device_profile
+                     WHERE xianyu_account_id<>?
+                       AND (profile_key=? OR (? IS NOT NULL AND storage_state_fingerprint=?))
+                    """, Integer.class, accountId, profileKey, storageFingerprint, storageFingerprint);
+            int conflictCount = conflicts == null ? 0 : conflicts;
+            runtime.put("isolationConflictCount", conflictCount);
+            runtime.put("isolationStatus", conflictCount == 0 ? "ISOLATED" : "CONFLICT");
+            runtime.put("isolationMessage", conflictCount == 0
+                    ? "档案标识与浏览器存储状态未被其他账号复用"
+                    : "检测到 " + conflictCount + " 个账号复用了档案标识或浏览器状态，请停止相关账号并重新建立档案");
+        } catch (RuntimeException unavailable) {
+            runtime.put("isolationStatus", "UNKNOWN");
+            runtime.put("isolationConflictCount", null);
+            runtime.put("isolationMessage", "隔离冲突检测暂不可用，请稍后刷新");
+        }
+    }
+
+    private String browserProfileId(String profileKey) {
+        if (profileKey == null || profileKey.isBlank()) return null;
+        String normalized = profileKey.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT);
+        return "BPR-" + normalized.substring(0, Math.min(12, normalized.length()));
     }
 
     private void notifyAccessTransition(XianyuAccount account, String channelCode, String requestId,

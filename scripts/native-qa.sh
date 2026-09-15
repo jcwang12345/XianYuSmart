@@ -151,12 +151,21 @@ start_app() {
 }
 
 deploy_app() {
+  local build_frontend="${1:-true}"
   # Maven replaces target/*.jar in-place. Snapshot a legacy/current artifact
   # before packaging so a running JVM never depends on the file being rebuilt.
   local deployed_at="$(date -u +%Y%m%dT%H%M%SZ)"
   local previous_release="$(snapshot_current_release "predeploy-${deployed_at}" || true)"
-  "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run type-check
-  "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run build-only
+  if [[ "$build_frontend" == "true" ]]; then
+    "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run type-check
+    "$TOOLCHAIN" npm --prefix "$PROJECT_ROOT/vue-code" run build-only
+  else
+    [[ -f "$PROJECT_ROOT/src/main/resources/static/index.html" ]] || {
+      echo "Missing built frontend resources; run: scripts/native-qa.sh deploy" >&2
+      return 1
+    }
+    echo "Reusing the last verified frontend build (backend-only deployment)."
+  fi
   "$TOOLCHAIN" "$PROJECT_ROOT/mvnw" -DskipTests package
   local version="$(awk '/<artifactId>xianyusmart<\/artifactId>/{project=1;next} project && /<version>/{line=$0;sub(/^.*<version>/,"",line);sub(/<\/version>.*$/,"",line);print line;exit}' "$PROJECT_ROOT/pom.xml")"
   local jar="$PROJECT_ROOT/target/xianyusmart-${version}.jar"
@@ -203,7 +212,8 @@ case "${1:-status}" in
     exec "$PROJECT_ROOT/.tools/jdk21/Contents/Home/bin/java" -Xms256m -Xmx2g \
       -jar "$JAR_LINK"
     ;;
-  deploy) deploy_app ;;
+  deploy) deploy_app true ;;
+  deploy-backend) deploy_app false ;;
   start) start_app ;;
   restart) stop_app; start_app ;;
   stop) stop_app ;;
@@ -214,7 +224,7 @@ case "${1:-status}" in
   status) status ;;
   logs) tail -n "${2:-120}" "$LOG_FILE" ;;
   *)
-    echo "Usage: scripts/native-qa.sh {deploy|start|restart|stop|stop-all|status|logs [lines]}" >&2
+    echo "Usage: scripts/native-qa.sh {deploy|deploy-backend|start|restart|stop|stop-all|status|logs [lines]}" >&2
     exit 2
     ;;
 esac

@@ -33,6 +33,9 @@ public class XianyuDeviceProfile {
     @JsonIgnore
     @TableField(typeHandler = SensitiveStringTypeHandler.class)
     private String browserStorageState;
+    /** SHA-256 only; used to detect accidental state sharing without exposing browser data. */
+    @JsonIgnore
+    private String storageStateFingerprint;
     private LocalDateTime storageStateUpdatedTime;
     private Integer status;
     private LocalDateTime createdTime;

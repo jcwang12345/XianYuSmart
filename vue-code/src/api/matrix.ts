@@ -14,6 +14,7 @@ export interface AccountGroup {
 
 export interface AccountRuntimeProfile {
   profileKey?: string
+  browserProfileId?: string
   profileType?: string
   platform?: string
   locale?: string
@@ -25,6 +26,10 @@ export interface AccountRuntimeProfile {
   colorScheme?: string
   browserVersion?: string
   browserStateReady: boolean
+  storageScope?: 'ACCOUNT'
+  isolationStatus?: 'ISOLATED' | 'CONFLICT' | 'UNKNOWN'
+  isolationConflictCount?: number | null
+  isolationMessage?: string
   storageStateUpdatedTime?: string
   status: 'ACTIVE' | 'DISABLED' | 'UNSYNCED'
   updatedTime?: string
@@ -72,6 +77,8 @@ export interface MatrixAccount {
   runtimeProfileType?: string
   runtimePlatform?: string
   runtimeViewport?: string
+  runtimeProfileId?: string
+  runtimeIsolationStatus?: string
   browserStateReady?: boolean
   runtimeProfile?: AccountRuntimeProfile
   datasetEvidence?: {
