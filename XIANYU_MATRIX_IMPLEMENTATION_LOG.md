@@ -867,3 +867,34 @@
 
 - 独立测试已在 `v3.0.4-rc.1 / 5ea4ca0b` 上完成 `QA-G31-MSG-ACCOUNT-001`：`G31-BUG-001` Closed / Pass，定向控制台 warning/error=0，类型检查、357 模块生产构建、220 项后端测试、51 迁移验证、HEAD/tag 和 JAR SHA-256 全部匹配。Gate 3.1 当前无未决 P0/P1。
 - V6 Wave 4～8 仍按长期计划待实施；本批不宣称长期目标完成。
+
+## 批次 22：真实账号接入事实一致性（v3.0.5）
+
+### 需求与修复
+
+- `V6-REAL-001 / V6-ACC-01 / V6-CLICK-REQ-04`：账号矩阵不再只依赖 `xianyu_account_access_channel` 快照；当前 WebSocket 健康与最新凭证状态投影为 `MESSAGE_WS / LOCAL_RUNTIME` 实况证据，冲突时优先展示实况。
+- 实况证据只声明会话连接和凭证是否存在，返回来源、核验时间、最近成功和 token 到期时间；不推断店铺画像、风险、商品、订单或平台写能力。Cookie、Token 和浏览器存储不进入响应。
+- `V6-REAL-002 / V6-CLICK-REQ-06`：连接操作日志复用统一时间格式化器，兼容 number epoch、数字字符串 epoch、ISO 和非法值。
+- 账号矩阵列表和全屏店铺档案展示“运行时实测”来源与核验时间，避免运营把陈旧快照当当前状态。
+
+### 变更、迁移与 API
+
+- 后端：`AccountMatrixService` 合并持久通道快照与当前运行实况；新增无凭据泄漏及未知事实不扩张回归。
+- 前端：账号矩阵增加 `connectionSource/connectionLastCheckedTime`；店铺档案展示接入证据来源；连接日志修复非法日期；最终生产静态资源由 3.0.5 源码重新生成。
+- API：账号矩阵列表/详情新增可选 `connectionSource`、`connectionLastCheckedTime`，`accessChannels` 可含 `LOCAL_RUNTIME` 通道；均为向后兼容的只读字段。
+- 迁移：无新增迁移；MySQL 5.7 启动成功验证 51 个迁移，schema version 51。
+- 版本：Maven、应用与前端包统一为 `3.0.5`；源码提交 `9e47050`。
+
+### 测试、部署与 Product Design QA
+
+- 后端完整回归：222 项通过，0 失败、0 错误、0 跳过；新增 2 项运行实况/凭据脱敏测试。
+- 前端类型检查通过；Vite 最终生产构建 `357 modules transformed`。
+- 不可变制品：`/Volumes/Data/codex/xianyu/.tools/native-qa/releases/xianyusmart-3.0.5-20260915T065007Z-1c9a2b230c7a.jar`；SHA-256 `1c9a2b230c7a98bd02b389ea67171cb3fcc64130f94b849ad488ce44aba0f128`。
+- 裸机应用 `127.0.0.1:3000` 健康为 `UP`，Docker 仅运行 MySQL `127.0.0.1:13306`；两个真实账号在部署后均自动恢复 WebSocket 连接。
+- 浏览器只读 QA：桌面账号矩阵、全屏店铺档案、两个连接详情和 390×844 窄屏均通过；连接日志无 `Invalid Date`，实况与未知数据不再冲突。
+
+### 安全边界与残余项
+
+- 未在仓库记录真实账号编号或凭据；未执行真实发布、改价、上下架、库存、删除、发货、退款、申诉、买家消息、成员保存、二维码扫码或外部通知。
+- 两个真实账号的店铺画像、处罚与平台发布能力尚未同步，继续显示“未同步/—”；这不是 0，也不宣称平台适配已完成。
+- V6 长期目标仍为 active；下一阶段按计划进入 Wave 4，不能把本批事实修复解释为商品发布能力已完成。
