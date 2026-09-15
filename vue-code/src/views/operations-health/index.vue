@@ -97,6 +97,15 @@ const exceptions = ref<OperationException[]>([])
 const channels = ref<NotificationChannel[]>([])
 const logs = ref<NotificationLog[]>([])
 const inbox = ref<InboxNotification[]>([])
+const inboxTotal = ref(0)
+const inboxTotalPages = ref(0)
+const inboxFilters = ref({
+  view: 'ALL' as 'ALL' | 'UNREAD' | 'PENDING' | 'SENT',
+  accountId: '' as number | '',
+  search: '',
+  page: 1,
+  pageSize: 20
+})
 const accounts = ref<Account[]>([])
 const groups = ref<AccountGroup[]>([])
 const editing = ref(false)
@@ -124,7 +133,22 @@ const load = async () => {
   try {
     if (activeTab.value === 'health') overview.value = (await getHealthOverview()).data
     if (activeTab.value === 'exceptions') exceptions.value = (await getOperationExceptions()).data || []
-    if (activeTab.value === 'inbox') inbox.value = (await getNotificationInbox({ pageSize: 100 })).data?.records || []
+    if (activeTab.value === 'inbox') {
+      const response = await getNotificationInbox({
+        view: inboxFilters.value.view,
+        accountId: inboxFilters.value.accountId || undefined,
+        search: inboxFilters.value.search.trim() || undefined,
+        page: inboxFilters.value.page,
+        pageSize: inboxFilters.value.pageSize
+      })
+      inbox.value = response.data?.records || []
+      inboxTotal.value = response.data?.total || 0
+      inboxTotalPages.value = response.data?.totalPages || 0
+      if (inboxTotalPages.value > 0 && inboxFilters.value.page > inboxTotalPages.value) {
+        inboxFilters.value.page = inboxTotalPages.value
+        await load()
+      }
+    }
     if (activeTab.value === 'channels') channels.value = (await getNotificationChannels()).data || []
     if (activeTab.value === 'logs') logs.value = (await getNotificationLogs()).data || []
   } finally {
@@ -134,6 +158,19 @@ const load = async () => {
 
 const changeTab = (key: string) => {
   activeTab.value = key
+  load()
+}
+
+const applyInboxFilters = () => {
+  inboxFilters.value.page = 1
+  load()
+}
+
+const changeInboxPage = (page: number) => {
+  const lastPage = Math.max(1, inboxTotalPages.value)
+  const nextPage = Math.min(lastPage, Math.max(1, page))
+  if (nextPage === inboxFilters.value.page) return
+  inboxFilters.value.page = nextPage
   load()
 }
 
@@ -236,7 +273,7 @@ const handleInbox = async (item: InboxNotification, status: 'IN_PROGRESS' | 'RES
 }
 
 const eventLabel = (value: string) =>
-  eventOptions.find(option => option.value === value)?.label || value
+  eventOptions.find(option => option.value === value)?.label || '未识别事件'
 
 const severityLabel = (value: string) => ({ ERROR: '紧急', WARNING: '警告', INFO: '提醒' }[value] || value)
 const handlingLabel = (value: string) => ({ UNHANDLED: '待处理', OPEN: '待处理', IN_PROGRESS: '处理中', RESOLVED: '已解决', IGNORED: '已忽略' }[value] || value)
@@ -323,12 +360,41 @@ onMounted(async () => {
       </article>
     </section>
 
-    <section v-else-if="activeTab === 'inbox'" class="panel list">
-      <div v-if="inbox.length === 0" class="empty">暂无站内通知。</div>
+    <section v-else-if="activeTab === 'inbox'" class="panel list inbox-panel">
+      <form class="inbox-toolbar" @submit.prevent="applyInboxFilters">
+        <label>通知范围
+          <select v-model="inboxFilters.view">
+            <option value="ALL">全部通知</option>
+            <option value="UNREAD">仅未读</option>
+            <option value="PENDING">待处理</option>
+            <option value="SENT">已发送到外部渠道</option>
+          </select>
+        </label>
+        <label>所属店铺
+          <select v-model="inboxFilters.accountId">
+            <option value="">全部可见店铺</option>
+            <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
+          </select>
+        </label>
+        <label class="inbox-search">搜索
+          <input v-model="inboxFilters.search" maxlength="100" placeholder="标题、内容或业务对象 ID" />
+        </label>
+        <button type="submit">查询</button>
+      </form>
+      <div class="inbox-scope-note">
+        <span>共 {{ inboxTotal }} 条；每页最多只渲染 {{ inboxFilters.pageSize }} 条</span>
+        <span>已读表示已查看，已解决表示业务问题已处理，两者互不替代。</span>
+      </div>
+      <div v-if="inbox.length === 0" class="empty">当前筛选范围没有站内通知。</div>
       <article v-for="item in inbox" :key="item.id">
         <div class="item-main"><span :class="['badge', item.severity === 'ERROR' ? 'danger-badge' : item.severity === 'WARNING' ? 'warning' : '']">{{ severityLabel(item.severity) }}</span><div><strong>{{ item.title }}</strong><p>{{ item.contentSummary }}</p><div class="event-tags"><span>{{ eventLabel(item.eventType) }}</span><span>{{ item.accountName || '全局' }}</span><span>{{ item.readTime ? '已读' : '未读' }}</span><span>{{ handlingLabel(item.handlingStatus) }}</span><span>{{ deliveryLabel(item.deliveryStatus) }}<template v-if="item.deliveryTotal > 0"> {{ item.deliverySent }}/{{ item.deliveryTotal }}</template></span><span>事件 {{ item.eventId }}</span></div></div></div>
         <div class="actions"><router-link v-if="item.targetRoute" :to="item.targetRoute">查看业务</router-link><button @click="handleInbox(item, 'IN_PROGRESS')">处理中</button><button class="primary" @click="handleInbox(item, 'RESOLVED')">已解决</button><button @click="handleInbox(item, 'IGNORED')">忽略</button></div>
       </article>
+      <footer v-if="inboxTotal > 0" class="inbox-pagination" aria-label="站内通知分页">
+        <button :disabled="inboxFilters.page <= 1" @click="changeInboxPage(inboxFilters.page - 1)">上一页</button>
+        <span>第 {{ inboxFilters.page }} / {{ Math.max(1, inboxTotalPages) }} 页</span>
+        <button :disabled="inboxFilters.page >= Math.max(1, inboxTotalPages)" @click="changeInboxPage(inboxFilters.page + 1)">下一页</button>
+      </footer>
     </section>
 
     <section v-else-if="activeTab === 'channels'" class="panel list">
@@ -427,6 +493,12 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .exception-actions { display: flex; align-items: center; gap: 12px; }
 .event-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; } .event-tags span { padding: 2px 6px; border-radius: 4px; color: #9a6200; background: #fff8d9; font-size: 12px; }
 .actions { display: flex; gap: 6px; } .empty { padding: 70px 20px; text-align: center; color: #98a2b3; }
+.inbox-toolbar { display: grid; grid-template-columns: 180px 220px minmax(220px, 1fr) auto; align-items: end; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #eaecf0; background: #fcfcfd; }
+.inbox-toolbar label { display: grid; gap: 5px; color: #667085; font-size: 12px; }
+.inbox-toolbar input, .inbox-toolbar select { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; background: #fff; color: #344054; font: inherit; }
+.inbox-scope-note { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #eaecf0; color: #667085; background: #fffaf0; font-size: 12px; }
+.inbox-pagination { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 14px 16px; color: #667085; font-size: 13px; }
+.inbox-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .overlay { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 20px; background: rgba(16,24,40,.45); }
 .dialog { width: min(680px, 100%); max-height: calc(100vh - 40px); overflow: auto; padding: 20px; border-radius: 12px; background: #fff; box-shadow: 0 20px 50px rgba(16,24,40,.2); }
 .dialog header, .dialog footer, .enabled { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -441,5 +513,5 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .dialog fieldset { border: 1px solid #eaecf0; border-radius: 8px; } .dialog .check-option { display: inline-flex; align-items: center; gap: 5px; margin-right: 16px; }
 .dialog .check-option input, .dialog .enabled input { width: auto; } .dialog .enabled { display: flex; padding: 10px 0; color: #344054; }
 .dialog footer { justify-content: flex-end; margin-top: 18px; } .close { border: 0; padding: 3px 8px; font-size: 22px; }
-@media (max-width: 720px) { .summary { grid-template-columns: 1fr; } .page-head, .list article { align-items: stretch; flex-direction: column; } .actions { justify-content: flex-end; } .exception-actions { justify-content: space-between; } .item-meta { align-items: flex-start; text-align: left; } .channel-types { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 720px) { .summary { grid-template-columns: 1fr; } .page-head, .list article { align-items: stretch; flex-direction: column; } .actions { justify-content: flex-end; flex-wrap: wrap; } .exception-actions { justify-content: space-between; } .item-meta { align-items: flex-start; text-align: left; } .channel-types { grid-template-columns: repeat(2, 1fr); } .inbox-toolbar { grid-template-columns: 1fr; } .inbox-scope-note { flex-direction: column; } }
 </style>

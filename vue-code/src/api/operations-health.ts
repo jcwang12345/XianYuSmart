@@ -130,7 +130,15 @@ export interface InboxNotification {
   deliveryStatus: 'NOT_CONFIGURED' | 'PENDING' | 'SENT' | 'FAILED' | 'PARTIAL' | 'RETRYING_OR_FAILED'
 }
 
-export const getNotificationInbox = (params: Record<string, unknown> = {}) => request<{ records: InboxNotification[]; total: number; page: number; pageSize: number; totalPages: number }>({ url: '/notifications/inbox', method: 'GET', params })
+export interface InboxPage {
+  records: InboxNotification[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+
+export const getNotificationInbox = (params: Record<string, unknown> = {}) => request<InboxPage>({ url: '/notifications/inbox', method: 'GET', params })
 export const markNotificationRead = (id: number) => request<void>({ url: `/notifications/inbox/${id}/read`, method: 'POST' })
 export const updateNotificationHandling = (id: number, status: string, note = '') => request<void>({ url: `/notifications/inbox/${id}/handling`, method: 'POST', data: { status, note } })
 

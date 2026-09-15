@@ -1,0 +1,1 @@
+import{r as u}from"./index-DnOw2Nvo.js";function a(){return u({url:"/account/list",method:"POST",data:{}})}function c(t){return u({url:"/account/update",method:"POST",data:t})}function o(t){return u({url:"/account/manualAdd",method:"POST",data:t})}export{a as g,o as m,c as u};
