@@ -35,6 +35,8 @@ import '@/styles/merchant-workbench.css'
 
 const route = useRoute()
 const router = useRouter()
+const workspaceInitializing = ref(true)
+const routeAccountDenied = ref(false)
 
 const {
   loading,
@@ -44,6 +46,7 @@ const {
   goodsList,
   getCurrentAccountUnb,
   loadAccounts,
+  clearAccountData,
   loadMessages,
   handleAccountChange,
   formatMessageTime
@@ -89,6 +92,7 @@ const workspaceInboxRecords = ref<WorkspaceConversation[]>([])
 const workspaceInboxLoaded = ref(false)
 const workspaceInboxLoading = ref(false)
 const workspaceInboxError = ref('')
+let workspaceInboxRevision = 0
 const conversationFilters = reactive({ unreadOnly: false, pinnedOnly: false, keywordFlag: 'ALL' })
 const handoffs = ref<AiHandoffTask[]>([])
 const handoffLoading = ref(false)
@@ -99,6 +103,7 @@ const selectedHandoffId = ref<number | null>(null)
 const handoffResolutionNote = ref('')
 const handoffActionBusy = ref(false)
 const handoffPendingCount = ref(0)
+let handoffRevision = 0
 
 type SupportNotification = {
   id: string
@@ -250,26 +255,30 @@ const loadWorkspaceInbox = async (silent = false) => {
     workspaceInboxLoaded.value = true
     return
   }
+  const accountId = selectedAccountId.value
+  const revision = ++workspaceInboxRevision
   if (!silent) workspaceInboxLoading.value = true
   workspaceInboxError.value = ''
   try {
     const response = await getWorkspaceConversations({
       status: 'ALL',
-      accountId: selectedAccountId.value,
+      accountId,
       search: searchText.value.trim() || undefined,
       unreadOnly: conversationFilters.unreadOnly || undefined,
       pinnedOnly: conversationFilters.pinnedOnly || undefined,
       keywordFlag: conversationFilters.keywordFlag === 'ALL' ? undefined : conversationFilters.keywordFlag,
       limit: 500
     })
+    if (revision !== workspaceInboxRevision || selectedAccountId.value !== accountId) return
     workspaceInboxRecords.value = response.data?.records || []
     workspaceInboxLoaded.value = true
   } catch (error: any) {
+    if (revision !== workspaceInboxRevision || selectedAccountId.value !== accountId) return
     workspaceInboxError.value = error?.message || '会话范围读取失败'
     if (!workspaceInboxRecords.value.length) workspaceInboxLoaded.value = false
     if (!silent && !error?.messageShown) showError(workspaceInboxError.value)
   } finally {
-    workspaceInboxLoading.value = false
+    if (revision === workspaceInboxRevision) workspaceInboxLoading.value = false
   }
 }
 
@@ -458,34 +467,39 @@ const loadSupportNotifications = async (silent = false) => {
 }
 
 const loadHandoffs = async (silent = false) => {
+  const accountId = selectedAccountId.value
+  const revision = ++handoffRevision
   if (!silent) handoffLoading.value = true
   handoffError.value = ''
   try {
     const response = await getAiHandoffs({
       status: handoffStatus.value,
-      accountId: selectedAccountId.value || undefined,
+      accountId: accountId || undefined,
       search: handoffSearch.value.trim() || undefined,
       limit: 300
     })
+    if (revision !== handoffRevision || selectedAccountId.value !== accountId) return
     handoffs.value = response.data?.records || []
     try {
       const countResponse = handoffStatus.value === 'ALL'
         ? response
-        : await getAiHandoffs({ status: 'ALL', accountId: selectedAccountId.value || undefined, limit: 500 })
+        : await getAiHandoffs({ status: 'ALL', accountId: accountId || undefined, limit: 500 })
+      if (revision !== handoffRevision || selectedAccountId.value !== accountId) return
       handoffPendingCount.value = (countResponse.data?.records || [])
         .filter(item => ['OPEN', 'CLAIMED'].includes(item.status)).length
     } catch {
       // 主列表读取成功时保留上次计数，避免一次辅助计数失败把有效任务清空。
     }
   } catch (error: any) {
+    if (revision !== handoffRevision || selectedAccountId.value !== accountId) return
     handoffError.value = error?.message || 'AI 待接管任务读取失败'
     if (!silent && !error?.messageShown) showError(handoffError.value)
   } finally {
-    handoffLoading.value = false
+    if (revision === handoffRevision) handoffLoading.value = false
   }
 }
 
-const syncWorkspaceRoute = () => router.replace({
+const syncWorkspaceRoute = (historyMode: 'replace' | 'push' = 'replace') => router[historyMode]({
   query: {
     ...route.query,
     accountId: selectedAccountId.value ? String(selectedAccountId.value) : undefined,
@@ -496,7 +510,7 @@ const syncWorkspaceRoute = () => router.replace({
 const switchInbox = (mode: InboxMode) => {
   inboxMode.value = mode
   mobileStage.value = 'list'
-  void syncWorkspaceRoute()
+  void syncWorkspaceRoute('push')
   if (mode === 'notifications') void loadSupportNotifications()
   if (mode === 'handoffs') void loadHandoffs()
 }
@@ -581,9 +595,10 @@ const refreshCurrentInbox = async () => {
 }
 
 const changeAccount = async () => {
+  routeAccountDenied.value = false
   workspaceInboxLoaded.value = false
   mobileStage.value = 'list'
-  await syncWorkspaceRoute()
+  await syncWorkspaceRoute('push')
   await handleAccountChange()
   await Promise.all([loadWorkspaceInbox(), loadSupportNotifications(true), loadHandoffs(true)])
 }
@@ -625,6 +640,40 @@ watch(handoffs, value => {
 
 watch([handoffStatus, selectedAccountId], () => {
   if (inboxMode.value === 'handoffs') loadHandoffs(true)
+})
+
+watch(() => [route.query.accountId, route.query.inbox] as const, async ([rawAccountId, rawInbox]) => {
+  if (workspaceInitializing.value) return
+  const routeAccountId = Number(rawAccountId)
+  const requestedAccountIdValid = Number.isSafeInteger(routeAccountId) && routeAccountId > 0
+  const requestedAccount = requestedAccountIdValid
+    ? accounts.value.find(account => account.id === routeAccountId)
+    : undefined
+  if (requestedAccountIdValid && !requestedAccount) {
+    routeAccountDenied.value = true
+    selectedAccountId.value = null
+    clearAccountData()
+    workspaceInboxRecords.value = []
+    workspaceInboxLoaded.value = false
+    handoffs.value = []
+    handoffPendingCount.value = 0
+    return
+  }
+  routeAccountDenied.value = false
+  if (requestedAccount && selectedAccountId.value !== requestedAccount.id) {
+    selectedAccountId.value = requestedAccount.id
+    workspaceInboxLoaded.value = false
+    mobileStage.value = 'list'
+    await handleAccountChange()
+    await Promise.all([loadWorkspaceInbox(), loadSupportNotifications(true), loadHandoffs(true)])
+  }
+  const requestedMode = String(rawInbox || 'conversations')
+  if (['conversations', 'notifications', 'handoffs'].includes(requestedMode) && inboxMode.value !== requestedMode) {
+    inboxMode.value = requestedMode as InboxMode
+    mobileStage.value = 'list'
+    if (inboxMode.value === 'notifications') await loadSupportNotifications(true)
+    if (inboxMode.value === 'handoffs') await loadHandoffs(true)
+  }
 })
 
 watch(selectedAccountId, () => {
@@ -669,31 +718,33 @@ watch([selectedAccountId, () => selected.value?.sid], async ([accountId, sid]) =
 
 let timer: ReturnType<typeof setInterval> | undefined
 onMounted(async () => {
-  await loadAccounts()
   const routeAccountId = Number(route.query.accountId)
-  const hasRouteAccount = Number.isSafeInteger(routeAccountId)
-    && routeAccountId > 0
-    && accounts.value.some(account => account.id === routeAccountId)
-  if (hasRouteAccount && selectedAccountId.value !== routeAccountId) {
-    selectedAccountId.value = routeAccountId
-    await changeAccount()
-  } else {
-    await Promise.all([loadWorkspaceInbox(true), loadSupportNotifications(true), loadHandoffs(true)])
-  }
-  await syncWorkspaceRoute()
-  const routeBuyerId = String(route.query.buyerId || '').trim()
-  if (routeBuyerId) {
-    searchText.value = routeBuyerId
-    await loadWorkspaceInbox(true)
-    const linkedConversation = workspaceInboxRecords.value.find(record => record.buyerUserId === routeBuyerId)
-    if (linkedConversation) {
-      inboxMode.value = 'conversations'
-      selectedSid.value = linkedConversation.sessionId
-    } else {
-      showWarning('未找到该买家的已同步会话，已保留账号范围供人工查询')
+  const routeAccountIdValid = Number.isSafeInteger(routeAccountId) && routeAccountId > 0
+  try {
+    const accountResolved = await loadAccounts(routeAccountIdValid ? routeAccountId : undefined)
+    if (routeAccountIdValid && !accountResolved) {
+      routeAccountDenied.value = true
+      return
     }
+    await Promise.all([loadWorkspaceInbox(true), loadSupportNotifications(true), loadHandoffs(true)])
+    await syncWorkspaceRoute()
+    const routeBuyerId = String(route.query.buyerId || '').trim()
+    if (routeBuyerId && inboxMode.value === 'conversations') {
+      searchText.value = routeBuyerId
+      await loadWorkspaceInbox(true)
+      const linkedConversation = workspaceInboxRecords.value.find(record => record.buyerUserId === routeBuyerId)
+      if (linkedConversation) {
+        inboxMode.value = 'conversations'
+        selectedSid.value = linkedConversation.sessionId
+      } else {
+        showWarning('未找到该买家的已同步会话，已保留账号范围供人工查询')
+      }
+    }
+  } finally {
+    workspaceInitializing.value = false
   }
   timer = setInterval(() => {
+    if (routeAccountDenied.value) return
     if (inboxMode.value === 'notifications') loadSupportNotifications(true)
     else if (inboxMode.value === 'handoffs') loadHandoffs(true)
     else Promise.all([refresh(), loadSupportNotifications(true), loadHandoffs(true)])
@@ -710,23 +761,28 @@ onBeforeUnmount(() => {
     <header class="workbench__header">
       <div><h1>集成客服</h1><p>统一处理买家会话、订单与账号通知，重要事件不再散落。</p></div>
       <div class="workbench__actions">
-        <select v-model="selectedAccountId" class="workbench__select chat__account" @change="changeAccount">
-          <option v-if="!accounts.length" :value="null" disabled>暂无可用账号</option>
+        <select v-model="selectedAccountId" class="workbench__select chat__account" :disabled="workspaceInitializing" @change="changeAccount">
+          <option v-if="routeAccountDenied" :value="null" disabled>无权访问当前账号</option>
+          <option v-else-if="!accounts.length" :value="null" disabled>{{ workspaceInitializing ? '正在读取账号范围' : '暂无可用账号' }}</option>
           <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
         </select>
-        <button class="workbench__btn" :disabled="loading || platformSyncing || notificationLoading || handoffLoading" @click="refreshCurrentInbox">
+        <button class="workbench__btn" :disabled="routeAccountDenied || loading || platformSyncing || notificationLoading || handoffLoading" @click="refreshCurrentInbox">
           {{ loading || platformSyncing || notificationLoading || handoffLoading ? '同步中' : '刷新' }}
         </button>
       </div>
     </header>
 
-    <div v-if="!loading && !accounts.length" class="chat__permission-state" role="alert">
-      <strong>当前账号没有可管理的闲鱼店铺</strong>
-      <span>请联系经营主体管理员分配店铺范围和“集成客服”权限；系统不会展示未授权店铺的会话与计数。</span>
+    <div v-if="!workspaceInitializing && !loading && (routeAccountDenied || !accounts.length)" class="chat__permission-state" role="alert">
+      <strong>{{ routeAccountDenied ? '无权访问该店铺' : '当前账号没有可管理的闲鱼店铺' }}</strong>
+      <span>{{ routeAccountDenied ? '链接中的店铺不在当前成员的授权范围内，页面未读取任何店铺业务数据。' : '请联系经营主体管理员分配店铺范围和“集成客服”权限；系统不会展示未授权店铺的会话与计数。' }}</span>
       <router-link class="workbench__btn" to="/dashboard">返回经营总览</router-link>
     </div>
 
-    <nav class="chat__inbox-tabs" role="tablist" aria-label="客服消息类型">
+    <div v-if="workspaceInitializing" class="workbench__card chat__initializing" role="status">
+      <strong>正在载入客服账号范围</strong><span>账号确认完成前不会展示其他店铺的会话、通知或待接管数据。</span>
+    </div>
+
+    <nav v-if="!workspaceInitializing && !routeAccountDenied" class="chat__inbox-tabs" role="tablist" aria-label="客服消息类型">
       <button id="support-tab-conversations" role="tab" aria-controls="support-panel-conversations" :aria-selected="inboxMode === 'conversations'" :tabindex="inboxMode === 'conversations' ? 0 : -1" :class="{ 'chat__inbox-tab--active': inboxMode === 'conversations' }" @keydown="moveInboxFocus($event, 'conversations')" @click="switchInbox('conversations')">
         买家会话 <span>{{ conversations.length }}</span>
       </button>
@@ -738,7 +794,7 @@ onBeforeUnmount(() => {
       </button>
     </nav>
 
-    <div v-if="inboxMode === 'conversations'" id="support-panel-conversations" class="chat__layout" :data-mobile-stage="mobileStage" role="tabpanel" aria-labelledby="support-tab-conversations">
+    <div v-if="!workspaceInitializing && !routeAccountDenied && inboxMode === 'conversations'" id="support-panel-conversations" class="chat__layout" :data-mobile-stage="mobileStage" role="tabpanel" aria-labelledby="support-tab-conversations">
       <aside class="workbench__card chat__conversations" aria-label="买家会话列表">
         <div class="chat__summary">
           <strong>在线消息 <span>{{ conversations.length }}</span></strong>
@@ -868,7 +924,7 @@ onBeforeUnmount(() => {
       </aside>
     </div>
 
-    <div v-else-if="inboxMode === 'notifications'" id="support-panel-notifications" class="chat__layout chat__layout--notifications" role="tabpanel" aria-labelledby="support-tab-notifications">
+    <div v-else-if="!workspaceInitializing && !routeAccountDenied && inboxMode === 'notifications'" id="support-panel-notifications" class="chat__layout chat__layout--notifications" role="tabpanel" aria-labelledby="support-tab-notifications">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
           <strong>通知消息 <span>{{ supportNotifications.length }}</span></strong>
@@ -939,7 +995,7 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <div v-else id="support-panel-handoffs" class="chat__layout chat__layout--handoffs" role="tabpanel" aria-labelledby="support-tab-handoffs">
+    <div v-else-if="!workspaceInitializing && !routeAccountDenied" id="support-panel-handoffs" class="chat__layout chat__layout--handoffs" role="tabpanel" aria-labelledby="support-tab-handoffs">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
           <strong>AI 待接管 <span>{{ handoffs.length }}</span></strong>
@@ -1036,6 +1092,8 @@ onBeforeUnmount(() => {
 .chat__permission-state span { flex: 1; color: #854a0e; font-size: 13px; }
 .chat__account { width: 180px; }
 .chat__inbox-tabs { display: flex; height: 44px; gap: 24px; padding: 0 4px; border-bottom: 1px solid #eaecf0; }
+.chat__initializing { display: grid; place-content: center; gap: 7px; min-height: 320px; color: #667085; text-align: center; }
+.chat__initializing strong { color: #344054; }
 .chat__inbox-tabs button { position: relative; display: flex; align-items: center; gap: 7px; padding: 0 6px; border: 0; color: #667085; background: transparent; font-weight: 650; cursor: pointer; }
 .chat__inbox-tabs button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 2px; background: transparent; content: ''; }
 .chat__inbox-tabs button.chat__inbox-tab--active { color: #9a6200; }

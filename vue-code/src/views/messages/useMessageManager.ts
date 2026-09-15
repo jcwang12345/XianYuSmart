@@ -18,6 +18,7 @@ export function useMessageManager() {
   const pageSize = ref(500)
   const total = ref(0)
   const filterCurrentAccount = ref(false)
+  let messageLoadRevision = 0
 
   // 商品列表
   const goodsList = ref<GoodsItemWithConfig[]>([])
@@ -25,6 +26,7 @@ export function useMessageManager() {
   const goodsTotal = ref(0)
   const goodsLoading = ref(false)
   const goodsListRef = ref<HTMLElement | null>(null)
+  let goodsLoadRevision = 0
 
   // 手机端
   const isMobile = ref(false)
@@ -92,20 +94,49 @@ export function useMessageManager() {
   }
 
   // 加载账号列表
-  const loadAccounts = async () => {
+  const loadAccounts = async (preferredAccountId?: number) => {
     try {
       const response = await getAccountList()
       if (response.code === 0 || response.code === 200) {
         accounts.value = response.data?.accounts || []
-        if (accounts.value.length > 0 && !selectedAccountId.value) {
-          selectedAccountId.value = accounts.value[0]?.id ?? null
-          await loadMessages()
-          await loadGoodsList()
+        if (accounts.value.length > 0) {
+          const preferredRequested = Number.isSafeInteger(preferredAccountId) && preferredAccountId! > 0
+          const preferred = preferredRequested
+            ? accounts.value.find(account => account.id === preferredAccountId)
+            : undefined
+          if (preferredRequested && !preferred) {
+            selectedAccountId.value = null
+            clearAccountData()
+            return false
+          }
+          const current = accounts.value.find(account => account.id === selectedAccountId.value)
+          selectedAccountId.value = preferred?.id ?? current?.id ?? accounts.value[0]?.id ?? null
+          await Promise.all([loadMessages(), loadGoodsList()])
+        } else {
+          selectedAccountId.value = null
+          messageList.value = []
+          goodsList.value = []
+          total.value = 0
+          goodsTotal.value = 0
         }
+        return true
       }
     } catch (error: any) {
       console.error('加载账号列表失败:', error)
     }
+    return false
+  }
+
+  const clearAccountData = () => {
+    messageLoadRevision++
+    goodsLoadRevision++
+    messageList.value = []
+    goodsList.value = []
+    total.value = 0
+    goodsTotal.value = 0
+    loading.value = false
+    silentLoading.value = false
+    goodsLoading.value = false
   }
 
   // 加载消息列表
@@ -114,6 +145,8 @@ export function useMessageManager() {
       showInfo('请先选择账号')
       return
     }
+    const accountId = selectedAccountId.value
+    const revision = ++messageLoadRevision
     if (!silent) {
       loading.value = true
     } else {
@@ -121,7 +154,7 @@ export function useMessageManager() {
     }
     try {
       const params: any = {
-        xianyuAccountId: selectedAccountId.value,
+        xianyuAccountId: accountId,
         pageNum: currentPage.value,
         pageSize: pageSize.value,
         filterCurrentAccount: filterCurrentAccount.value
@@ -131,6 +164,7 @@ export function useMessageManager() {
       }
       // 后台轮询静默更新数据，不弹出全局提示或切换页面加载态。
       const response = await getMessageList(params, silent)
+      if (revision !== messageLoadRevision || selectedAccountId.value !== accountId) return
       if (response.code === 0 || response.code === 200) {
         const newList = response.data?.list || []
         const newTotal = response.data?.totalCount || 0
@@ -154,27 +188,32 @@ export function useMessageManager() {
       }
     } catch (error: any) {
       console.error('加载消息列表失败:', error)
-      if (!silent) {
+      if (!silent && revision === messageLoadRevision && selectedAccountId.value === accountId) {
         messageList.value = []
       }
     } finally {
-      loading.value = false
-      silentLoading.value = false
+      if (revision === messageLoadRevision) {
+        loading.value = false
+        silentLoading.value = false
+      }
     }
   }
 
   // 加载商品列表
   const loadGoodsList = async () => {
     if (!selectedAccountId.value) return
+    const accountId = selectedAccountId.value
+    const revision = ++goodsLoadRevision
     goodsLoading.value = true
     try {
       const params: any = {
-        xianyuAccountId: selectedAccountId.value,
+        xianyuAccountId: accountId,
         onlyOnSale: false,
         pageNum: goodsCurrentPage.value,
         pageSize: 20
       }
       const response = await getGoodsList(params)
+      if (revision !== goodsLoadRevision || selectedAccountId.value !== accountId) return
       if (response.code === 0 || response.code === 200) {
         if (goodsCurrentPage.value === 1) {
           goodsList.value = response.data?.itemsWithConfig || []
@@ -186,9 +225,9 @@ export function useMessageManager() {
       }
     } catch (error: any) {
       console.error('加载商品列表失败:', error)
-      goodsList.value = []
+      if (revision === goodsLoadRevision && selectedAccountId.value === accountId) goodsList.value = []
     } finally {
-      goodsLoading.value = false
+      if (revision === goodsLoadRevision) goodsLoading.value = false
     }
   }
 
@@ -221,6 +260,10 @@ export function useMessageManager() {
     currentPage.value = 1
     goodsCurrentPage.value = 1
     goodsIdFilter.value = ''
+    messageList.value = []
+    goodsList.value = []
+    total.value = 0
+    goodsTotal.value = 0
     await Promise.all([loadMessages(), loadGoodsList()])
   }
 
@@ -287,6 +330,7 @@ export function useMessageManager() {
     selectedGoodsForMobile,
     getCurrentAccountUnb,
     loadAccounts,
+    clearAccountData,
     loadMessages,
     loadGoodsList,
     handleGoodsScroll,

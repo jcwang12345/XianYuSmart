@@ -837,3 +837,33 @@
 
 - Gate 3.1 仍未完成：`V6-CLICK-002` 商品首载错误 0/竞态、`V6-CLICK-003` 商品任务范围解释、`V6-CLICK-010` 团队与权限加载仍待开发和独立验收。
 - 本批为开发侧候选，不替代独立测试结论，也不代表 V6 Wave 4～8 完成。
+
+## 批次 21：Gate 3.1 客服路由账号隔离回归（v3.0.4 候选）
+
+### 缺陷与修复
+
+- `G31-BUG-001 / V6-CLICK-REQ-03 / V6-IM-01`：客服工作台改为先解析 URL 中的 `accountId/inbox`、再从当前成员可见账号中授权确认，最后才读取消息、商品、会话、通知和 AI 待接管；初始化期间只显示账号范围骨架。
+- 消息、商品、会话列表和待接管请求增加账号快照与修订号；快速切换时，旧账号的延迟响应被废弃，不能覆盖新账号。
+- 刷新时保留 `inbox=handoffs/notifications`；`buyerId` 只在买家会话页签解析，不再把待接管强制切回会话。
+- 未授权的路由账号显示独立无权限态，保留原 URL 供排查，不回退首店、不启动轮询、不展示任何店铺业务数据。
+
+### 变更文件、迁移与 API
+
+- 前端：`vue-code/src/views/messages/workspace.vue`、`vue-code/src/views/messages/useMessageManager.ts`，以及由最终源码重新生成的 `src/main/resources/static` 生产资源。
+- 文档：V6 需求、点击审计、长期计划、实施日志和 Product Design QA 升级到 6.4 / 3.0.4 候选基线。
+- 迁移：无；不修改已发布的 51 个 Flyway 迁移。MySQL 5.7 启动验证 `Successfully validated 51 migrations`，schema version 51，无待执行迁移。
+- API：无新增或破坏性变更；只收紧前端路由、授权和异步响应应用顺序。
+- 版本：Maven、前端包和运行版本统一升级至 `3.0.4`。
+
+### 测试、部署与 Product Design QA
+
+- 前端类型检查通过；Vite 最终生产构建 `357 modules transformed`。
+- 后端完整回归：220 项通过，0 失败、0 错误、0 跳过。
+- 裸机不可变制品：`/Volumes/Data/codex/xianyu/.tools/native-qa/releases/xianyusmart-3.0.4-20260915T061716Z-6e83a4a9469e.jar`；应用 `127.0.0.1:3000` 健康，Docker 仅运行 MySQL `127.0.0.1:13306`。
+- 浏览器回归：缺陷原始刷新路径、通知↔待接管前进后退、101→102 快速切换、账号 201 无权限路径、390×844 窄屏均通过；部署后无新增控制台 warning/error。
+- 安全边界：本批只读使用 Tenant-A 账号 101/102 和未授权路由 201；未发送买家消息，未保存会话或成员，未执行发布、改价、上下架、发货、退款、删除、申诉或外部通知。
+
+### 残余门禁
+
+- `G31-BUG-001` 仅有开发侧关闭证据，需独立测试从冻结 commit/tag 回归后才能关闭 Gate 3.1。
+- V6 Wave 4～8 仍按长期计划待实施；本批不宣称长期目标完成。
