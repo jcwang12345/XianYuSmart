@@ -435,6 +435,41 @@ export function updateProductAutomation(accountId: number, goodsId: string, data
   return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/automation`, method: 'PUT', data })
 }
 
+export interface ProductMarketingConfiguration {
+  fanAllPrice?: string | number | null
+  fanOldPrice?: string | number | null
+  fanBuyerPrice?: string | number | null
+  bargainEnabled?: boolean | null
+  bargainPrice?: string | number | null
+  bargainQuantity?: number | null
+  coinEnabled?: boolean | null
+  coinDiscountPercent?: number | null
+}
+
+export interface ProductMarketingCommand {
+  requestId: string
+  expectedVersion: number
+  configuration: ProductMarketingConfiguration
+  previewToken?: string
+  confirmationText?: string
+}
+
+export function getProductMarketing(accountId: number, goodsId: string) {
+  return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/marketing`, method: 'GET' })
+}
+
+export function previewProductMarketing(accountId: number, goodsId: string, data: ProductMarketingCommand) {
+  return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/marketing/preview`, method: 'POST', data })
+}
+
+export function saveProductMarketingDraft(accountId: number, goodsId: string, data: ProductMarketingCommand) {
+  return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/marketing/draft`, method: 'PUT', data })
+}
+
+export function applyProductMarketing(accountId: number, goodsId: string, data: ProductMarketingCommand) {
+  return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}/marketing/apply`, method: 'POST', data })
+}
+
 export async function exportProductBatchFailures(jobId: number, requestId: string) {
   const response = await service.post(`/product-matrix/batches/${jobId}/failures/export`, { requestId }, {
     responseType: 'blob', headers: { Authorization: `Bearer ${getAuthToken() || ''}` }

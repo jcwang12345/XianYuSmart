@@ -2,19 +2,21 @@ package com.xianyusmart.config;
 
 import com.xianyusmart.interceptor.AuthInterceptor;
 import com.xianyusmart.interceptor.AccessControlInterceptor;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.web.WebProperties;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.resource.PathResourceResolver;
+import org.springframework.web.servlet.resource.ResourceResolverChain;
 
-import java.io.IOException;
 import java.nio.file.Paths;
+import java.util.List;
 
 /**
  * Web MVC 配置
@@ -28,6 +30,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
     @Autowired
     private AccessControlInterceptor accessControlInterceptor;
+
+    @Autowired
+    private WebProperties webProperties;
 
     @Value("${app.security.allowed-origins}")
     private String allowedOrigins;
@@ -64,26 +69,21 @@ public class WebMvcConfig implements WebMvcConfigurer {
         registry.addResourceHandler("/media/**")
                 .addResourceLocations(Paths.get(mediaStorageDir).toAbsolutePath().normalize().toUri().toString());
         registry.addResourceHandler("/**")
-                .addResourceLocations("classpath:/static/")
+                .addResourceLocations(webProperties.getResources().getStaticLocations())
                 .resourceChain(true)
                 .addResolver(new PathResourceResolver() {
                     @Override
-                    protected Resource getResource(String resourcePath, Resource location) throws IOException {
-                        // 尝试获取请求的资源
-                        Resource requestedResource = location.createRelative(resourcePath);
-                        
-                        // 如果资源存在且可读，直接返回（静态文件、API等）
-                        if (requestedResource.exists() && requestedResource.isReadable()) {
-                            return requestedResource;
+                    protected Resource resolveResourceInternal(HttpServletRequest request,
+                                                               String requestPath,
+                                                               List<? extends Resource> locations,
+                                                               ResourceResolverChain chain) {
+                        Resource exact = super.resolveResourceInternal(request, requestPath, locations, chain);
+                        if (exact != null || requestPath.startsWith("api/") || requestPath.startsWith("ai/")) {
+                            return exact;
                         }
-                        
-                        // 如果是 API 请求，返回 null 让 Controller 处理
-                        if (resourcePath.startsWith("api/")) {
-                            return null;
-                        }
-                        
-                        // 其他情况返回 index.html，让 Vue Router 处理
-                        return new ClassPathResource("/static/index.html");
+                        // Only fall back to the SPA shell after every configured
+                        // location has been checked for an exact asset.
+                        return super.resolveResourceInternal(request, "index.html", locations, chain);
                     }
                 });
     }

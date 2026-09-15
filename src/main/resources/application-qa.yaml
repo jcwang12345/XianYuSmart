@@ -8,6 +8,11 @@ app:
       enabled: ${ACCOUNT_BATCH_QA_MOCK_ENABLED:true}
       tenant-id: ${ACCOUNT_BATCH_QA_MOCK_TENANT_ID:1}
       account-ids: ${ACCOUNT_BATCH_QA_MOCK_ACCOUNT_IDS:101,102,103}
+  product-marketing:
+    qa-mock:
+      enabled: ${PRODUCT_MARKETING_QA_MOCK_ENABLED:true}
+      tenant-id: ${PRODUCT_MARKETING_QA_MOCK_TENANT_ID:1}
+      account-ids: ${PRODUCT_MARKETING_QA_MOCK_ACCOUNT_IDS:101,102,103}
 
 spring:
   web:

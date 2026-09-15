@@ -30,6 +30,11 @@ app:
       tenant-id: ${PRODUCT_BATCH_QA_MOCK_TENANT_ID:-1}
       account-ids: ${PRODUCT_BATCH_QA_MOCK_ACCOUNT_IDS:}
       goods-prefix: ${PRODUCT_BATCH_QA_MOCK_GOODS_PREFIX:QA-}
+  product-marketing:
+    qa-mock:
+      enabled: ${PRODUCT_MARKETING_QA_MOCK_ENABLED:false}
+      tenant-id: ${PRODUCT_MARKETING_QA_MOCK_TENANT_ID:-1}
+      account-ids: ${PRODUCT_MARKETING_QA_MOCK_ACCOUNT_IDS:}
   growth-workflow:
     dispatch-enabled: ${GROWTH_WORKFLOW_DISPATCH_ENABLED:true}
     dispatch-delay-ms: ${GROWTH_WORKFLOW_DISPATCH_DELAY_MS:1500}

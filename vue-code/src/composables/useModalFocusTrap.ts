@@ -27,6 +27,13 @@ export function useModalFocusTrap(
   const modalElement = () => typeof modal === 'function' ? modal() : modal.value
   const focusable = () => Array.from(modalElement()?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
     .filter(element => element.offsetParent !== null && element.getAttribute('aria-hidden') !== 'true')
+  const isTopmostModal = () => {
+    const current = modalElement()
+    if (!current) return false
+    const visibleModals = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'))
+      .filter(element => element.offsetParent !== null)
+    return visibleModals[visibleModals.length - 1] === current
+  }
 
   const restoreBackground = () => {
     for (const state of background) {
@@ -78,7 +85,10 @@ export function useModalFocusTrap(
   }
 
   const handleKeydown = (event: KeyboardEvent) => {
-    if (!open.value) return
+    // Several workflows intentionally nest a confirmation/configuration dialog
+    // inside a full-screen detail dialog. Only the visually topmost layer may
+    // consume Escape or cycle Tab; otherwise one key closes every open layer.
+    if (!open.value || !isTopmostModal()) return
     if (event.key === 'Escape') {
       event.preventDefault()
       if (onRequestClose) onRequestClose()

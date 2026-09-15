@@ -125,8 +125,8 @@ public class ProductMatrixService {
         }
         result.put("EDIT", Map.of("available", true, "mode", "LOCAL_ONLY",
                 "reason", "当前平台通道未验证完整编辑协议，只允许维护本地资料并保留来源标识"));
-        result.put("MARKETING", Map.of("available", false, "mode", "SAFE_DEGRADATION",
-                "reason", "粉丝价、小刀和闲鱼币平台接口尚未接入；仅展示同步状态，不提供假入口"));
+        result.put("MARKETING", Map.of("available", true, "mode", "LOCAL_DRAFT_WITH_PREFLIGHT",
+                "reason", "可配置本地营销方案并预检；真实平台写入仍按能力证据安全降级"));
         return result;
     }
 

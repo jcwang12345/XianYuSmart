@@ -3,6 +3,7 @@ package com.xianyusmart.controller;
 import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.service.ProductMatrixService;
+import com.xianyusmart.service.ProductMarketingService;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -28,9 +29,12 @@ import java.util.Map;
 public class ProductMatrixController {
 
     private final ProductMatrixService productMatrixService;
+    private final ProductMarketingService productMarketingService;
 
-    public ProductMatrixController(ProductMatrixService productMatrixService) {
+    public ProductMatrixController(ProductMatrixService productMatrixService,
+                                   ProductMarketingService productMarketingService) {
         this.productMatrixService = productMatrixService;
+        this.productMarketingService = productMarketingService;
     }
 
     @PostMapping("/products/query")
@@ -46,6 +50,32 @@ public class ProductMatrixController {
     @GetMapping("/accounts/{accountId}/products/{goodsId}/capabilities")
     public ResultObject<Map<String, Object>> capabilities(@PathVariable Long accountId, @PathVariable String goodsId) {
         return ResultObject.success(productMatrixService.capabilities(accountId, goodsId));
+    }
+
+    @GetMapping("/accounts/{accountId}/products/{goodsId}/marketing")
+    public ResultObject<Map<String, Object>> marketing(@PathVariable Long accountId, @PathVariable String goodsId) {
+        return ResultObject.success(productMarketingService.state(accountId, goodsId));
+    }
+
+    @PostMapping("/accounts/{accountId}/products/{goodsId}/marketing/preview")
+    public ResultObject<ProductMarketingService.Preview> previewMarketing(
+            @PathVariable Long accountId, @PathVariable String goodsId,
+            @RequestBody ProductMarketingService.Command command) {
+        return ResultObject.success(productMarketingService.preview(accountId, goodsId, command));
+    }
+
+    @PutMapping("/accounts/{accountId}/products/{goodsId}/marketing/draft")
+    public ResultObject<Map<String, Object>> saveMarketingDraft(
+            @PathVariable Long accountId, @PathVariable String goodsId,
+            @RequestBody ProductMarketingService.Command command) {
+        return ResultObject.success(productMarketingService.saveDraft(accountId, goodsId, command));
+    }
+
+    @PostMapping("/accounts/{accountId}/products/{goodsId}/marketing/apply")
+    public ResultObject<Map<String, Object>> applyMarketing(
+            @PathVariable Long accountId, @PathVariable String goodsId,
+            @RequestBody ProductMarketingService.Command command) {
+        return ResultObject.success(productMarketingService.apply(accountId, goodsId, command));
     }
 
     @PutMapping("/accounts/{accountId}/products/{goodsId}/local-details")
