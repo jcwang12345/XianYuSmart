@@ -96,7 +96,7 @@ public class AccountBatchService {
                 .substring(0, 20).toUpperCase(Locale.ROOT);
         List<MerchantTask> existing = tasks.selectByBatchId(tenantId, batchId);
         if (!existing.isEmpty()) {
-            assertReplayMatches(existing.getFirst(), payloadFingerprint);
+            assertReplayMatches(existing, normalized, payloadFingerprint);
             Map<String, Object> response = batch(batchId);
             response.put("idempotentReplay", true);
             return response;
@@ -141,15 +141,50 @@ public class AccountBatchService {
         return response;
     }
 
-    private void assertReplayMatches(MerchantTask task, String payloadFingerprint) {
+    private void assertReplayMatches(List<MerchantTask> existing, Request request, String payloadFingerprint) {
         try {
-            var stored = json.readTree(task.getRequestJson());
-            if (!payloadFingerprint.equals(stored.path("payloadFingerprint").asText())) {
+            var stored = json.readTree(existing.getFirst().getRequestJson());
+            String storedFingerprint = stored.path("payloadFingerprint").asText();
+            boolean matches = storedFingerprint.isBlank()
+                    ? legacyReplayMatches(existing, stored, request)
+                    : payloadFingerprint.equals(storedFingerprint);
+            if (!matches) {
                 throw new BusinessException(409, "同一 requestId 已用于不同的账号批量请求");
             }
         } catch (JsonProcessingException error) {
             throw new IllegalStateException("已有账号批量任务数据无法解析", error);
         }
+    }
+
+    /**
+     * Tasks created before the full payload fingerprint was introduced only retained
+     * the action, selection mode and preview token. We can safely replay the common
+     * explicit/all-executable case by reconstructing its account set from the batch.
+     * Snapshot selections or requests with exclusions/filters remain fail-closed,
+     * because their original scope cannot be proven from the legacy rows.
+     */
+    private boolean legacyReplayMatches(List<MerchantTask> existing, com.fasterxml.jackson.databind.JsonNode stored,
+                                        Request request) {
+        if (!request.operationType().equals(stored.path("operationType").asText())
+                || !request.selectionMode().equals(stored.path("selectionMode").asText())
+                || !request.previewToken().equals(stored.path("previewToken").asText())
+                || !"EXPLICIT".equals(request.selectionMode())
+                || !request.excludedAccountIds().isEmpty()
+                || !filterIsEmpty(request.filter())) {
+            return false;
+        }
+        List<Long> requestedAccounts = request.accountIds().stream()
+                .filter(Objects::nonNull).distinct().sorted().toList();
+        List<Long> storedAccounts = existing.stream()
+                .map(MerchantTask::getXianyuAccountId).filter(Objects::nonNull).distinct().sorted().toList();
+        return requestedAccounts.equals(storedAccounts);
+    }
+
+    private boolean filterIsEmpty(Filter filter) {
+        return filter != null && text(filter.search()).isBlank()
+                && upper(filter.connectionStatus()).isBlank()
+                && upper(filter.riskSeverity()).isBlank()
+                && filter.groupId() == null;
     }
 
     private String requestPayloadFingerprint(Request request) {

@@ -128,6 +128,41 @@ class AccountBatchServiceTest {
         assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedFilter)).getCode());
     }
 
+    @Test
+    void legacyBatchWithoutFingerprintReplaysOnlyProvableExplicitPayload() {
+        MerchantTask first = new MerchantTask();
+        first.setId(21L);
+        first.setTaskType("ACCOUNT_SYNC");
+        first.setXianyuAccountId(101L);
+        first.setStatus(2);
+        first.setRequestJson("{\"requestId\":\"qa-legacy\",\"operationType\":\"SYNC\",\"selectionMode\":\"EXPLICIT\",\"previewToken\":\"legacy-token\"}");
+        MerchantTask second = new MerchantTask();
+        second.setId(22L);
+        second.setTaskType("ACCOUNT_SYNC");
+        second.setXianyuAccountId(102L);
+        second.setStatus(2);
+        second.setRequestJson(first.getRequestJson());
+        when(tasks.selectByBatchId(eq(1L), anyString())).thenReturn(List.of(first, second));
+        AccountBatchService.Request exact = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
+                List.of(102L, 101L), List.of(), new AccountBatchService.Filter(null, null, null, null),
+                "legacy confirmation", "legacy-token");
+
+        Map<String, Object> replay = service.create(exact);
+        assertEquals(true, replay.get("idempotentReplay"));
+
+        AccountBatchService.Request changedAccounts = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
+                List.of(101L), List.of(), exact.filter(), exact.confirmationText(), exact.previewToken());
+        AccountBatchService.Request changedExclusions = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
+                exact.accountIds(), List.of(999L), exact.filter(), exact.confirmationText(), exact.previewToken());
+        AccountBatchService.Request changedFilter = new AccountBatchService.Request("qa-legacy", "SYNC", "EXPLICIT",
+                exact.accountIds(), List.of(), new AccountBatchService.Filter("changed", null, null, null),
+                exact.confirmationText(), exact.previewToken());
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedAccounts)).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedExclusions)).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.create(changedFilter)).getCode());
+        verifyNoInteractions(matrix, access, execution, logs);
+    }
+
     private AccountBatchService.Request request(String operation, List<Long> ids) {
         return new AccountBatchService.Request("qa-preview", operation, "EXPLICIT", ids, List.of(),
                 new AccountBatchService.Filter(null, null, null, null), null, null);

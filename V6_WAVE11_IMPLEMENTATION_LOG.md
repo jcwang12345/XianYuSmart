@@ -43,7 +43,8 @@
 - `V6-W11-QA-001`：预检失败不再只显示瞬时提示。弹窗保留精确错误、原选择与范围，禁用创建，并提供返回调整及重试/重读入口。
 - `V6-W11-QA-002`：幂等回放改为校验完整规范化载荷指纹，覆盖账号集合、排除项、筛选条件、动作、模式、预检令牌和确认文案；同请求异载荷统一返回 409，不再回放旧批次。
 - `V6-W11-QA-003`：批量弹窗补初始焦点、Tab/Shift+Tab 焦点环、Escape 关闭、背景隔离和关闭后焦点恢复。
-- targeted regression: `AccountBatchExecutionServiceTest,AccountBatchServiceTest` — 7/7 passed；新增账号集合、排除项和筛选条件异载荷冲突覆盖。
+- `V6-W11-QA-004`：兼容旧批次缺少完整指纹的升级场景；只在可由批次子项证明的显式、无排除、无筛选、账号全集一致时允许同载荷回放，无法证明的旧筛选快照继续安全拒绝。
+- targeted regression: `AccountBatchExecutionServiceTest,AccountBatchServiceTest` — 8/8 passed；新增账号集合、排除项、筛选条件异载荷冲突和旧批次升级回放覆盖。
 - Product Design regression: 1280×720 与 390×844 复核通过；混合选择返回精确错误、保留 2 个账号范围、创建禁用，手机端错误动作和固定底部均可达；焦点环、Escape 和触发按钮焦点恢复实测通过。
 
 ## 加速后的交付节奏
