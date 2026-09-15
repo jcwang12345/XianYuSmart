@@ -69,8 +69,28 @@ class PublishQaMockServiceTest {
         assertEquals("QA-PUBLISHED-77", result.get("itemId"));
         assertEquals("NOT_PERFORMED", result.get("platformWrite"));
         assertEquals(false, result.get("platformNetworkCalls"));
+        assertEquals("VERIFIED", result.get("verificationStatus"));
+        assertEquals(true, result.get("platformReadBackVerified"));
+        assertEquals("SAME", ((Map<?, ?>) result.get("fieldDifferences")).get("status"));
+        assertEquals("QA_FIXTURE", ((Map<?, ?>) result.get("platformReadBack")).get("dataSource"));
         verify(goods).savePublishedGoods(eq("QA-PUBLISHED-77"), eq(101L), anyString(), anyString(),
                 anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void localPendingKeepsFieldVerificationSeparateFromLocalPersistence() throws Exception {
+        PublishQaMockService service = qaService(mock(GoodsInfoService.class));
+        Map<String, Object> result = service.execute(task(79L), material(Map.of(
+                "name", "QA-PUBLISH-本地待修复",
+                "description", "QA",
+                "publishChannel", "QA_LOCAL",
+                "qaScenario", "LOCAL_PENDING",
+                "images", List.of("https://example.test/qa.jpg"))), 1L, 101L);
+
+        assertEquals("QA_CONFIRMED_LOCAL_PENDING", result.get("outcomeState"));
+        assertEquals("VERIFIED", result.get("verificationStatus"));
+        assertEquals(false, result.get("localSynced"));
+        assertTrue(String.valueOf(result.get("recoveryHint")).contains("本地商品未落库"));
     }
 
     @Test

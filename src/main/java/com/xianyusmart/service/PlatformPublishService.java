@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -155,9 +156,42 @@ public class PlatformPublishService {
         if (itemId.isBlank()) {
             throw new PlatformOutcomeUnknownException("平台返回成功但缺少商品ID，发布结果无法确认");
         }
+
+        Map<String, Object> platformSnapshot = null;
+        String readBackError = "";
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(400L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    readBackError = "平台回读确认被中断";
+                    break;
+                }
+            }
+            try {
+                platformSnapshot = loadEditDetail(
+                        accountId, itemId, refreshedCookie(accountId, cookieText), false);
+                break;
+            } catch (RuntimeException readBackFailure) {
+                readBackError = text(readBackFailure.getMessage());
+                log.warn("商品已发布但平台字段回读暂未完成: itemId={}, accountId={}, attempt={}, error={}",
+                        itemId, accountId, attempt + 1, readBackError);
+            }
+        }
+
+        Map<String, Object> platformReadBack = normalizePublishedSnapshot(itemId, platformSnapshot);
+        Map<String, Object> fieldDifferences = verifyPublishedFields(publishData, platformSnapshot);
+        boolean platformReadBackVerified = Boolean.TRUE.equals(fieldDifferences.get("verificationComplete"));
+        String verificationStatus = platformReadBackVerified ? "VERIFIED" : "PENDING";
+
         boolean localSynced = true;
         try {
-            persistPublishedItem(itemId, title, description, material.getAmount(), cdnImages, accountId);
+            String storedTitle = valueOrDefault(platformReadBack.get("title"), title);
+            String storedDescription = valueOrDefault(platformReadBack.get("description"), description);
+            BigDecimal storedAmount = decimalOrDefault(platformReadBack.get("price"), material.getAmount());
+            List<String> storedImages = stringListOrDefault(platformReadBack.get("images"), cdnImages);
+            persistPublishedItem(itemId, storedTitle, storedDescription, storedAmount, storedImages, accountId);
         } catch (Exception e) {
             localSynced = false;
             log.error("平台商品发布成功但本地商品记录保存失败: itemId={}, accountId={}", itemId, accountId, e);
@@ -166,12 +200,178 @@ public class PlatformPublishService {
         result.put("success", true);
         result.put("itemId", itemId);
         result.put("url", "https://www.goofish.com/item?id=" + itemId);
+        result.put("platformWrite", "CONFIRMED");
         result.put("category", category);
         result.put("imageCount", cdnImages.size());
         result.put("localSynced", localSynced);
         result.put("outcomeState", localSynced ? "PLATFORM_CONFIRMED" : "PLATFORM_CONFIRMED_LOCAL_PENDING");
+        result.put("verificationStatus", verificationStatus);
+        result.put("platformReadBackVerified", platformReadBackVerified);
+        result.put("platformReadBack", platformReadBack);
+        result.put("fieldDifferences", fieldDifferences);
+        if (!platformReadBackVerified) {
+            result.put("recoveryHint", "平台已返回商品ID并确认发布成功，但字段回读尚不完整；请按商品ID人工核对，禁止重复发布");
+            if (!readBackError.isBlank()) result.put("readBackError", readBackError);
+        } else if (!localSynced) {
+            result.put("recoveryHint", "平台已发布并完成字段回读，请按商品ID修复本地缓存；不要重复发布");
+        }
         result.put("finalRequest", publishData);
         return result;
+    }
+
+    /**
+     * 对发布请求和平台编辑快照做字段级核对。平台可能规范化文案、类目或图片地址，
+     * 差异本身不等于发布失败；只有关键字段全部可回读时才算完成验证。
+     */
+    Map<String, Object> verifyPublishedFields(Map<String, Object> requested,
+                                              Map<String, Object> actualSnapshot) {
+        Map<String, Object> expected = normalizePublishedSnapshot("", requested);
+        Map<String, Object> actual = normalizePublishedSnapshot("", actualSnapshot);
+        List<Map<String, Object>> items = new ArrayList<>();
+        int changed = 0;
+        int unavailable = 0;
+        for (String field : List.of("title", "description", "price", "stock", "categoryId", "images")) {
+            Object requestedValue = expected.get(field);
+            Object actualValue = actual.get(field);
+            boolean missing = isMissingVerificationValue(actualValue);
+            boolean same = !missing && equivalentVerificationValue(field, requestedValue, actualValue);
+            String status = missing ? "UNAVAILABLE" : same ? "SAME" : "DIFFERENT";
+            if (missing) unavailable++;
+            else if (!same) changed++;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("field", field);
+            item.put("label", switch (field) {
+                case "title" -> "标题";
+                case "description" -> "商品详情";
+                case "price" -> "售价";
+                case "stock" -> "库存";
+                case "categoryId" -> "平台类目";
+                case "images" -> "商品图片";
+                default -> field;
+            });
+            item.put("requested", requestedValue);
+            item.put("actual", actualValue);
+            item.put("status", status);
+            item.put("message", missing ? "平台回读未返回此字段"
+                    : same ? "与提交值一致" : "平台保存值与提交值不同");
+            items.add(item);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", unavailable > 0 ? "PARTIAL" : changed > 0 ? "DIFFERENT" : "SAME");
+        result.put("verificationComplete", unavailable == 0);
+        result.put("changedFieldCount", changed);
+        result.put("unavailableFieldCount", unavailable);
+        result.put("items", items);
+        return result;
+    }
+
+    private Map<String, Object> normalizePublishedSnapshot(String confirmedItemId,
+                                                           Map<String, Object> snapshot) {
+        Map<String, Object> source = snapshot == null ? Map.of() : snapshot;
+        Map<String, Object> textDto = map(source.get("itemTextDTO"));
+        Map<String, Object> priceDto = map(source.get("itemPriceDTO"));
+        Map<String, Object> categoryDto = map(source.get("itemCatDTO"));
+        String priceInCent = firstValue(priceDto, "priceInCent", "price");
+        if (priceInCent.isBlank() && source.get("itemSkuList") instanceof List<?> skus
+                && !skus.isEmpty()) {
+            priceInCent = firstValue(map(skus.getFirst()), "priceInCent", "price");
+        }
+        Integer stock = positiveIntegerOrNull(source.get("quantity"));
+        if (stock == null && source.get("itemSkuList") instanceof List<?> skus
+                && !skus.isEmpty()) {
+            stock = positiveIntegerOrNull(map(skus.getFirst()).get("quantity"));
+        }
+        List<String> images = new ArrayList<>();
+        if (source.get("imageInfoDOList") instanceof List<?> rawImages) {
+            for (Object rawImage : rawImages) {
+                String url = firstValue(map(rawImage), "url", "imageUrl");
+                if (!url.isBlank()) images.add(normalizeImageUrl(url));
+            }
+        }
+        String returnedItemId = firstValue(source, "itemId", "id", "sourceId");
+        Map<String, Object> normalized = new LinkedHashMap<>();
+        normalized.put("itemId", nullIfBlank(returnedItemId.isBlank() ? confirmedItemId : returnedItemId));
+        normalized.put("title", nullIfBlank(firstValue(textDto, "title")));
+        normalized.put("description", nullIfBlank(firstValue(textDto, "desc", "description")));
+        normalized.put("price", decimalPriceOrNull(priceInCent));
+        normalized.put("priceInCent", nullIfBlank(priceInCent));
+        normalized.put("stock", stock);
+        normalized.put("categoryId", nullIfBlank(firstValue(categoryDto,
+                "catId", "categoryId", "leafCategoryId", "cid")));
+        normalized.put("categoryName", nullIfBlank(firstValue(categoryDto,
+                "catName", "categoryName", "leafCategoryName")));
+        normalized.put("images", images);
+        normalized.put("imageCount", images.isEmpty() ? null : images.size());
+        return normalized;
+    }
+
+    private boolean equivalentVerificationValue(String field, Object expected, Object actual) {
+        if ("images".equals(field)) {
+            return canonicalImageList(expected).equals(canonicalImageList(actual));
+        }
+        if ("price".equals(field)) {
+            try {
+                return new BigDecimal(text(expected)).compareTo(new BigDecimal(text(actual))) == 0;
+            } catch (NumberFormatException ignored) {
+                return false;
+            }
+        }
+        return Objects.equals(text(expected), text(actual));
+    }
+
+    private List<String> canonicalImageList(Object value) {
+        if (!(value instanceof List<?> list)) return List.of();
+        return list.stream().map(String::valueOf).map(this::normalizeImageUrl).map(url -> {
+            int query = url.indexOf('?');
+            return query < 0 ? url : url.substring(0, query);
+        }).toList();
+    }
+
+    private boolean isMissingVerificationValue(Object value) {
+        return value == null || value instanceof String string && string.isBlank()
+                || value instanceof List<?> list && list.isEmpty();
+    }
+
+    private String decimalPriceOrNull(String priceInCent) {
+        if (priceInCent == null || priceInCent.isBlank()) return null;
+        try {
+            return new BigDecimal(priceInCent).movePointLeft(2).setScale(2).toPlainString();
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Integer positiveIntegerOrNull(Object value) {
+        try {
+            int parsed = Integer.parseInt(text(value));
+            return parsed >= 0 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Object nullIfBlank(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private String valueOrDefault(Object value, String fallback) {
+        String resolved = text(value);
+        return resolved.isBlank() ? fallback : resolved;
+    }
+
+    private BigDecimal decimalOrDefault(Object value, BigDecimal fallback) {
+        try {
+            return value == null ? fallback : new BigDecimal(text(value));
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private List<String> stringListOrDefault(Object value, List<String> fallback) {
+        if (!(value instanceof List<?> list) || list.isEmpty()) return fallback;
+        List<String> resolved = list.stream().filter(Objects::nonNull).map(String::valueOf)
+                .filter(item -> !item.isBlank()).toList();
+        return resolved.isEmpty() ? fallback : resolved;
     }
 
     private void persistPublishedItem(String itemId, String title, String description, BigDecimal amount,

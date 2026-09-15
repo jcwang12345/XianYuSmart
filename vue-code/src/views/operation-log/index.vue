@@ -49,11 +49,12 @@ const sourceText = (value?: string) => ({
   PLATFORM_API: '闲鱼接口',
   PLATFORM_WEB: '闲鱼网页',
   WEBHOOK: '平台回调',
-  QA_MOCK: '隔离测试'
+  QA_MOCK: '隔离测试', QA_FIXTURE: '隔离测试数据'
 }[value || ''] || '其他来源')
 const moduleText = (value?: string) => ({
   ACCOUNT: '账号', MESSAGE: '消息', ORDER: '订单', GOODS: '商品', SYSTEM: '系统',
-  PRODUCT: '商品', BUYER: '买家', BATCH: '批量任务', BACKUP: '备份恢复'
+  PRODUCT: '商品', BUYER: '买家', BATCH: '批量任务', BACKUP: '备份恢复',
+  MERCHANT_OPERATIONS: '商家运营', PRODUCT_PUBLISHING: '商品发布'
 }[value || ''] || '其他模块')
 const targetText = (value?: string) => ({
   ACCOUNT: '账号', ORDER: '订单', GOODS: '商品', PRODUCT: '商品', BUYER: '买家',

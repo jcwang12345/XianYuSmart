@@ -62,10 +62,15 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
 
     @Update("UPDATE merchant_task SET status = 2, result_json = #{resultJson}, error_message = NULL, next_retry_time = NULL, " +
             "verification_status = CASE WHEN task_type <> 'PUBLISH' THEN 'NOT_REQUIRED' " +
+            "WHEN JSON_VALID(#{resultJson}) AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.verificationStatus')) " +
+            "IN ('PENDING','VERIFIED','LOCAL_PENDING','FAILED') " +
+            "THEN JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.verificationStatus')) " +
             "WHEN JSON_VALID(#{resultJson}) AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false THEN 'LOCAL_PENDING' " +
             "WHEN JSON_VALID(#{resultJson}) AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.itemId')), '') IS NOT NULL " +
             "THEN 'VERIFIED' ELSE 'PENDING' END, " +
             "outcome_state = CASE WHEN task_type <> 'PUBLISH' THEN 'LOCAL_SUCCESS' " +
+            "WHEN JSON_VALID(#{resultJson}) AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.outcomeState')), '') IS NOT NULL " +
+            "THEN JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.outcomeState')) " +
             "WHEN JSON_VALID(#{resultJson}) AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' " +
             "THEN COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.outcomeState')), ''), 'QA_CONFIRMED') " +
             "WHEN JSON_VALID(#{resultJson}) AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
@@ -74,6 +79,9 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
             "AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' THEN 'QA_FIXTURE' " +
             "WHEN task_type='PUBLISH' THEN 'PLATFORM_WEB' ELSE 'LOCAL' END, " +
             "recovery_hint = CASE WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
+            "AND NULLIF(JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.recoveryHint')), '') IS NOT NULL " +
+            "THEN JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.recoveryHint')) " +
+            "WHEN task_type='PUBLISH' AND JSON_VALID(#{resultJson}) " +
             "AND JSON_UNQUOTE(JSON_EXTRACT(#{resultJson}, '$.executionChannel')) = 'QA_MOCK' " +
             "AND JSON_EXTRACT(#{resultJson}, '$.localSynced') = false " +
             "THEN '隔离 QA 已确认执行但本地商品未落库；未调用闲鱼平台，可按任务结果修复夹具；禁止据此在真实通道重复发布' " +

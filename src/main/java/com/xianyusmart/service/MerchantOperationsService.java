@@ -498,6 +498,7 @@ public class MerchantOperationsService {
         result.put("task", completedTask);
         result.put("platform", readJson(completedTask.getResultJson()));
         result.put("outcomeState", completedTask.getOutcomeState());
+        result.put("verificationStatus", completedTask.getVerificationStatus());
         result.put("dataSource", completedTask.getDataSource());
         result.put("recoveryHint", completedTask.getRecoveryHint());
         return result;
@@ -668,6 +669,7 @@ public class MerchantOperationsService {
             result.put("task", task);
             result.put("platform", readJson(task.getResultJson()));
             result.put("outcomeState", task.getOutcomeState());
+            result.put("verificationStatus", task.getVerificationStatus());
             result.put("dataSource", task.getDataSource());
             result.put("recoveryHint", task.getRecoveryHint());
             result.put("idempotentReplay", true);
@@ -682,6 +684,7 @@ public class MerchantOperationsService {
         result.put("task", task);
         result.put("platform", readJson(task.getResultJson()));
         result.put("outcomeState", task.getOutcomeState());
+        result.put("verificationStatus", task.getVerificationStatus());
         result.put("dataSource", task.getDataSource());
         result.put("recoveryHint", task.getRecoveryHint());
         result.put("idempotentReplay", true);
@@ -954,7 +957,7 @@ public class MerchantOperationsService {
                                   String responseResult, String errorMessage) {
         XianyuOperationLog audit = new XianyuOperationLog();
         audit.setXianyuAccountId(task.getXianyuAccountId());
-        audit.setOperationType(OperationConstants.Type.UPDATE);
+        audit.setOperationType(auditOperationType(task.getTaskType()));
         audit.setOperationModule(module);
         audit.setOperationDesc(description);
         audit.setOperationStatus(status);
@@ -970,10 +973,21 @@ public class MerchantOperationsService {
         operationLogService.log(audit);
     }
 
+    static String auditOperationType(String taskType) {
+        return switch (taskType == null ? "" : taskType) {
+            case "PUBLISH" -> "PRODUCT_PUBLISH";
+            case "DELETE" -> "PRODUCT_DELETE";
+            case "COLLECT" -> "PRODUCT_COLLECT";
+            default -> OperationConstants.Type.UPDATE;
+        };
+    }
+
     private String auditSuccessOutcome(MerchantTask task, Map<String, Object> result) {
         if ("QA_MOCK".equals(text(result.get("executionChannel")))) return "LOCAL_SUCCESS";
         if (!"PUBLISH".equals(task.getTaskType())) return "LOCAL_SUCCESS";
-        return Boolean.FALSE.equals(result.get("localSynced")) ? "PARTIAL" : "PLATFORM_CONFIRMED";
+        return Boolean.FALSE.equals(result.get("localSynced"))
+                || "PENDING".equals(text(result.get("verificationStatus")))
+                ? "PARTIAL" : "PLATFORM_CONFIRMED";
     }
 
     private String taskDataSource(MerchantTask task, Map<String, Object> result) {

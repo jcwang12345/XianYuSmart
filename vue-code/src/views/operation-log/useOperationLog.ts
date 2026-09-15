@@ -54,6 +54,8 @@ const operationTypes = [
   { label: '重试商品批量任务', value: 'PRODUCT_BATCH_RETRY' },
   { label: '取消商品批量任务', value: 'PRODUCT_BATCH_CANCEL' },
   { label: '导出商品批量任务', value: 'PRODUCT_BATCH_EXPORT' },
+  { label: '导出商品经营报表', value: 'PRODUCT_EXPORT' },
+  { label: '发布商品', value: 'PRODUCT_PUBLISH' },
   { label: '预检备份恢复', value: 'BACKUP_RESTORE_PREVIEW' },
   { label: '执行备份恢复', value: 'BACKUP_RESTORE_EXECUTE' },
   { label: '回滚备份恢复', value: 'BACKUP_RESTORE_ROLLBACK' }
@@ -65,6 +67,7 @@ const operationModules = [
   { label: '消息', value: 'MESSAGE' },
   { label: '订单', value: 'ORDER' },
   { label: '商品', value: 'GOODS' },
+  { label: '商家运营', value: 'MERCHANT_OPERATIONS' },
   { label: '系统', value: 'SYSTEM' }
 ]
 

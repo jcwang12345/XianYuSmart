@@ -99,4 +99,11 @@ class MerchantOperationsPublishFingerprintTest {
             UserContext.clear();
         }
     }
+
+    @Test
+    void publishAuditUsesDiscoverableBusinessOperationType() {
+        assertEquals("PRODUCT_PUBLISH", MerchantOperationsService.auditOperationType("PUBLISH"));
+        assertEquals("PRODUCT_DELETE", MerchantOperationsService.auditOperationType("DELETE"));
+        assertEquals("UPDATE", MerchantOperationsService.auditOperationType("WORKFLOW"));
+    }
 }

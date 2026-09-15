@@ -143,7 +143,65 @@ public class PublishQaMockService {
         result.put("platformWrite", "NOT_PERFORMED");
         result.put("localSynced", localSynced);
         result.put("outcomeState", localSynced ? "QA_CONFIRMED" : "QA_CONFIRMED_LOCAL_PENDING");
+        result.put("verificationStatus", "VERIFIED");
+        result.put("platformReadBackVerified", true);
+        Map<String, Object> readBack = qaReadBack(itemId, material, data);
+        result.put("platformReadBack", readBack);
+        result.put("fieldDifferences", qaFieldDifferences(readBack));
+        if (!localSynced) {
+            result.put("recoveryHint", "隔离 QA 已完成字段核对但本地商品未落库；未调用闲鱼平台，可修复夹具后重试，禁止据此在真实通道重复发布");
+        }
         return result;
+    }
+
+    private Map<String, Object> qaReadBack(String itemId, MerchantResource material,
+                                           Map<String, Object> data) {
+        List<String> images = stringList(data.get("images"));
+        Map<String, Object> readBack = new LinkedHashMap<>();
+        readBack.put("itemId", itemId);
+        readBack.put("title", text(data.get("name")).isBlank() ? material.getName() : text(data.get("name")));
+        readBack.put("description", text(data.get("description")));
+        readBack.put("price", material.getAmount() == null ? null : material.getAmount().setScale(2).toPlainString());
+        readBack.put("priceInCent", material.getAmount() == null ? null
+                : material.getAmount().movePointRight(2).setScale(0).toPlainString());
+        readBack.put("stock", material.getStock());
+        readBack.put("categoryId", text(data.get("leafCategoryCode")).isBlank()
+                ? "QA-CATEGORY-SOFTWARE" : text(data.get("leafCategoryCode")));
+        readBack.put("categoryName", text(data.get("leafCategoryName")).isBlank()
+                ? "隔离 QA / 软件服务" : text(data.get("leafCategoryName")));
+        readBack.put("images", images);
+        readBack.put("imageCount", images.size());
+        readBack.put("dataSource", "QA_FIXTURE");
+        return readBack;
+    }
+
+    private Map<String, Object> qaFieldDifferences(Map<String, Object> readBack) {
+        List<Map<String, Object>> items = List.of(
+                qaSameField("title", "标题", readBack.get("title")),
+                qaSameField("description", "商品详情", readBack.get("description")),
+                qaSameField("price", "售价", readBack.get("price")),
+                qaSameField("stock", "库存", readBack.get("stock")),
+                qaSameField("categoryId", "平台类目", readBack.get("categoryId")),
+                qaSameField("images", "商品图片", readBack.get("images"))
+        );
+        return Map.of(
+                "status", "SAME",
+                "verificationComplete", true,
+                "changedFieldCount", 0,
+                "unavailableFieldCount", 0,
+                "items", items,
+                "dataSource", "QA_FIXTURE");
+    }
+
+    private Map<String, Object> qaSameField(String field, String label, Object value) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("field", field);
+        item.put("label", label);
+        item.put("requested", value);
+        item.put("actual", value);
+        item.put("status", "SAME");
+        item.put("message", "隔离夹具回读值与提交值一致");
+        return item;
     }
 
     public Map<String, Object> publicConfiguration() {

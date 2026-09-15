@@ -986,3 +986,12 @@
 - 测试：后端 329/329 通过；前端类型检查通过；最终 Vite 构建 365 modules；无新增迁移。
 - 制品：`xianyusmart-4.0.0-rc.1-20260915T203251Z-e66cacce7a2f.jar`，SHA-256 `e66cacce7a2f53e835ba816f1b110ce775e066a96c116a5c989210815250dc62`；裸机 3000 健康，Docker 仅运行 MySQL 13306。
 - 详细文件、测试和安全边界见 `V6_WAVE17_IMPLEMENTATION_LOG.md`。
+
+## 批次 40：Wave 18 商品发布后字段回读与审计候选（v4.0.0-rc.1-hotfix.15）
+
+- `PUB-03 / P03-01 / P03-07 / P03-08`：平台返回商品 ID 后只读回读详情，生成标题、详情、售价、库存、类目、图片六项字段 diff；回读失败不自动重复发布，显示字段核对待完成和安全处置建议。
+- `P03-11 / P03-14`：任务、商品事件、统一审计和发布结果共享平台写入、字段核对、本地落库状态；发布审计正确归类为“发布商品”。
+- QA 本地通道返回同构证据，任务 41 / `QA-PUBLISHED-41` 六项一致，明确 `QA_FIXTURE / NOT_PERFORMED`，没有访问闲鱼网络。
+- Product Design：桌面与 390×844 发布结果通过；审查发现并修复统一日志错误归类及筛选缺口，控制台 warning/error 为 0。
+- 测试：后端 335/335、前端类型检查、Vite 365 modules、`git diff --check` 全部通过；无新增迁移，MySQL 5.7 为 60/60。
+- 制品：`xianyusmart-4.0.0-rc.1-20260915T210202Z-7e80d11597be.jar`，SHA-256 `7e80d11597beaf5c16d3c9b153d6fe18a4749960199cea6f1191ebbbf537db1a`。详细见 `V6_WAVE18_IMPLEMENTATION_LOG.md`。

@@ -2,6 +2,7 @@ package com.xianyusmart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.config.PlaywrightManager;
+import com.xianyusmart.entity.MerchantResource;
 import com.xianyusmart.utils.XianyuApiCallUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
@@ -28,6 +30,7 @@ class PlatformPublishServiceEditTest {
     private XianyuApiCallUtils apiCallUtils;
     private RiskControlService riskControlService;
     private PlatformWritePolicy writePolicy;
+    private GoodsInfoService goodsInfoService;
     private PlatformPublishService service;
 
     @BeforeEach
@@ -36,9 +39,10 @@ class PlatformPublishServiceEditTest {
         apiCallUtils = mock(XianyuApiCallUtils.class);
         riskControlService = mock(RiskControlService.class);
         writePolicy = mock(PlatformWritePolicy.class);
+        goodsInfoService = mock(GoodsInfoService.class);
         service = new PlatformPublishService(
                 mock(PlaywrightManager.class), accountService, new ObjectMapper(), apiCallUtils,
-                riskControlService, mock(ImageUploadService.class), mock(GoodsInfoService.class), writePolicy);
+                riskControlService, mock(ImageUploadService.class), goodsInfoService, writePolicy);
     }
 
     @Test
@@ -106,6 +110,91 @@ class PlatformPublishServiceEditTest {
         assertEquals(true, result.get("success"));
         assertEquals(true, result.get("platformReadBackVerified"));
         verify(riskControlService).tryAcquire(1L, RiskControlService.WriteOperation.ITEM_EDIT);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void publishedFieldVerificationDistinguishesExactPlatformNormalizationAndMissingEvidence() {
+        Map<String, Object> requested = snapshot();
+        Map<String, Object> exact = snapshot();
+
+        Map<String, Object> same = service.verifyPublishedFields(requested, exact);
+        assertEquals("SAME", same.get("status"));
+        assertEquals(true, same.get("verificationComplete"));
+        assertEquals(0, same.get("changedFieldCount"));
+
+        Map<String, Object> normalized = snapshot();
+        normalized.put("itemTextDTO", Map.of("title", "平台规范标题", "desc", "旧详情"));
+        normalized.put("imageInfoDOList", List.of(
+                Map.of("url", "https://img.alicdn.com/a.jpg?platform-process=resize")));
+        Map<String, Object> different = service.verifyPublishedFields(requested, normalized);
+        assertEquals("DIFFERENT", different.get("status"));
+        assertEquals(true, different.get("verificationComplete"));
+        assertEquals(1, different.get("changedFieldCount"));
+        List<Map<String, Object>> items = (List<Map<String, Object>>) different.get("items");
+        assertEquals("DIFFERENT", items.stream().filter(item -> "title".equals(item.get("field")))
+                .findFirst().orElseThrow().get("status"));
+        assertEquals("SAME", items.stream().filter(item -> "images".equals(item.get("field")))
+                .findFirst().orElseThrow().get("status"));
+
+        Map<String, Object> partialSnapshot = snapshot();
+        partialSnapshot.remove("itemCatDTO");
+        Map<String, Object> partial = service.verifyPublishedFields(requested, partialSnapshot);
+        assertEquals("PARTIAL", partial.get("status"));
+        assertEquals(false, partial.get("verificationComplete"));
+        assertEquals(1, partial.get("unavailableFieldCount"));
+    }
+
+    @Test
+    void publishSeparatesConfirmedCreationFromFieldReadBackAndPersistsActualPlatformValues() throws Exception {
+        when(writePolicy.enabled()).thenReturn(true);
+        when(accountService.getCookieByAccountId(1L)).thenReturn("cookie=ok");
+        when(riskControlService.tryAcquire(1L, RiskControlService.WriteOperation.ITEM_PUBLISH))
+                .thenReturn(new RiskControlService.GuardDecision(true, RiskControlService.GuardState.NORMAL,
+                        0, 0, null, RiskControlService.WriteOperation.ITEM_PUBLISH));
+        when(goodsInfoService.savePublishedGoods(anyString(), eq(1L), anyString(), anyString(), anyString(),
+                anyString(), anyString(), anyString())).thenReturn(true);
+        when(apiCallUtils.callApiWithRetry(eq(1L), eq("mtop.taobao.idle.kgraph.property.recommend"),
+                eq("2.0"), any(), eq("cookie=ok"), isNull(), any()))
+                .thenReturn(new XianyuApiCallUtils.ApiCallResult(true,
+                        "{\"data\":{\"categoryPredictResult\":{\"catId\":\"5001\",\"catName\":\"软件\"}}}",
+                        null, false));
+        when(apiCallUtils.callApiWithRetry(eq(1L), eq("mtop.idle.pc.idleitem.publish"),
+                any(), eq("cookie=ok")))
+                .thenReturn(new XianyuApiCallUtils.ApiCallResult(true,
+                        "{\"data\":{\"itemId\":\"12345678\"}}", null, false));
+        when(apiCallUtils.callApiWithRetry(eq(1L), eq("mtop.idle.pc.idleitem.editDetail"), eq("1.0"),
+                any(), eq("cookie=ok"), isNull(), isNull()))
+                .thenReturn(new XianyuApiCallUtils.ApiCallResult(true,
+                        "{\"data\":{\"itemId\":\"12345678\",\"quantity\":\"2\","
+                                + "\"itemPriceDTO\":{\"priceInCent\":\"1234\"},"
+                                + "\"itemTextDTO\":{\"title\":\"平台规范标题\",\"desc\":\"发布详情\"},"
+                                + "\"itemCatDTO\":{\"catId\":\"5001\",\"catName\":\"软件\"},"
+                                + "\"imageInfoDOList\":[{\"url\":\"https://img.alicdn.com/a.jpg?x=1\"}]}}",
+                        null, false));
+
+        MerchantResource material = new MerchantResource();
+        material.setName("提交标题");
+        material.setAmount(new BigDecimal("12.34"));
+        material.setStock(2);
+        material.setDataJson(new ObjectMapper().writeValueAsString(Map.of(
+                "title", "提交标题",
+                "description", "发布详情",
+                "images", List.of("https://img.alicdn.com/a.jpg"),
+                "divisionId", "110101",
+                "prov", "北京市",
+                "city", "北京市",
+                "area", "东城区")));
+
+        Map<String, Object> result = service.publish(material, 1L);
+
+        assertEquals("CONFIRMED", result.get("platformWrite"));
+        assertEquals("VERIFIED", result.get("verificationStatus"));
+        assertEquals(true, result.get("platformReadBackVerified"));
+        assertEquals("DIFFERENT", ((Map<?, ?>) result.get("fieldDifferences")).get("status"));
+        verify(goodsInfoService).savePublishedGoods(eq("12345678"), eq(1L), eq("平台规范标题"),
+                eq("https://img.alicdn.com/a.jpg?x=1"), anyString(), eq("发布详情"),
+                eq("https://www.goofish.com/item?id=12345678"), eq("12.34"));
     }
 
     private Map<String, Object> snapshot() {

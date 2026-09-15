@@ -72,7 +72,7 @@ export interface MerchantTask {
   attemptCount: number
   maxAttempts: number
   resultJson?: string
-  verificationStatus?: 'NOT_REQUIRED' | 'PENDING' | 'VERIFIED' | 'FAILED'
+  verificationStatus?: 'NOT_REQUIRED' | 'PENDING' | 'VERIFIED' | 'LOCAL_PENDING' | 'FAILED' | 'UNKNOWN'
   errorMessage?: string
   createdTime: string
 }
