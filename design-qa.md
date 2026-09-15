@@ -83,6 +83,8 @@ final result: passed
 - `V6-REAL-002`：passed（开发侧运行态）。
 - 本批 Product Design QA：passed；V6 长期目标和 Wave 4～8 仍未完成。
 
+独立测试随后确认桌面、390×844、首载未知态、Escape 关闭回焦、实时只读 API、敏感字段扫描和控制台均通过；`V6-REAL-001/002` 无未决 P0/P1，候选可转正式版本。
+
 final result: passed for v3.0.5 account fact consistency only
 
 ---
