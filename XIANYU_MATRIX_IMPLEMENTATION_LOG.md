@@ -865,5 +865,5 @@
 
 ### 残余门禁
 
-- `G31-BUG-001` 仅有开发侧关闭证据，需独立测试从冻结 commit/tag 回归后才能关闭 Gate 3.1。
+- 独立测试已在 `v3.0.4-rc.1 / 5ea4ca0b` 上完成 `QA-G31-MSG-ACCOUNT-001`：`G31-BUG-001` Closed / Pass，定向控制台 warning/error=0，类型检查、357 模块生产构建、220 项后端测试、51 迁移验证、HEAD/tag 和 JAR SHA-256 全部匹配。Gate 3.1 当前无未决 P0/P1。
 - V6 Wave 4～8 仍按长期计划待实施；本批不宣称长期目标完成。

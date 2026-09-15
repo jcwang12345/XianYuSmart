@@ -86,9 +86,9 @@ final result: passed
 
 - Product Design 前端开发：passed。
 - 设计 QA（桌面、390 窄屏、加载、空态、无权限、快速切换）：passed。
-- `G31-BUG-001` 等待独立测试回归；Gate 3.1 不在本报告中提前宣称完成。
+- `G31-BUG-001` 已由独立测试按 `QA-G31-MSG-ACCOUNT-001` 回归并 Closed / Pass；Gate 3.1 当前无未决 P0/P1。
 
-final result: passed for v3.0.4 client regression; independent confirmation pending
+final result: passed; independent regression confirmed
 
 ---
 
