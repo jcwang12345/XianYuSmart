@@ -25,6 +25,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -127,8 +128,52 @@ class NotificationCenterServiceOutboxTest {
         channel.setScopeIdsJson("[99]");
         when(channelMapper.selectEnabled()).thenReturn(List.of(channel));
         service.dispatch("ORDER_CREATED",1L,"新订单","待发货",Map.of("orderId","order-1"));
-        verify(inboxService).record(eq("ORDER_CREATED"),eq(1L),anyString(),anyString(),anyMap());
+        verify(inboxService).record(anyString(), anyString(), eq("ORDER_CREATED"), eq(1L),
+                anyString(), anyString(), anyMap());
         verify(outboxMapper,never()).insert(any());
+    }
+
+    @Test
+    void oneBusinessDispatchSharesCanonicalEventIdAcrossAllChannels() {
+        TenantContext.set(7L);
+        XianyuNotificationChannel second = new XianyuNotificationChannel();
+        second.setId(12L);
+        second.setTenantId(7L);
+        second.setChannelType("WEBHOOK");
+        second.setChannelName("内部 Webhook");
+        second.setEnabled(1);
+        second.setEventTypes("ORDER_CREATED");
+        second.setScopeType("ALL");
+        second.setConfigJson("{\"webhookUrl\":\"https://example.com/hook\"}");
+        when(channelMapper.selectEnabled()).thenReturn(List.of(channel, second));
+        when(inboxService.record(anyString(), anyString(), eq("ORDER_CREATED"), eq(1L),
+                anyString(), anyString(), anyMap())).thenReturn("canonical-event-1");
+
+        String eventId = service.dispatch("ORDER_CREATED", 1L, "新订单", "待发货",
+                Map.of("orderId", "order-1"));
+
+        ArgumentCaptor<XianyuNotificationOutbox> captor = ArgumentCaptor.forClass(XianyuNotificationOutbox.class);
+        verify(outboxMapper, times(2)).insert(captor.capture());
+        assertEquals("canonical-event-1", eventId);
+        assertTrue(captor.getAllValues().stream().allMatch(task -> "canonical-event-1".equals(task.getEventId())));
+        assertTrue(captor.getAllValues().stream().allMatch(task -> "account:1:order:order-1".equals(task.getDedupeKey())));
+    }
+
+    @Test
+    void channelReadModelNeverReturnsProviderEndpointOrSecrets() {
+        channel.setConfigJson("{\"webhookUrl\":\"https://example.com/hook?token=sensitive\",\"secret\":\"provider-secret\",\"group\":\"operations\"}");
+        when(channelMapper.selectAll()).thenReturn(List.of(channel));
+
+        var response = service.listChannels().getFirst();
+
+        assertNull(response.getWebhookUrl());
+        assertEquals(true, response.getEndpointConfigured());
+        assertEquals(true, response.getSecretConfigured());
+        assertEquals("", response.getConfig().get("webhookUrl"));
+        assertEquals("", response.getConfig().get("secret"));
+        assertEquals("operations", response.getConfig().get("group"));
+        assertTrue(!response.toString().contains("provider-secret"));
+        assertTrue(!response.toString().contains("sensitive"));
     }
 
     @Test
@@ -144,7 +189,12 @@ class NotificationCenterServiceOutboxTest {
         service.dispatchOutbox();
 
         verify(outboxMapper).markSent(eq(101L), anyString());
-        verify(logMapper).insert(any());
+        ArgumentCaptor<com.xianyusmart.entity.XianyuNotificationLog> logCaptor =
+                ArgumentCaptor.forClass(com.xianyusmart.entity.XianyuNotificationLog.class);
+        verify(logMapper).insert(logCaptor.capture());
+        assertEquals("event-1", logCaptor.getValue().getEventId());
+        assertEquals(101L, logCaptor.getValue().getOutboxId());
+        assertEquals("SENT", logCaptor.getValue().getDeliveryStatus());
     }
 
     @Test

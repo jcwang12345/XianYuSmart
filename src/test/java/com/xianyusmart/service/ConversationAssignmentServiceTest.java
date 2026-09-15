@@ -47,7 +47,7 @@ class ConversationAssignmentServiceTest {
         service.refresh();
 
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, times(2)).update(sqlCaptor.capture(), any(Object[].class));
+        verify(jdbcTemplate, times(3)).update(sqlCaptor.capture(), any(Object[].class));
         List<String> statements = sqlCaptor.getAllValues();
         String insert = statements.stream()
                 .filter(sql -> sql.contains("INSERT INTO conversation_assignment"))
@@ -56,5 +56,11 @@ class ConversationAssignmentServiceTest {
 
         assertTrue(insert.contains("HAVING MIN(CASE WHEN messages.sender_user_id <> account.unb"));
         assertFalse(insert.contains("HAVING first_message_time"));
+        String buyerProjection = statements.stream()
+                .filter(sql -> sql.contains("INSERT INTO xianyu_buyer_profile"))
+                .findFirst()
+                .orElseThrow();
+        assertTrue(buyerProjection.contains("assignment.buyer_user_id IS NOT NULL"));
+        assertTrue(buyerProjection.contains("ON DUPLICATE KEY UPDATE"));
     }
 }

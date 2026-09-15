@@ -20,6 +20,8 @@ public class NotificationChannelRespDTO {
 
     private String webhookUrl;
 
+    private Boolean endpointConfigured;
+
     private Boolean secretConfigured;
 
     private Map<String, String> config;

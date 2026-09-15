@@ -50,6 +50,7 @@ public class ConversationAssignmentService {
                     last_message_time = GREATEST(last_message_time, VALUES(last_message_time)),
                     sla_due_time = COALESCE(sla_due_time, VALUES(sla_due_time))
                 """, tenantId);
+        projectBuyersFromConversations(tenantId);
         jdbcTemplate.update("""
                 UPDATE conversation_assignment assignment
                 JOIN xianyu_account account ON account.id=assignment.xianyu_account_id
@@ -76,6 +77,36 @@ public class ConversationAssignmentService {
                  WHERE assignment.tenant_id=?
                 """ + accountCondition("assignment"), tenantId);
         return inserted;
+    }
+
+    private void projectBuyersFromConversations(Long tenantId) {
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_buyer_profile
+                    (tenant_id, xianyu_account_id, buyer_user_id, buyer_user_name, last_interaction_time)
+                SELECT assignment.tenant_id, assignment.xianyu_account_id, assignment.buyer_user_id,
+                       COALESCE(
+                         (SELECT message.sender_user_name FROM xianyu_chat_message message
+                           WHERE message.tenant_id=assignment.tenant_id
+                             AND message.xianyu_account_id=assignment.xianyu_account_id
+                             AND message.s_id=assignment.session_id
+                             AND message.sender_user_id=assignment.buyer_user_id
+                           ORDER BY message.message_time DESC,message.id DESC LIMIT 1),
+                         (SELECT orders.buyer_user_name FROM xianyu_goods_order orders
+                           WHERE orders.tenant_id=assignment.tenant_id
+                             AND orders.xianyu_account_id=assignment.xianyu_account_id
+                             AND orders.buyer_user_id=assignment.buyer_user_id
+                           ORDER BY orders.create_time DESC,orders.id DESC LIMIT 1)
+                       ), assignment.last_message_time
+                  FROM conversation_assignment assignment
+                 WHERE assignment.tenant_id=?
+                   AND assignment.buyer_user_id IS NOT NULL AND assignment.buyer_user_id<>''
+                """ + accountCondition("assignment") + """
+                ON DUPLICATE KEY UPDATE
+                    buyer_user_name=COALESCE(NULLIF(VALUES(buyer_user_name),''),buyer_user_name),
+                    last_interaction_time=GREATEST(
+                        COALESCE(last_interaction_time,VALUES(last_interaction_time)),
+                        VALUES(last_interaction_time))
+                """, tenantId);
     }
 
     public List<Map<String, Object>> list(String status, Integer limit) {

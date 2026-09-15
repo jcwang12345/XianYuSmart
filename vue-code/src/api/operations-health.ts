@@ -31,7 +31,8 @@ export interface NotificationChannel {
   id: number
   channelName: string
   channelType: NotificationChannelType
-  webhookUrl: string
+  webhookUrl?: string
+  endpointConfigured: boolean
   secretConfigured: boolean
   config: Record<string, string>
   messageTemplate?: string
@@ -50,10 +51,13 @@ export type NotificationChannelType =
 export interface NotificationLog {
   id: number
   channelId?: number
+  eventId?: string
+  outboxId?: number
   eventType: string
   xianyuAccountId?: number
   title: string
   sendStatus: number
+  deliveryStatus?: 'SENT' | 'FAILED' | 'UNKNOWN'
   httpStatus?: number
   errorMessage?: string
   createTime: string
@@ -121,7 +125,9 @@ export const deleteNotificationChannel = (id: number, requestId: string) => requ
 export interface InboxNotification {
   id: number; eventId: string; eventType: string; accountId?: number; accountName?: string;
   severity: string; title: string; contentSummary: string; targetRoute: string;
-  readTime?: string; handlingStatus: string; handlingNote?: string; occurredTime: string
+  readTime?: string; handlingStatus: string; handlingNote?: string; occurredTime: string;
+  deliveryTotal: number; deliverySent: number; deliveryFailed: number;
+  deliveryStatus: 'NOT_CONFIGURED' | 'PENDING' | 'SENT' | 'FAILED' | 'PARTIAL' | 'RETRYING_OR_FAILED'
 }
 
 export const getNotificationInbox = (params: Record<string, unknown> = {}) => request<{ records: InboxNotification[]; total: number; page: number; pageSize: number; totalPages: number }>({ url: '/notifications/inbox', method: 'GET', params })

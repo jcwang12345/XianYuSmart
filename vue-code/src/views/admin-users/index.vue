@@ -82,7 +82,7 @@ function openCreate() {
     accountIds: [],
     accountGroupIds: [],
     status: 1,
-    permissions: options.value.map(option => option.code)
+    permissions: permissionsForMemberRole('OPERATOR')
   }
 }
 
@@ -167,16 +167,26 @@ const memberRoleLabel = (value: TeamMemberRole) => ({
 
 function applyMemberRole() {
   if (form.value.role === 'ADMIN') return
+  form.value.permissions = permissionsForMemberRole(form.value.memberRole)
+}
+
+function permissionsForMemberRole(memberRole: TeamMemberRole) {
   const menu = (code: string) => options.value.find(item => item.code === code)?.code
   const codes = (...values: string[]) => values.map(menu).filter((value): value is string => !!value)
   const presets: Record<TeamMemberRole, string[]> = {
     OWNER: options.value.map(item => item.code),
     TENANT_ADMIN: options.value.map(item => item.code),
-    OPERATOR: options.value.filter(item => item.group !== '系统').map(item => item.code),
+    OPERATOR: codes(
+      'menu:dashboard', 'menu:command-center', 'menu:accounts', 'menu:connection',
+      'menu:goods', 'menu:operations', 'menu:kami', 'menu:fixed-delivery',
+      'menu:auto-delivery', 'menu:orders', 'menu:auto-reply',
+      'action:goods-write', 'action:operations-write', 'action:delivery-write',
+      'action:order-write', 'action:automation-write'
+    ),
     SUPPORT: codes('menu:command-center', 'menu:messages', 'menu:buyers', 'menu:orders', 'menu:auto-reply', 'action:message-send', 'action:buyer-write'),
     FINANCE: codes('menu:dashboard', 'menu:orders', 'menu:operation-log')
   }
-  form.value.permissions = presets[form.value.memberRole] || []
+  return presets[memberRole] || []
 }
 
 onMounted(load)

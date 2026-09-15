@@ -23,6 +23,10 @@ public class XianyuNotificationLog {
 
     private Long channelId;
 
+    private String eventId;
+
+    private Long outboxId;
+
     private String eventType;
 
     private Long xianyuAccountId;
@@ -30,6 +34,8 @@ public class XianyuNotificationLog {
     private String title;
 
     private Integer sendStatus;
+
+    private String deliveryStatus;
 
     private Integer httpStatus;
 

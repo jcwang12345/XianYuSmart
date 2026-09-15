@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +37,7 @@ class AccountMatrixServiceTest {
     private JdbcTemplate jdbcTemplate;
     private AccountAccessService accountAccessService;
     private OperationLogService operationLogService;
+    private NotificationCenterService notificationCenterService;
     private AccountMatrixService service;
 
     @BeforeEach
@@ -45,8 +47,9 @@ class AccountMatrixServiceTest {
         jdbcTemplate = mock(JdbcTemplate.class);
         accountAccessService = mock(AccountAccessService.class);
         operationLogService = mock(OperationLogService.class);
+        notificationCenterService = mock(NotificationCenterService.class);
         service = new AccountMatrixService(accountMapper, jdbcTemplate, accountAccessService,
-                operationLogService, new ObjectMapper());
+                operationLogService, notificationCenterService, new ObjectMapper());
         UserContext.set(31L, "tester", 9L);
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class))).thenReturn(List.of());
         when(jdbcTemplate.queryForObject(anyString(), eq(Integer.class), any(Object[].class))).thenReturn(0);
@@ -104,6 +107,78 @@ class AccountMatrixServiceTest {
         service.accountDetail(5L);
 
         verify(accountAccessService, atLeastOnce()).requireAccess(5L);
+    }
+
+    @Test
+    void detailExposesRuntimeAndDatasetEvidenceWithoutCredentialContent() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "A"));
+
+        Map<String, Object> detail = service.accountDetail(5L);
+
+        assertEquals("UNSYNCED", detail.get("runtimeProfileStatus"));
+        assertEquals(false, detail.get("browserStateReady"));
+        assertTrue(detail.containsKey("datasetEvidence"));
+        assertFalse(detail.toString().contains("browserStorageState"));
+        assertFalse(detail.toString().contains("cookieText"));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void legacyProfileSnapshotIsUsedAsDatasetEvidenceInsteadOfContradictingTheDetail() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "A"));
+        Instant syncedAt = Instant.parse("2026-09-15T00:00:00Z");
+        Map<String, Object> profile = Map.of(
+                "source", "MANUAL_IMPORT", "syncStatus", "SUCCEEDED", "coverageStatus", "FULL",
+                "syncedAt", syncedAt, "shopNickname", "A");
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> invocation.getArgument(0, String.class).contains("xianyu_shop_profile_snapshot")
+                        ? List.of(profile) : List.of());
+
+        Map<String, Object> detail = service.accountDetail(5L);
+
+        Map<String, Object> datasets = (Map<String, Object>) detail.get("datasetEvidence");
+        Map<String, Object> shopProfile = (Map<String, Object>) datasets.get("shopProfile");
+        assertEquals("FULL", shopProfile.get("coverageStatus"));
+        assertEquals("SUCCEEDED", shopProfile.get("syncStatus"));
+        assertEquals("SNAPSHOT_DERIVED", shopProfile.get("evidenceMode"));
+        assertEquals(syncedAt, shopProfile.get("lastSuccessTime"));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void unchangedAccessStateDoesNotEmitAnotherAccountAlert() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "A"));
+        Map<String, Object> before = Map.of(
+                "channelCode", "MESSAGE_WS", "connectionStatus", "EXPIRED", "authorizationStatus", "EXPIRED");
+        Map<String, Object> after = Map.of(
+                "channelCode", "MESSAGE_WS", "connectionStatus", "EXPIRED", "authorizationStatus", "EXPIRED",
+                "lastCheckedTime", "2026-09-15T08:00:00Z");
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of(before), List.of(after));
+
+        service.upsertAccessChannel(5L, "message_ws", new AccountMatrixService.AccessChannelInput(
+                "req-same-state", "消息通道", "EXPIRED", "EXPIRED", null, null,
+                Map.of(), "SYSTEM_DERIVED", "FULL", null, "TOKEN_EXPIRED", "凭证过期"));
+
+        verify(notificationCenterService, never()).dispatch(anyString(), eq(5L), anyString(), anyString(), any());
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void recoveredAccessStateEmitsOneActionableAccountEvent() {
+        when(accountMapper.selectById(5L)).thenReturn(account(5L, "A"));
+        Map<String, Object> before = Map.of(
+                "channelCode", "MESSAGE_WS", "connectionStatus", "DISCONNECTED", "authorizationStatus", "UNKNOWN");
+        Map<String, Object> after = Map.of(
+                "channelCode", "MESSAGE_WS", "connectionStatus", "CONNECTED", "authorizationStatus", "AUTHORIZED");
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenReturn(List.of(before), List.of(after));
+
+        service.upsertAccessChannel(5L, "message_ws", new AccountMatrixService.AccessChannelInput(
+                "req-recovered", "消息通道", "CONNECTED", "AUTHORIZED", null, null,
+                Map.of(), "SYSTEM_DERIVED", "FULL", null, null, null));
+
+        verify(notificationCenterService).dispatch(eq("ACCOUNT_RECOVERED"), eq(5L), anyString(), anyString(), any());
     }
 
     @Test

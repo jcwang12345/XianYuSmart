@@ -46,6 +46,12 @@ const eventOptions = [
   ,{ value: 'CONVERSATION_SLA_BREACHED', label: '客服响应超时' }
   ,{ value: 'PRODUCT_PUBLISH_FAILED', label: '商品发布失败' }
   ,{ value: 'ACCOUNT_CAPABILITY_CHANGED', label: '账号能力变化' }
+  ,{ value: 'REFUND_REQUESTED', label: '退款申请' }
+  ,{ value: 'PENALTY_CREATED', label: '店铺处罚' }
+  ,{ value: 'PENALTY_DEADLINE', label: '申诉截止提醒' }
+  ,{ value: 'PRODUCT_BATCH_SUCCEEDED', label: '商品批量任务成功' }
+  ,{ value: 'PRODUCT_BATCH_PARTIAL', label: '商品批量任务部分成功' }
+  ,{ value: 'PRODUCT_BATCH_FAILED', label: '商品批量任务失败' }
 ]
 const channelTypes: Array<{
   value: NotificationChannelType
@@ -55,14 +61,14 @@ const channelTypes: Array<{
   defaults?: Record<string, string>
 }> = [
   { value: 'WECHAT_WORK', label: '企业微信', description: '群机器人通知', fields: [
-    { key: 'webhookUrl', label: '机器人 Webhook', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' }
+    { key: 'webhookUrl', label: '机器人 Webhook', placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...', secret: true }
   ] },
   { value: 'DINGTALK', label: '钉钉', description: '群机器人通知，支持加签', fields: [
-    { key: 'webhookUrl', label: '机器人 Webhook', placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=...' },
+    { key: 'webhookUrl', label: '机器人 Webhook', placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=...', secret: true },
     { key: 'secret', label: '加签密钥（可选）', placeholder: 'SEC...', secret: true }
   ] },
   { value: 'FEISHU', label: '飞书', description: '群机器人通知，支持签名校验', fields: [
-    { key: 'webhookUrl', label: '机器人 Webhook', placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/...' },
+    { key: 'webhookUrl', label: '机器人 Webhook', placeholder: 'https://open.feishu.cn/open-apis/bot/v2/hook/...', secret: true },
     { key: 'secret', label: '签名密钥（可选）', placeholder: '留空则不启用签名', secret: true }
   ] },
   { value: 'BARK', label: 'Bark', description: 'iPhone 实时推送', fields: [
@@ -76,10 +82,10 @@ const channelTypes: Array<{
   ] },
   { value: 'TELEGRAM', label: 'Telegram', description: '机器人私聊或群组通知', fields: [
     { key: 'botToken', label: 'Bot Token', placeholder: '123456:ABC...', secret: true },
-    { key: 'chatId', label: 'Chat ID', placeholder: '-100xxxxxxxxxx' }
+    { key: 'chatId', label: 'Chat ID', placeholder: '-100xxxxxxxxxx', secret: true }
   ] },
   { value: 'WEBHOOK', label: '通用 Webhook', description: '向自建系统发送标准 JSON', fields: [
-    { key: 'webhookUrl', label: 'Webhook 地址', placeholder: 'https://example.com/webhook' },
+    { key: 'webhookUrl', label: 'Webhook 地址', placeholder: 'https://example.com/webhook', secret: true },
     { key: 'secret', label: '签名密钥（可选）', placeholder: '用于 X-XianYuSmart-Signature', secret: true }
   ] }
 ]
@@ -232,6 +238,13 @@ const handleInbox = async (item: InboxNotification, status: 'IN_PROGRESS' | 'RES
 const eventLabel = (value: string) =>
   eventOptions.find(option => option.value === value)?.label || value
 
+const severityLabel = (value: string) => ({ ERROR: '紧急', WARNING: '警告', INFO: '提醒' }[value] || value)
+const handlingLabel = (value: string) => ({ UNHANDLED: '待处理', OPEN: '待处理', IN_PROGRESS: '处理中', RESOLVED: '已解决', IGNORED: '已忽略' }[value] || value)
+const deliveryLabel = (value: InboxNotification['deliveryStatus']) => ({
+  NOT_CONFIGURED: '未配置外部渠道', PENDING: '等待投递', SENT: '已全部送达',
+  FAILED: '投递失败', PARTIAL: '部分送达', RETRYING_OR_FAILED: '重试中或已失败'
+}[value] || value)
+
 const formatDateTime = (value?: string) => {
   if (!value) return '-'
   const date = new Date(value)
@@ -313,7 +326,7 @@ onMounted(async () => {
     <section v-else-if="activeTab === 'inbox'" class="panel list">
       <div v-if="inbox.length === 0" class="empty">暂无站内通知。</div>
       <article v-for="item in inbox" :key="item.id">
-        <div class="item-main"><span :class="['badge', item.severity === 'ERROR' ? 'danger-badge' : item.severity === 'WARNING' ? 'warning' : '']">{{ item.severity }}</span><div><strong>{{ item.title }}</strong><p>{{ item.contentSummary }}</p><div class="event-tags"><span>{{ eventLabel(item.eventType) }}</span><span>{{ item.accountName || '全局' }}</span><span>{{ item.readTime ? '已读' : '未读' }}</span><span>{{ item.handlingStatus }}</span></div></div></div>
+        <div class="item-main"><span :class="['badge', item.severity === 'ERROR' ? 'danger-badge' : item.severity === 'WARNING' ? 'warning' : '']">{{ severityLabel(item.severity) }}</span><div><strong>{{ item.title }}</strong><p>{{ item.contentSummary }}</p><div class="event-tags"><span>{{ eventLabel(item.eventType) }}</span><span>{{ item.accountName || '全局' }}</span><span>{{ item.readTime ? '已读' : '未读' }}</span><span>{{ handlingLabel(item.handlingStatus) }}</span><span>{{ deliveryLabel(item.deliveryStatus) }}<template v-if="item.deliveryTotal > 0"> {{ item.deliverySent }}/{{ item.deliveryTotal }}</template></span><span>事件 {{ item.eventId }}</span></div></div></div>
         <div class="actions"><router-link v-if="item.targetRoute" :to="item.targetRoute">查看业务</router-link><button @click="handleInbox(item, 'IN_PROGRESS')">处理中</button><button class="primary" @click="handleInbox(item, 'RESOLVED')">已解决</button><button @click="handleInbox(item, 'IGNORED')">忽略</button></div>
       </article>
     </section>
@@ -343,7 +356,7 @@ onMounted(async () => {
       <article v-for="item in logs" :key="item.id">
         <div class="item-main">
           <span :class="item.sendStatus === 1 ? 'badge success' : 'badge warning'">{{ item.sendStatus === 1 ? '成功' : '失败' }}</span>
-          <div><strong>{{ item.title }}</strong><p>{{ eventLabel(item.eventType) }} · HTTP {{ item.httpStatus || '-' }}</p></div>
+          <div><strong>{{ item.title }}</strong><p>{{ eventLabel(item.eventType) }} · HTTP {{ item.httpStatus || '-' }} · 事件 {{ item.eventId || '历史记录' }}<template v-if="item.outboxId"> · 投递 #{{ item.outboxId }}</template></p></div>
         </div>
         <div class="item-meta"><span v-if="item.errorMessage" class="error">{{ item.errorMessage }}</span><span>{{ formatDateTime(item.createTime) }}</span></div>
       </article>
@@ -352,8 +365,8 @@ onMounted(async () => {
     <Teleport to="body">
       <div v-if="editing" class="overlay" @click.self="editing = false">
         <section class="dialog">
-          <header><h3>{{ channelForm.id ? '编辑通知渠道' : '新建通知渠道' }}</h3><button class="close" @click="editing = false">×</button></header>
-          <label>渠道名称<input v-model="channelForm.channelName" maxlength="100" placeholder="例如：运维群机器人" /><small>{{ channelForm.channelName.length }} / 100</small></label>
+          <header><h3>{{ channelForm.id ? '编辑通知渠道' : '新建通知渠道' }}</h3><button class="close" aria-label="关闭通知渠道编辑" @click="editing = false">×</button></header>
+          <label>渠道名称<input v-model="channelForm.channelName" name="notification-channel-name" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="100" placeholder="例如：运维群机器人" /><small>{{ channelForm.channelName.length }} / 100</small></label>
           <div class="channel-types">
             <button v-for="item in channelTypes" :key="item.value" type="button"
               :class="{ active: channelForm.channelType === item.value }"
@@ -364,6 +377,8 @@ onMounted(async () => {
           <label v-for="field in activeChannelType().fields" :key="field.key">
             {{ field.label }}
             <input v-model="channelForm.config[field.key]" :type="field.secret ? 'password' : 'text'"
+              :name="`notification-${channelForm.channelType.toLowerCase()}-${field.key}`"
+              :autocomplete="field.secret ? 'new-password' : 'off'" autocapitalize="off" spellcheck="false"
               :placeholder="channelForm.id && field.secret ? '留空则保持原值' : field.placeholder" />
           </label>
           <label>通知内容模板

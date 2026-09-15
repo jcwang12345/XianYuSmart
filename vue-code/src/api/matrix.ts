@@ -12,6 +12,36 @@ export interface AccountGroup {
   accountIdsCsv?: string
 }
 
+export interface AccountRuntimeProfile {
+  profileKey?: string
+  profileType?: string
+  platform?: string
+  locale?: string
+  timezoneId?: string
+  viewportWidth?: number
+  viewportHeight?: number
+  viewport?: string
+  deviceScaleFactor?: number
+  colorScheme?: string
+  browserVersion?: string
+  browserStateReady: boolean
+  storageStateUpdatedTime?: string
+  status: 'ACTIVE' | 'DISABLED' | 'UNSYNCED'
+  updatedTime?: string
+}
+
+export interface AccountDatasetEvidence {
+  source: string
+  syncStatus: string
+  coverageStatus: CoverageStatus
+  asOfTime?: string
+  lastAttemptTime?: string
+  lastSuccessTime?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
+  requestId?: string
+}
+
 export interface MatrixAccount {
   accountId: number
   accountNote?: string
@@ -36,6 +66,16 @@ export interface MatrixAccount {
   profile?: Record<string, unknown>
   accessChannels?: Array<Record<string, unknown>>
   risks?: Array<Record<string, unknown>>
+  runtimeProfileStatus?: string
+  runtimeProfileType?: string
+  runtimePlatform?: string
+  runtimeViewport?: string
+  browserStateReady?: boolean
+  runtimeProfile?: AccountRuntimeProfile
+  datasetEvidence?: {
+    shopProfile: AccountDatasetEvidence
+    shopRisks: AccountDatasetEvidence
+  }
 }
 
 export interface AccountMatrixSummary {

@@ -13,6 +13,11 @@ public final class NotificationGuide {
             case "ACCOUNT_RECOVERED" -> "【恢复】已验证账号消息连接恢复。安全待处理任务将按队列继续；结果不确定或已失败需核对的历史任务不会盲目重发。";
             case "ACCOUNT_VERIFICATION_REQUIRED" -> "【需官方验证】这是平台安全验证，不等同于普通 Cookie 过期。请在官方页面或 App 完成验证，不要反复扫码或重试发货。";
             case "KAMI_STOCK_LOW" -> "【库存预警】请补充对应卡密库存；库存不足订单需要核对处理，切勿重复导入已使用卡密。";
+            case "REFUND_REQUESTED" -> "【售后待办】请先查看退款原因、金额、证据和双方截止时间；未接入可靠平台适配器时只提供人工处理路径。";
+            case "PENALTY_CREATED" -> "【风险待办】请查看店铺风险详情、影响范围、证据时间和平台截止；系统不会自动申诉或删除商品。";
+            case "PENALTY_DEADLINE" -> "【临近截止】请在平台截止前完成人工核对；没有可靠回执时不要把申诉显示为成功。";
+            case "PRODUCT_BATCH_PARTIAL", "PRODUCT_BATCH_FAILED" -> "【任务待核对】请进入任务中心查看逐件结果；只重试明确失败项，结果未知项必须人工核验。";
+            case "PRODUCT_BATCH_SUCCEEDED" -> "【任务完成】批量任务已形成逐件平台或隔离夹具证据；可在任务中心查看范围和审计。";
             default -> "";
         };
     }

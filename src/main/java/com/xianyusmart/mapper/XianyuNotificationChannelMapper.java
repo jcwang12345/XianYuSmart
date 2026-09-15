@@ -15,6 +15,12 @@ import java.util.List;
 @Mapper
 public interface XianyuNotificationChannelMapper extends BaseMapper<XianyuNotificationChannel> {
 
+    @Select("SELECT id FROM xianyu_notification_channel WHERE " +
+            "(webhook_url IS NOT NULL AND webhook_url <> '' AND webhook_url NOT LIKE 'enc:v1:%') OR " +
+            "(signing_secret IS NOT NULL AND signing_secret <> '' AND signing_secret NOT LIKE 'enc:v1:%') OR " +
+            "(config_json IS NOT NULL AND config_json <> '' AND config_json NOT LIKE 'enc:v1:%')")
+    List<Long> selectLegacyPlaintextSecretIds();
+
     @Select("SELECT * FROM xianyu_notification_channel ORDER BY update_time DESC, id DESC")
     List<XianyuNotificationChannel> selectAll();
 

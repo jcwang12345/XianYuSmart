@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -178,22 +179,29 @@ public class NotificationCenterService {
     }
 
     public List<XianyuNotificationLog> listLogs(Integer limit) {
-        return logMapper.selectRecent(Math.max(1, Math.min(limit == null ? 50 : limit, 200)));
+        List<XianyuNotificationLog> logs = logMapper.selectRecent(Math.max(1, Math.min(limit == null ? 50 : limit, 200)));
+        logs.forEach(item -> item.setErrorMessage(sanitizeDiagnostic(item.getErrorMessage(), Map.of())));
+        return logs;
     }
 
-    public void dispatch(String eventType, Long accountId, String title, String content,
-                         Map<String, Object> data) {
+    public String dispatch(String eventType, Long accountId, String title, String content,
+                           Map<String, Object> data) {
         if (!EVENT_TYPES.contains(eventType)) {
             log.warn("忽略未知通知事件: {}", eventType);
-            return;
+            return null;
         }
         boolean tenantResolved = resolveTenantByAccount(accountId);
         if (TenantContext.get() == null) {
             log.warn("通知事件缺少租户上下文，已停止分发: eventType={}, accountId={}", eventType, accountId);
-            return;
+            return null;
         }
         try {
-            inboxService.record(eventType, accountId, title, content, data == null ? Map.of() : data);
+            Map<String, Object> eventData = data == null ? Map.of() : data;
+            String proposedEventId = UUID.randomUUID().toString();
+            String dedupeKey = notificationDedupeKey(eventType, accountId, eventData, proposedEventId);
+            String persistedEventId = inboxService.record(proposedEventId, dedupeKey, eventType, accountId,
+                    title, content, eventData);
+            String eventId = hasText(persistedEventId) ? persistedEventId : proposedEventId;
             for (XianyuNotificationChannel channel : channelMapper.selectEnabled()) {
                 Set<String> subscriptions = splitEvents(channel.getEventTypes());
                 boolean inherited = ("ACCOUNT_RECOVERED".equals(eventType) || "ACCOUNT_VERIFICATION_REQUIRED".equals(eventType))
@@ -204,17 +212,18 @@ public class NotificationCenterService {
                 if (!matchesScope(channel, accountId)) {
                     continue;
                 }
-                if (data != null && data.containsKey("_renewalImage") && !"WECHAT_WORK".equals(channel.getChannelType())) {
+                if (eventData.containsKey("_renewalImage") && !"WECHAT_WORK".equals(channel.getChannelType())) {
                     continue;
                 }
                 try {
                     enqueue(channel, eventType, accountId, title, content,
-                            data == null ? Map.of() : data);
+                            eventData, eventId, dedupeKey);
                 } catch (Exception e) {
                     log.warn("通知入队失败: channelId={}, eventType={}, reason={}",
                             channel.getId(), eventType, e.getMessage());
                 }
             }
+            return eventId;
         } finally {
             if (tenantResolved) {
                 TenantContext.clear();
@@ -234,14 +243,14 @@ public class NotificationCenterService {
     }
 
     private void enqueue(XianyuNotificationChannel channel, String eventType, Long accountId,
-                         String title, String content, Map<String, Object> data) {
-        String eventId = UUID.randomUUID().toString();
+                         String title, String content, Map<String, Object> data,
+                         String eventId, String dedupeKey) {
         XianyuNotificationOutbox task = new XianyuNotificationOutbox();
         task.setTenantId(channel.getTenantId() == null ? TenantContext.get() : channel.getTenantId());
         task.setChannelId(channel.getId());
         task.setEventType(eventType);
         task.setXianyuAccountId(accountId);
-        task.setDedupeKey(notificationDedupeKey(eventType, accountId, data, eventId));
+        task.setDedupeKey(dedupeKey);
         task.setEventId(eventId);
         task.setTitle(limit(title, 200));
         task.setContent(content == null ? "" : content);
@@ -263,7 +272,7 @@ public class NotificationCenterService {
             }
             data.put("_eventId", task.getEventId());
             send(channel, task.getEventType(), task.getXianyuAccountId(),
-                    task.getTitle(), task.getContent(), data);
+                    task.getTitle(), task.getContent(), data, task.getEventId(), task.getId());
             if (outboxMapper.markSent(task.getId(), workerId) != 1) {
                 log.warn("通知任务完成状态更新冲突: outboxId={}", task.getId());
             }
@@ -296,9 +305,17 @@ public class NotificationCenterService {
 
     private int send(XianyuNotificationChannel channel, String eventType, Long accountId,
                      String title, String content, Map<String, Object> data) {
+        return send(channel, eventType, accountId, title, content, data, null, null);
+    }
+
+    private int send(XianyuNotificationChannel channel, String eventType, Long accountId,
+                     String title, String content, Map<String, Object> data,
+                     String eventId, Long outboxId) {
         XianyuNotificationLog sendLog = new XianyuNotificationLog();
         sendLog.setTenantId(channel.getTenantId() == null ? TenantContext.get() : channel.getTenantId());
         sendLog.setChannelId(channel.getId());
+        sendLog.setEventId(eventId);
+        sendLog.setOutboxId(outboxId);
         sendLog.setEventType(eventType);
         sendLog.setXianyuAccountId(accountId);
         sendLog.setTitle(limit(title, 200));
@@ -313,12 +330,15 @@ public class NotificationCenterService {
             }
             requireProviderSuccess(channel.getChannelType(), response.body());
             sendLog.setSendStatus(1);
+            sendLog.setDeliveryStatus("SENT");
             channelMapper.markSuccess(channel.getId());
             logMapper.insert(sendLog);
             return response.statusCode();
         } catch (Exception e) {
-            String errorMessage = limit(e.getMessage() == null ? "Webhook 发送失败" : e.getMessage(), 500);
+            String errorMessage = limit(sanitizeDiagnostic(
+                    e.getMessage() == null ? "Webhook 发送失败" : e.getMessage(), readConfig(channel)), 500);
             sendLog.setSendStatus(0);
+            sendLog.setDeliveryStatus("FAILED");
             sendLog.setErrorMessage(errorMessage);
             channelMapper.markFailure(channel.getId(), errorMessage);
             logMapper.insert(sendLog);
@@ -331,8 +351,10 @@ public class NotificationCenterService {
         response.setId(channel.getId());
         response.setChannelName(channel.getChannelName());
         response.setChannelType(normalizeChannelType(channel.getChannelType()));
-        response.setWebhookUrl(channel.getWebhookUrl());
         Map<String, String> config = readConfig(channel);
+        // Provider endpoints normally embed access tokens. They are write-only just like other secrets.
+        response.setWebhookUrl(null);
+        response.setEndpointConfigured(hasText(config.get("webhookUrl")) || hasText(channel.getWebhookUrl()));
         response.setSecretConfigured(hasSecret(config));
         response.setConfig(maskSecrets(config));
         response.setMessageTemplate(channel.getMessageTemplate());
@@ -341,7 +363,7 @@ public class NotificationCenterService {
         response.setScopeIds(readScopeIds(channel.getScopeIdsJson()));
         response.setEnabled(Integer.valueOf(1).equals(channel.getEnabled()));
         response.setLastSuccessTime(channel.getLastSuccessTime());
-        response.setLastErrorMessage(channel.getLastErrorMessage());
+        response.setLastErrorMessage(sanitizeDiagnostic(channel.getLastErrorMessage(), config));
         response.setUpdateTime(channel.getUpdateTime());
         return response;
     }
@@ -574,6 +596,9 @@ public class NotificationCenterService {
             return "account:" + accountId + ":renewal:" + data.get("_renewalBatch")
                     + (data.containsKey("_renewalImage") ? ":image" : ":text");
         }
+        if (data.get("dedupeKey") != null && !data.get("dedupeKey").toString().isBlank()) {
+            return limit(data.get("dedupeKey").toString(), 191);
+        }
         if ("ORDER_CREATED".equals(eventType) || "DELIVERY_SUCCESS".equals(eventType)) {
             Object orderId = data.get("orderId");
             if (orderId != null && !orderId.toString().isBlank()) {
@@ -627,7 +652,22 @@ public class NotificationCenterService {
     }
 
     private boolean isSecretKey(String key) {
-        return Set.of("secret", "token", "botToken", "deviceKey").contains(key);
+        if (key == null) return false;
+        return Set.of("secret", "signingsecret", "token", "bottoken", "devicekey", "webhookurl", "chatid")
+                .contains(key.toLowerCase(Locale.ROOT));
+    }
+
+    private String sanitizeDiagnostic(String message, Map<String, String> config) {
+        if (!hasText(message)) return null;
+        String sanitized = message;
+        for (Map.Entry<String, String> entry : config.entrySet()) {
+            if (isSecretKey(entry.getKey()) && hasText(entry.getValue())) {
+                sanitized = sanitized.replace(entry.getValue(), "[已脱敏]");
+            }
+        }
+        sanitized = sanitized.replaceAll("(?i)(key|token|secret|access_token|chat_id)=([^&\\s]+)", "$1=[已脱敏]");
+        sanitized = sanitized.replaceAll("(?i)https?://[^\\s]+", "[通知地址已脱敏]");
+        return limit(sanitized, 500);
     }
 
     private String normalizeMessageTemplate(String template) {
@@ -653,6 +693,12 @@ public class NotificationCenterService {
             case "CONVERSATION_SLA_BREACHED" -> "客服响应超时";
             case "PRODUCT_PUBLISH_FAILED" -> "商品发布失败";
             case "ACCOUNT_CAPABILITY_CHANGED" -> "账号能力变化";
+            case "REFUND_REQUESTED" -> "退款申请";
+            case "PENALTY_CREATED" -> "店铺处罚";
+            case "PENALTY_DEADLINE" -> "申诉截止提醒";
+            case "PRODUCT_BATCH_SUCCEEDED" -> "商品批量任务成功";
+            case "PRODUCT_BATCH_PARTIAL" -> "商品批量任务部分成功";
+            case "PRODUCT_BATCH_FAILED" -> "商品批量任务失败";
             case "TEST" -> "测试通知";
             default -> eventType;
         };

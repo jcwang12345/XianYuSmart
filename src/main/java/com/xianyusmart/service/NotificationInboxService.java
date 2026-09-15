@@ -35,13 +35,24 @@ public class NotificationInboxService {
     }
 
     @Transactional
-    public void record(String eventType, Long accountId, String title, String content, Map<String, Object> input) {
+    public String record(String eventType, Long accountId, String title, String content, Map<String, Object> input) {
+        Map<String, Object> data = publicData(input);
+        return record(UUID.randomUUID().toString(), dedupe(eventType, accountId, data),
+                eventType, accountId, title, content, data);
+    }
+
+    /** Persist one canonical business event id shared by inbox and every channel delivery. */
+    @Transactional
+    public String record(String proposedEventId, String dedupeKey, String eventType, Long accountId,
+                         String title, String content, Map<String, Object> input) {
         Long tenantId = tenant();
         Map<String, Object> data = publicData(input);
         String objectType = objectType(eventType, data);
         String objectId = objectId(data);
-        String dedupe = dedupe(eventType, accountId, data);
-        String eventId = UUID.randomUUID().toString();
+        String eventId = trim(proposedEventId);
+        if (eventId == null || eventId.length() > 64) throw new BusinessException(400, "通知eventId无效");
+        String dedupe = trim(dedupeKey);
+        if (dedupe == null) throw new BusinessException(400, "通知去重键不能为空");
         jdbcTemplate.update("""
                 INSERT IGNORE INTO xianyu_notification_event
                 (tenant_id,event_id,event_type,xianyu_account_id,business_object_type,business_object_id,
@@ -49,6 +60,11 @@ public class NotificationInboxService {
                 VALUES (?,?,?,?,?,?,?,?,?,'SYSTEM_EVENT',?,?,?)
                 """, tenantId, eventId, eventType, accountId, objectType, objectId, severity(eventType),
                 limit(title, 200), limit(content, 1000), dedupe, route(eventType, accountId, data), json(data));
+        String canonical = jdbcTemplate.queryForObject("""
+                SELECT event_id FROM xianyu_notification_event
+                 WHERE tenant_id=? AND event_type=? AND dedupe_key=?
+                """, String.class, tenantId, eventType, dedupe);
+        return canonical == null || canonical.isBlank() ? eventId : canonical;
     }
 
     public Map<String, Object> list(String view, Long accountId, String search, Integer page, Integer pageSize) {
@@ -65,7 +81,7 @@ public class NotificationInboxService {
         if (accountId != null) { where.append(" AND event.xianyu_account_id=?"); args.add(accountId); }
         if ("UNREAD".equals(normalizedView)) where.append(" AND event.read_time IS NULL");
         if ("PENDING".equals(normalizedView)) where.append(" AND event.handling_status IN ('UNHANDLED','IN_PROGRESS')");
-        if ("SENT".equals(normalizedView)) where.append(" AND EXISTS (SELECT 1 FROM xianyu_notification_log log WHERE log.tenant_id=event.tenant_id AND log.event_type=event.event_type AND (log.xianyu_account_id=event.xianyu_account_id OR log.xianyu_account_id IS NULL AND event.xianyu_account_id IS NULL) AND log.create_time>=event.occurred_time)");
+        if ("SENT".equals(normalizedView)) where.append(" AND EXISTS (SELECT 1 FROM xianyu_notification_log log WHERE log.tenant_id=event.tenant_id AND log.event_id=event.event_id AND log.send_status=1)");
         String keyword = trim(search);
         if (keyword != null) { where.append(" AND (event.title LIKE ? OR event.content_summary LIKE ? OR event.business_object_id LIKE ?)"); String like="%"+keyword+"%"; args.add(like);args.add(like);args.add(like); }
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM xianyu_notification_event event" + where,
@@ -80,10 +96,22 @@ public class NotificationInboxService {
                        event.data_json dataJson,event.read_time readTime,event.read_by readBy,
                        event.handling_status handlingStatus,event.handled_time handledTime,
                        event.handled_by handledBy,event.handling_note handlingNote,event.occurred_time occurredTime
+                       ,(SELECT COUNT(*) FROM xianyu_notification_outbox outbox WHERE outbox.tenant_id=event.tenant_id AND outbox.event_id=event.event_id) deliveryTotal
+                       ,(SELECT COUNT(*) FROM xianyu_notification_outbox outbox WHERE outbox.tenant_id=event.tenant_id AND outbox.event_id=event.event_id AND outbox.status='SENT') deliverySent
+                       ,(SELECT COUNT(*) FROM xianyu_notification_outbox outbox WHERE outbox.tenant_id=event.tenant_id AND outbox.event_id=event.event_id AND outbox.status='FAILED') deliveryFailed
                   FROM xianyu_notification_event event
                   LEFT JOIN xianyu_account account ON account.id=event.xianyu_account_id AND account.tenant_id=event.tenant_id
                 """ + where + " ORDER BY event.occurred_time DESC,event.id DESC LIMIT ? OFFSET ?", args.toArray());
-        records.forEach(row -> row.put("data", readJson((String) row.remove("dataJson"))));
+        records.forEach(row -> {
+            row.put("data", readJson((String) row.remove("dataJson")));
+            long deliveryTotal = number(row.get("deliveryTotal"));
+            long deliverySent = number(row.get("deliverySent"));
+            long deliveryFailed = number(row.get("deliveryFailed"));
+            row.put("deliveryStatus", deliveryTotal == 0 ? "NOT_CONFIGURED"
+                    : deliverySent == deliveryTotal ? "SENT"
+                    : deliveryFailed == deliveryTotal ? "FAILED"
+                    : deliverySent > 0 ? "PARTIAL" : deliveryFailed > 0 ? "RETRYING_OR_FAILED" : "PENDING");
+        });
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("records", records);
         addPagination(result, total, safePage, size);
@@ -158,6 +186,11 @@ public class NotificationInboxService {
     }
 
     private String route(String eventType, Long accountId, Map<String, Object> data) {
+        Object explicit = data.get("targetRoute");
+        if (explicit != null) {
+            String target = String.valueOf(explicit).trim();
+            if (target.startsWith("/") && !target.startsWith("//") && target.length() <= 500) return target;
+        }
         if (data.get("orderId") != null) return "/orders?accountId=" + accountId + "&orderId=" + data.get("orderId");
         if (data.get("xyGoodsId") != null) return "/goods?accountId=" + accountId + "&goodsId=" + data.get("xyGoodsId");
         if (data.get("conversationId") != null) return "/messages?accountId=" + accountId + "&conversationId=" + data.get("conversationId");
@@ -198,4 +231,5 @@ public class NotificationInboxService {
 
     private String trim(String value) { return value == null || value.trim().isEmpty() ? null : value.trim(); }
     private String limit(String value, int max) { String normalized=trim(value); return normalized==null?null:normalized.substring(0, Math.min(max, normalized.length())); }
+    private long number(Object value) { return value instanceof Number number ? number.longValue() : 0L; }
 }

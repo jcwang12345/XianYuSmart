@@ -1629,6 +1629,10 @@ async function saveMenuLayout() {
               <input
                 v-model="emailSmtpHost"
                 type="text"
+                name="notification-smtp-host"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
                 class="settings__input"
                 placeholder="如 smtp.qq.com"
                 :disabled="emailSaving"
@@ -1639,6 +1643,8 @@ async function saveMenuLayout() {
               <input
                 v-model="emailSmtpPort"
                 type="text"
+                name="notification-smtp-port"
+                autocomplete="off"
                 class="settings__input"
                 placeholder="465"
                 :disabled="emailSaving"
@@ -1649,6 +1655,10 @@ async function saveMenuLayout() {
               <input
                 v-model="emailSmtpUsername"
                 type="text"
+                name="notification-smtp-username"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
                 class="settings__input"
                 placeholder="邮箱账号"
                 :disabled="emailSaving"
@@ -1660,6 +1670,8 @@ async function saveMenuLayout() {
                 <input
                   v-model="emailSmtpPassword"
                   :type="showEmailPassword ? 'text' : 'password'"
+                  name="notification-smtp-credential"
+                  autocomplete="new-password"
                   class="settings__input"
                   placeholder="邮箱密码或SMTP授权码"
                   :disabled="emailSaving"
@@ -1675,6 +1687,10 @@ async function saveMenuLayout() {
               <input
                 v-model="emailSmtpFrom"
                 type="text"
+                name="notification-recipient-email"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
                 class="settings__input"
                 placeholder="接收通知的邮箱地址"
                 :disabled="emailSaving"

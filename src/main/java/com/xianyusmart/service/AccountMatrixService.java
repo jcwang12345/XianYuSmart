@@ -45,17 +45,20 @@ public class AccountMatrixService {
     private final JdbcTemplate jdbcTemplate;
     private final AccountAccessService accountAccessService;
     private final OperationLogService operationLogService;
+    private final NotificationCenterService notificationCenterService;
     private final ObjectMapper objectMapper;
 
     public AccountMatrixService(XianyuAccountMapper accountMapper,
                                 JdbcTemplate jdbcTemplate,
                                 AccountAccessService accountAccessService,
                                 OperationLogService operationLogService,
+                                NotificationCenterService notificationCenterService,
                                 ObjectMapper objectMapper) {
         this.accountMapper = accountMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.accountAccessService = accountAccessService;
         this.operationLogService = operationLogService;
+        this.notificationCenterService = notificationCenterService;
         this.objectMapper = objectMapper;
     }
 
@@ -136,6 +139,13 @@ public class AccountMatrixService {
         Map<String, Object> result = buildAccountView(account, true);
         result.put("accessChannels", accessChannels(accountId));
         result.put("risks", risks(accountId, null));
+        result.put("datasetEvidence", Map.of(
+                "shopProfile", datasetStateWithSnapshotFallback(accountId, "SHOP_PROFILE",
+                        result.get("profileSource"), result.get("profileSyncStatus"),
+                        result.get("profileCoverageStatus"), result.get("profileSyncedAt")),
+                "shopRisks", datasetStateWithSnapshotFallback(accountId, "SHOP_RISKS",
+                        result.get("riskSource"), result.get("riskSyncStatus"),
+                        result.get("riskCoverageStatus"), result.get("riskSyncedAt"))));
         return result;
     }
 
@@ -210,10 +220,11 @@ public class AccountMatrixService {
 
     @Transactional
     public Map<String, Object> upsertRisk(Long accountId, RiskEventInput input) {
-        requireAccount(accountId);
+        XianyuAccount account = requireAccount(accountId);
         validateRisk(input);
         Long tenantId = requireTenant();
         Instant syncedAt = input.syncedAt() == null ? Instant.now() : input.syncedAt();
+        Map<String, Object> before = findRiskByDedupeOptional(accountId, input.dedupeKey());
         jdbcTemplate.update("""
                 INSERT INTO xianyu_shop_risk_event
                 (tenant_id, xianyu_account_id, dedupe_key, platform_penalty_id, rule_code, risk_name,
@@ -237,7 +248,20 @@ public class AccountMatrixService {
                 syncedAt, input.requestId(), null, null);
         audit(accountId, "RISK_SYNC", "账号风险", "同步风险事件", 1, "SHOP_RISK", input.dedupeKey(),
                 input.requestId(), input.requestId(), "PLATFORM_CONFIRMED", input.source(), input, null);
-        return findRiskByDedupe(accountId, input.dedupeKey());
+        Map<String, Object> result = findRiskByDedupe(accountId, input.dedupeKey());
+        if ("ACTIVE".equals(result.get("riskStatus")) && riskChanged(before, result)) {
+            Map<String, Object> notificationData = new LinkedHashMap<>();
+            notificationData.put("riskId", result.get("riskId"));
+            notificationData.put("requestId", input.requestId());
+            notificationData.put("targetRoute", "/accounts?accountId=" + accountId + "&view=risks");
+            notificationData.put("dedupeKey", "account:" + accountId + ":risk:" + input.dedupeKey() + ":" + input.requestId());
+            notificationCenterService.dispatch("PENALTY_CREATED", accountId,
+                    "店铺风险需要处理 · " + displayName(account),
+                    string(result.get("riskName")) + "\n影响：" + string(result.get("impactSummary"))
+                            + "\n建议：" + string(result.get("recommendedAction")),
+                    notificationData);
+        }
+        return result;
     }
 
     @Transactional
@@ -282,7 +306,7 @@ public class AccountMatrixService {
 
     @Transactional
     public Map<String, Object> upsertAccessChannel(Long accountId, String channelCode, AccessChannelInput input) {
-        requireAccount(accountId);
+        XianyuAccount account = requireAccount(accountId);
         if (input == null) throw new BusinessException(400, "接入通道参数不能为空");
         requireText(input.requestId(), "requestId", 80);
         String normalizedCode = upper(channelCode);
@@ -294,6 +318,8 @@ public class AccountMatrixService {
         String coverage = requireEnum(input.coverageStatus(), COVERAGE_STATUSES, "覆盖状态");
         String source = requireEnum(input.source(), Set.of("LOCAL", "PLATFORM_API", "PLATFORM_WEB", "SYSTEM_DERIVED"), "来源");
         Long tenantId = requireTenant();
+        Map<String, Object> before = accessChannels(accountId).stream()
+                .filter(item -> normalizedCode.equals(item.get("channelCode"))).findFirst().orElse(Map.of());
         jdbcTemplate.update("""
                 INSERT INTO xianyu_account_access_channel
                 (tenant_id, xianyu_account_id, channel_code, channel_name, connection_status,
@@ -310,10 +336,15 @@ public class AccountMatrixService {
                 connection, authorization, trimToNull(input.authorizationScope()), timestamp(input.credentialExpireTime()),
                 json(input.capabilities()), source, coverage, Timestamp.from(Instant.now()), timestamp(input.lastSuccessTime()),
                 trimToNull(input.lastErrorCode()), trimToNull(input.lastErrorMessage()));
-        audit(accountId, "ACCESS_CHANNEL_UPDATE", "账号接入", "更新账号接入通道状态", 1,
-                "ACCESS_CHANNEL", normalizedCode, input.requestId(), input.requestId(), "LOCAL_SUCCESS", source, input, null);
-        return accessChannels(accountId).stream()
+        Map<String, Object> after = accessChannels(accountId).stream()
                 .filter(item -> normalizedCode.equals(item.get("channelCode"))).findFirst().orElseThrow();
+        audit(accountId, "ACCESS_CHANNEL_UPDATE", "账号接入", "更新账号接入通道状态", 1,
+                "ACCESS_CHANNEL", normalizedCode, input.requestId(), input.requestId(), "LOCAL_SUCCESS", source, input,
+                Map.of("before", before, "after", after));
+        if (accessStateChanged(before, after)) {
+            notifyAccessTransition(account, normalizedCode, input.requestId(), before, after);
+        }
+        return after;
     }
 
     private Map<String, Object> buildAccountView(XianyuAccount account, boolean includeProfile) {
@@ -346,8 +377,88 @@ public class AccountMatrixService {
         result.put("knownActiveRiskCount", knownRiskCount > 0 || "FULL".equals(riskCoverage) ? knownRiskCount : null);
         result.put("highestRiskSeverity", highestRiskSeverity(account.getId()));
         result.put("groups", accountGroups(account.getId()));
+        Map<String, Object> runtime = runtimeProfile(account.getId());
+        result.put("runtimeProfileStatus", runtime.get("status"));
+        result.put("runtimeProfileType", runtime.get("profileType"));
+        result.put("runtimePlatform", runtime.get("platform"));
+        result.put("runtimeViewport", runtime.get("viewport"));
+        result.put("browserStateReady", runtime.get("browserStateReady"));
+        result.put("runtimeProfile", runtime);
         if (includeProfile) result.put("profile", profile);
         return result;
+    }
+
+    private Map<String, Object> runtimeProfile(Long accountId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT profile_key profileKey,profile_type profileType,platform,locale,timezone_id timezoneId,
+                       viewport_width viewportWidth,viewport_height viewportHeight,device_scale_factor deviceScaleFactor,
+                       color_scheme colorScheme,browser_version browserVersion,
+                       CASE WHEN browser_storage_state IS NULL OR browser_storage_state='' THEN 0 ELSE 1 END browserStateReady,
+                       storage_state_updated_time storageStateUpdatedTime,status,created_time createdTime,updated_time updatedTime
+                  FROM xianyu_device_profile WHERE tenant_id=? AND xianyu_account_id=? LIMIT 1
+                """, requireTenant(), accountId);
+        if (rows.isEmpty()) return Map.of("status", "UNSYNCED", "browserStateReady", false);
+        Map<String, Object> runtime = new LinkedHashMap<>(rows.get(0));
+        runtime.put("viewport", runtime.get("viewportWidth") + "x" + runtime.get("viewportHeight"));
+        Object storedStatus = runtime.get("status");
+        runtime.put("status", storedStatus instanceof Number number && number.intValue() == 1 ? "ACTIVE" : "DISABLED");
+        return runtime;
+    }
+
+    private void notifyAccessTransition(XianyuAccount account, String channelCode, String requestId,
+                                        Map<String, Object> before, Map<String, Object> after) {
+        Long accountId = account.getId();
+        String connection = string(after.get("connectionStatus"));
+        String authorization = string(after.get("authorizationStatus"));
+        String beforeConnection = string(before.get("connectionStatus"));
+        String beforeAuthorization = string(before.get("authorizationStatus"));
+        String eventType;
+        String title;
+        String nextStep;
+        if ("CONNECTED".equals(connection) && "AUTHORIZED".equals(authorization)
+                && !("CONNECTED".equals(beforeConnection) && "AUTHORIZED".equals(beforeAuthorization))) {
+            eventType = "ACCOUNT_RECOVERED";
+            title = "账号连接已恢复";
+            nextStep = "系统将按安全重试规则恢复任务；结果未知的动作仍需人工核对。";
+        } else if ("EXPIRED".equals(connection) || "EXPIRED".equals(authorization)) {
+            eventType = "CREDENTIAL_EXPIRED";
+            title = "账号凭证已过期";
+            nextStep = "请使用该账号的闲鱼 App 扫码续期。";
+        } else if (Set.of("DISCONNECTED", "DEGRADED").contains(connection)
+                || Set.of("REVOKED", "UNKNOWN").contains(authorization)) {
+            eventType = "ACCOUNT_OFFLINE";
+            title = "账号连接需要处理";
+            nextStep = "请检查连接详情；不要重复执行结果未知的平台动作。";
+        } else {
+            return;
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("requestId", requestId);
+        data.put("channelCode", channelCode);
+        data.put("connectionStatus", connection);
+        data.put("authorizationStatus", authorization);
+        data.put("targetRoute", "/connection/" + accountId);
+        data.put("dedupeKey", "account:" + accountId + ":access:" + channelCode + ":" + requestId);
+        notificationCenterService.dispatch(eventType, accountId, title + " · " + displayName(account),
+                "连接：" + connection + "；授权：" + authorization + "。\n影响：消息、订单同步与自动化能力可能变化。\n下一步：" + nextStep,
+                data);
+    }
+
+    private boolean riskChanged(Map<String, Object> before, Map<String, Object> after) {
+        if (before == null || before.isEmpty()) return true;
+        return !java.util.Objects.equals(before.get("riskStatus"), after.get("riskStatus"))
+                || !java.util.Objects.equals(before.get("severity"), after.get("severity"))
+                || !java.util.Objects.equals(before.get("impactSummary"), after.get("impactSummary"));
+    }
+
+    private boolean accessStateChanged(Map<String, Object> before, Map<String, Object> after) {
+        return !java.util.Objects.equals(before.get("connectionStatus"), after.get("connectionStatus"))
+                || !java.util.Objects.equals(before.get("authorizationStatus"), after.get("authorizationStatus"));
+    }
+
+    private String displayName(XianyuAccount account) {
+        String note = trimToNull(account.getAccountNote());
+        return note == null ? "账号 " + account.getId() : note + "（ID " + account.getId() + "）";
     }
 
     private List<Map<String, Object>> accountGroups(Long accountId) {
@@ -504,6 +615,29 @@ public class AccountMatrixService {
         return unknown;
     }
 
+    private Map<String, Object> datasetStateWithSnapshotFallback(Long accountId, String datasetCode,
+                                                                  Object source, Object syncStatus,
+                                                                  Object coverageStatus, Object syncedAt) {
+        Map<String, Object> state = datasetState(accountId, datasetCode);
+        if (!"UNSYNCED".equals(state.get("coverageStatus")) || "UNSYNCED".equals(coverageStatus)) {
+            return state;
+        }
+        // Older synchronized snapshots predate xianyu_account_dataset_state. The snapshot itself is valid
+        // evidence, so expose it as a derived read model instead of contradicting the visible business data.
+        Map<String, Object> fallback = new LinkedHashMap<>();
+        fallback.put("source", source == null ? "NONE" : source);
+        fallback.put("syncStatus", syncStatus == null ? "UNSYNCED" : syncStatus);
+        fallback.put("coverageStatus", coverageStatus);
+        fallback.put("asOfTime", syncedAt);
+        fallback.put("lastAttemptTime", syncedAt);
+        fallback.put("lastSuccessTime", syncedAt);
+        fallback.put("lastErrorCode", null);
+        fallback.put("lastErrorMessage", null);
+        fallback.put("requestId", null);
+        fallback.put("evidenceMode", "SNAPSHOT_DERIVED");
+        return fallback;
+    }
+
     private int countActiveRisks(Long accountId) {
         Integer count = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM xianyu_shop_risk_event
@@ -522,11 +656,20 @@ public class AccountMatrixService {
     }
 
     private Map<String, Object> findRiskByDedupe(Long accountId, String dedupeKey) {
-        List<Map<String, Object>> rows = jdbcTemplate.query(
-                "SELECT * FROM xianyu_shop_risk_event WHERE tenant_id=? AND xianyu_account_id=? AND dedupe_key=?",
-                (rs, rowNum) -> riskRow(rs), requireTenant(), accountId, dedupeKey);
+        List<Map<String, Object>> rows = findRiskRowsByDedupe(accountId, dedupeKey);
         if (rows.isEmpty()) throw new BusinessException(500, "风险事件保存后无法读取");
         return rows.get(0);
+    }
+
+    private Map<String, Object> findRiskByDedupeOptional(Long accountId, String dedupeKey) {
+        List<Map<String, Object>> rows = findRiskRowsByDedupe(accountId, dedupeKey);
+        return rows.isEmpty() ? Map.of() : rows.get(0);
+    }
+
+    private List<Map<String, Object>> findRiskRowsByDedupe(Long accountId, String dedupeKey) {
+        return jdbcTemplate.query(
+                "SELECT * FROM xianyu_shop_risk_event WHERE tenant_id=? AND xianyu_account_id=? AND dedupe_key=?",
+                (rs, rowNum) -> riskRow(rs), requireTenant(), accountId, dedupeKey);
     }
 
     private Map<String, Object> findRiskById(Long accountId, Long riskId) {
