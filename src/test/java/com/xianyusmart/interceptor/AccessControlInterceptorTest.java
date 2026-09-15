@@ -232,6 +232,37 @@ class AccessControlInterceptorTest {
                 new MockHttpServletResponse(), new Object()));
     }
 
+    @Test
+    void growthWorkspaceSeparatesReadOnlySamplingOperationalWritesAndQaFixtures() throws Exception {
+        SysUser user = user("OPERATOR");
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_OPERATIONS));
+
+        assertTrue(interceptor.preHandle(request("GET", "/api/growth-workspace/resources", user),
+                new MockHttpServletResponse(), new Object()));
+        assertTrue(interceptor.preHandle(request("POST", "/api/growth-workspace/searches", user),
+                new MockHttpServletResponse(), new Object()));
+
+        MockHttpServletResponse writeDenied = new MockHttpServletResponse();
+        assertFalse(interceptor.preHandle(request("POST", "/api/growth-workspace/workflows/versions", user),
+                writeDenied, new Object()));
+        assertEquals(403, writeDenied.getStatus());
+
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_OPERATIONS, PermissionCatalog.ACTION_OPERATIONS_WRITE));
+        assertTrue(interceptor.preHandle(request("POST", "/api/growth-workspace/workflows/versions", user),
+                new MockHttpServletResponse(), new Object()));
+
+        MockHttpServletResponse qaDenied = new MockHttpServletResponse();
+        assertFalse(interceptor.preHandle(request("POST", "/api/qa/growth-workspace/fixtures", user),
+                qaDenied, new Object()));
+        assertEquals(403, qaDenied.getStatus());
+
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_OPERATIONS, PermissionCatalog.ACTION_SYSTEM_WRITE));
+        assertTrue(interceptor.preHandle(request("POST", "/api/qa/growth-workspace/fixtures", user),
+                new MockHttpServletResponse(), new Object()));
+    }
+
     private SysUser user(String memberRole) {
         SysUser user = new SysUser();
         user.setId(11L);

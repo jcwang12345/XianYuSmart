@@ -41,4 +41,14 @@ class AccountDataPermissionHandlerTest {
                     handler.getSqlSegment(new Table(tableName), null, "test").toString());
         }
     }
+
+    @Test
+    void growthWorkspaceAccountTablesAreProtectedBySelectedScope() {
+        AccountScopeContext.set(false, Set.of(101L, 103L));
+        for (String tableName : Set.of("growth_resource_goods_mapping", "growth_search_snapshot",
+                "growth_workflow_run")) {
+            assertEquals(tableName + ".xianyu_account_id IN (101, 103)",
+                    handler.getSqlSegment(new Table(tableName), null, "test").toString());
+        }
+    }
 }

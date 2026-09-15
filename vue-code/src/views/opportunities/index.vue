@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { getAccountList } from '@/api/account'
-import { createPublishPlan, crawlShopOpportunities, generateOpportunityImage, importOpportunities, polishOpportunity, searchOpportunities, type OpportunityCandidate } from '@/api/merchant'
+import { createPublishPlan, generateOpportunityImage, importOpportunities, polishOpportunity, type OpportunityCandidate } from '@/api/merchant'
+import { createGrowthSearch, type SearchSnapshot } from '@/api/growth-workspace'
 import PublishAddressFields from '@/components/PublishAddressFields.vue'
 import MediaUploader from '@/components/MediaUploader.vue'
 import type { PublishAddress } from '@/data/publish-address'
@@ -25,7 +26,8 @@ const maxStep = ref(1)
 const searched = ref(false)
 const pageNumber = ref(1)
 const hasMore = ref(false)
-const total = ref(0)
+const total = ref<number | null>(null)
+const snapshot = ref<SearchSnapshot>()
 const draft = reactive({
   name: '',
   description: '',
@@ -70,7 +72,8 @@ const resetResults = () => {
   searched.value = false
   pageNumber.value = 1
   hasMore.value = false
-  total.value = 0
+  total.value = null
+  snapshot.value = undefined
 }
 
 const search = async (append = false) => {
@@ -81,18 +84,24 @@ const search = async (append = false) => {
   else loading.value = true
   try {
     const targetPage = append ? pageNumber.value + 1 : 1
-    const common = { xianyuAccountId: accountId.value, pageNumber: targetPage, limit: 30 }
-    const response = sourceMode.value === 'keyword'
-      ? await searchOpportunities({ ...common, keyword: keyword.value })
-      : await crawlShopOpportunities({ ...common, shopUrl: shopUrl.value })
-    const page = response.data
-    const pageItems = page?.items || []
+    const response = await createGrowthSearch({
+      searchType: sourceMode.value === 'keyword' ? 'KEYWORD' : 'SHOP',
+      accountId: accountId.value,
+      query: sourceMode.value === 'keyword' ? keyword.value.trim() : shopUrl.value.trim(),
+      pageNumber: targetPage,
+      pageSize: 30,
+      filters: {},
+      requestId: `OPP-${crypto.randomUUID()}`.slice(0, 64)
+    })
+    snapshot.value = response.data
+    const page = response.data?.result
+    const pageItems = (page?.items || []) as unknown as OpportunityCandidate[]
     results.value = append
       ? [...results.value, ...pageItems.filter(item => !results.value.some(current => current.itemId === item.itemId))]
       : pageItems
     pageNumber.value = page?.pageNumber || targetPage
     hasMore.value = Boolean(page?.hasMore)
-    total.value = Number(page?.total || results.value.length)
+    total.value = response.data?.evidence.reportedTotal ?? null
     searched.value = true
     if (!append) {
       selectedIds.value = []
@@ -139,18 +148,15 @@ const goStep = (target: number) => {
   if (target <= maxStep.value) step.value = target
 }
 
-const publish = async (dryRun = false) => {
+const publish = async () => {
   if (!accountId.value) return toast.error('请选择发布账号')
   loading.value = true
   try {
-    const response = await createPublishPlan({ xianyuAccountId: accountId.value, ...draft, dryRun })
+    const response = await createPublishPlan({ xianyuAccountId: accountId.value, ...draft, dryRun: true })
     if (response.data?.valid === false) {
       return toast.error(String(response.data.error || '商品发布失败'))
     }
-    const itemId = response.data?.platform?.itemId
-    toast.success(dryRun
-      ? '平台校验通过，发布配置可用'
-      : `平台已确认发布成功${itemId ? `，商品 ID：${itemId}` : ''}`)
+    toast.success('平台校验通过；本页面不会执行真实发布')
   } finally {
     loading.value = false
   }
@@ -195,17 +201,17 @@ onMounted(loadAccounts)
 <template>
   <section class="workbench opportunity">
     <header class="workbench__header">
-      <div><h1>商机发掘</h1><p>按关键词搜索商品，或采集指定店铺，再完成详情整理、AI 润色与发布。</p></div>
+      <div><h1>商机发掘</h1><p>按关键词或店铺进行只读采样，保留来源、时间、样本量、去重和授权证据，再整理为发布草稿。</p></div>
     </header>
 
     <div class="workbench__steps">
-      <button v-for="(label, index) in ['1 捕获', '2 改写', '3 配置', '4 发布']" :key="label" class="workbench__step" :class="{ 'workbench__step--active': step === index + 1 }" :disabled="index + 1 > maxStep" @click="goStep(index + 1)">{{ label }}</button>
+      <button v-for="(label, index) in ['1 捕获', '2 改写', '3 配置', '4 发布预检']" :key="label" class="workbench__step" :class="{ 'workbench__step--active': step === index + 1 }" :disabled="index + 1 > maxStep" @click="goStep(index + 1)">{{ label }}</button>
     </div>
 
     <div v-if="step === 1" class="opportunity__layout workbench__section">
       <div class="opportunity__search-pane">
         <div class="workbench__card workbench__toolbar">
-          <select v-model="accountId" class="workbench__select opportunity__account">
+          <select v-model="accountId" class="workbench__select opportunity__account" aria-label="搜索与发布账号">
             <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
           </select>
           <select v-model="sourceMode" class="workbench__select opportunity__mode" @change="resetResults">
@@ -216,8 +222,14 @@ onMounted(loadAccounts)
           <input v-else v-model="shopUrl" class="workbench__input" placeholder="粘贴闲鱼网页版店铺主页完整链接" @keyup.enter="search(false)">
           <button class="workbench__btn workbench__btn--primary" :disabled="loading" @click="search(false)">{{ loading ? '搜索中' : '开始搜索' }}</button>
         </div>
-        <div v-if="searched" class="opportunity__result-meta">
-          {{ total > 0 ? `平台共匹配 ${total} 件，` : '' }}当前已加载 {{ results.length }} 件
+        <div v-if="searched" class="opportunity__evidence">
+          <strong>{{ snapshot?.evidence.freshness === 'FRESH' ? '证据新鲜' : snapshot?.evidence.freshness === 'STALE' ? '证据已过期' : '新鲜度未知' }}</strong>
+          <span>来源 {{ snapshot?.evidence.source || '未记录' }}</span>
+          <span>本页样本 {{ snapshot?.evidence.sampleCount ?? '未同步' }}</span>
+          <span>平台报告总数 {{ total ?? '未同步' }}</span>
+          <span>去重 {{ snapshot?.evidence.duplicateCount ?? '未同步' }}</span>
+          <span>授权 {{ snapshot?.evidence.authorizationStatus || '未知' }}</span>
+          <small>采集于 {{ snapshot?.evidence.collectedAt ? new Date(snapshot.evidence.collectedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录' }} · 请求 {{ snapshot?.requestId }}</small>
         </div>
         <div class="workbench__list workbench__section">
           <article v-for="item in results" :key="item.itemId" class="workbench__item opportunity__result" :class="{ 'opportunity__result--active': active?.itemId === item.itemId }" tabindex="0" @click="toggle(item)" @keydown.enter="toggle(item)">
@@ -274,7 +286,7 @@ onMounted(loadAccounts)
         </div>
       </template>
       <template v-else>
-        <h2>发布前确认</h2>
+        <h2>发布预检确认</h2>
         <div class="opportunity__summary">
           <img :src="draft.images[0]" alt="">
           <div><h3>{{ draft.name }}</h3><p>{{ draft.description }}</p><strong>¥ {{ draft.amount }} · 库存 {{ draft.stock }}</strong><small>{{ draft.province }} {{ draft.city }} {{ draft.district }} · {{ draft.deliveryMethod }}</small></div>
@@ -284,8 +296,8 @@ onMounted(loadAccounts)
         <button class="workbench__btn" :disabled="step <= 1" @click="step--">上一步</button>
         <button v-if="step < 4" class="workbench__btn workbench__btn--primary" @click="next">下一步</button>
         <template v-else>
-          <button class="workbench__btn" :disabled="loading" @click="publish(true)">仅校验</button>
-          <button class="workbench__btn workbench__btn--primary" :disabled="loading" @click="publish(false)">立即发布</button>
+          <button class="workbench__btn workbench__btn--primary" :disabled="loading" @click="publish">执行发布预检</button>
+          <small>真实发布请进入商品发布中心；本页不会触达平台写接口。</small>
         </template>
       </div>
     </div>
@@ -298,6 +310,9 @@ onMounted(loadAccounts)
 .opportunity__mode { max-width: 130px; }
 .opportunity__search-pane { min-width: 0; }
 .opportunity__result-meta { margin: 12px 0 -4px; color: #667085; font-size: 12px; }
+.opportunity__evidence { display:flex; flex-wrap:wrap; gap:6px 12px; margin:12px 0 -4px; padding:10px 12px; border:1px solid #f1d36b; border-radius:9px; color:#667085; background:#fffbed; font-size:11px; }
+.opportunity__evidence strong { color:#694b00; }
+.opportunity__evidence small { flex-basis:100%; }
 .opportunity__result { width: 100%; min-width: 0; grid-template-columns: auto 56px minmax(0, 1fr) auto; color: inherit; text-align: left; cursor: pointer; }
 .opportunity__result-copy { min-width: 0; }
 .opportunity__result > strong { white-space: nowrap; }
@@ -324,6 +339,7 @@ onMounted(loadAccounts)
 .opportunity__summary strong, .opportunity__summary small { display: block; margin-top: 10px; }
 @media (max-width: 900px) { .opportunity__layout { grid-template-columns: 1fr; } .opportunity__preview { position: static; } }
 @media (max-width: 767px) {
+  .opportunity__account, .opportunity__mode { width: 100%; max-width: none; }
   .opportunity__result { grid-template-columns: auto 52px minmax(0, 1fr); align-items: start; }
   .opportunity__result img { width: 52px; height: 52px; }
   .opportunity__result > strong { grid-column: 3; }

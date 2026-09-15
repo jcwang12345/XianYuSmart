@@ -31,6 +31,7 @@ public class AccountDataPermissionHandler implements MultiDataPermissionHandler 
             "xianyu_message_send_attempt", "xianyu_notification_event",
             "xianyu_order_engagement_event",
             "xianyu_ai_handoff_task",
+            "growth_resource_goods_mapping", "growth_search_snapshot", "growth_workflow_run",
             "xianyu_keyword_reply_rule_version", "xianyu_reply_policy_simulation",
             "xianyu_account_group_member", "xianyu_shop_metric_daily"
     );

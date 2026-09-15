@@ -3,10 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { getAccountList } from '@/api/account'
 import {
   getSellerPublicProfile,
-  searchOpportunities,
   type OpportunityCandidate,
   type SellerPublicProfile
 } from '@/api/merchant'
+import { createGrowthSearch, type SearchSnapshot } from '@/api/growth-workspace'
 import type { Account } from '@/types'
 import { toast } from '@/utils/toast'
 import '@/styles/merchant-workbench.css'
@@ -20,7 +20,8 @@ const sortMode = ref<'relevance' | 'price-asc' | 'price-desc'>('relevance')
 const loading = ref(false)
 const searched = ref(false)
 const results = ref<OpportunityCandidate[]>([])
-const platformTotal = ref(0)
+const platformTotal = ref<number | null>(null)
+const snapshot = ref<SearchSnapshot>()
 const sellerProfiles = ref<Record<string, SellerPublicProfile>>({})
 const sellerProfileLoading = ref(new Set<string>())
 const sellerProfileErrors = ref(new Set<string>())
@@ -48,7 +49,7 @@ const filteredResults = computed(() => {
 
 const priceSummary = computed(() => {
   const prices = filteredResults.value.map(item => priceNumber(item.price)).filter(price => price > 0).sort((a, b) => a - b)
-  if (!prices.length) return { lowest: 0, median: 0, highest: 0 }
+  if (!prices.length) return { lowest: null, median: null, highest: null }
   const middle = Math.floor(prices.length / 2)
   const median = prices.length % 2 ? prices[middle]! : (prices[middle - 1]! + prices[middle]!) / 2
   return { lowest: prices[0]!, median, highest: prices[prices.length - 1]! }
@@ -110,14 +111,22 @@ const search = async () => {
   }
   loading.value = true
   try {
-    const response = await searchOpportunities({
-      xianyuAccountId: accountId.value,
-      keyword: keyword.value,
+    const response = await createGrowthSearch({
+      searchType: 'PRICE_COMPARE',
+      accountId: accountId.value,
+      query: keyword.value.trim(),
       pageNumber: 1,
-      limit: 50
+      pageSize: 50,
+      filters: {
+        minPrice: minPrice.value === '' ? undefined : Number(minPrice.value),
+        maxPrice: maxPrice.value === '' ? undefined : Number(maxPrice.value),
+        sort: sortMode.value
+      },
+      requestId: `PRICE-${crypto.randomUUID()}`.slice(0, 64)
     })
-    results.value = response.data?.items || []
-    platformTotal.value = Number(response.data?.total || results.value.length)
+    snapshot.value = response.data
+    results.value = (response.data?.result.items || []) as unknown as OpportunityCandidate[]
+    platformTotal.value = response.data?.evidence.reportedTotal ?? null
     sellerProfiles.value = {}
     sellerProfileLoading.value = new Set()
     sellerProfileErrors.value = new Set()
@@ -142,16 +151,26 @@ onMounted(loadAccounts)
     <header class="workbench__header">
       <div>
         <h1>全站比价</h1>
-        <p>按闲鱼全站真实搜索结果比较价格，并集中查看平台公开的卖家评价与信用信息。</p>
+        <p>按平台公开搜索结果生成可追溯的样本比价；来源、采集时间、样本覆盖和去重情况始终可见。</p>
       </div>
     </header>
 
     <div class="workbench__card comparison__search">
-      <select v-model="accountId" class="workbench__select">
+      <select v-model="accountId" class="workbench__select" aria-label="比价账号">
         <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
       </select>
       <input v-model="keyword" class="workbench__input" placeholder="输入商品关键词，例如：iPhone 15 256G" @keyup.enter="search">
       <button class="workbench__btn workbench__btn--primary" :disabled="loading" @click="search">{{ loading ? '比价中' : '开始比价' }}</button>
+    </div>
+
+    <div v-if="searched" class="comparison__evidence">
+      <strong>{{ snapshot?.evidence.freshness === 'FRESH' ? '证据新鲜' : snapshot?.evidence.freshness === 'STALE' ? '证据已过期' : '新鲜度未知' }}</strong>
+      <span>来源 {{ snapshot?.evidence.source || '未记录' }}</span>
+      <span>样本 {{ snapshot?.evidence.sampleCount ?? '未同步' }}</span>
+      <span>平台报告总数 {{ platformTotal ?? '未同步' }}</span>
+      <span>去重 {{ snapshot?.evidence.duplicateCount ?? '未同步' }}</span>
+      <span>授权 {{ snapshot?.evidence.authorizationStatus || '未知' }}</span>
+      <small>{{ snapshot?.result.notice || '价格仅代表本次返回样本，不代表全站成交价。' }}</small>
     </div>
 
     <div class="workbench__card comparison__filters">
@@ -168,10 +187,10 @@ onMounted(loadAccounts)
     </div>
 
     <div v-if="searched" class="comparison__metrics">
-      <div class="workbench__card"><span>当前结果</span><strong>{{ filteredResults.length }}</strong><small>平台匹配 {{ platformTotal || results.length }} 件</small></div>
-      <div class="workbench__card"><span>最低价</span><strong>¥ {{ priceSummary.lowest || '--' }}</strong><small>当前筛选范围</small></div>
-      <div class="workbench__card"><span>中位价</span><strong>¥ {{ priceSummary.median || '--' }}</strong><small>减少极端价格干扰</small></div>
-      <div class="workbench__card"><span>最高价</span><strong>¥ {{ priceSummary.highest || '--' }}</strong><small>当前筛选范围</small></div>
+      <div class="workbench__card"><span>当前样本</span><strong>{{ filteredResults.length }}</strong><small>平台报告 {{ platformTotal ?? '未同步' }}</small></div>
+      <div class="workbench__card"><span>最低价</span><strong>{{ priceSummary.lowest === null ? '未同步' : `¥ ${priceSummary.lowest}` }}</strong><small>当前已返回样本</small></div>
+      <div class="workbench__card"><span>中位价</span><strong>{{ priceSummary.median === null ? '未同步' : `¥ ${priceSummary.median}` }}</strong><small>当前已返回样本</small></div>
+      <div class="workbench__card"><span>最高价</span><strong>{{ priceSummary.highest === null ? '未同步' : `¥ ${priceSummary.highest}` }}</strong><small>当前已返回样本</small></div>
     </div>
 
     <div class="comparison__list workbench__section">
@@ -240,6 +259,8 @@ onMounted(loadAccounts)
 
 <style scoped>
 .comparison__search { display: grid; grid-template-columns: 190px minmax(0, 1fr) auto; gap: 10px; }
+.comparison__evidence { display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:12px; padding:10px 13px; border:1px solid #f1d36b; border-radius:9px; color:#667085; background:#fffbed; font-size:11px; }
+.comparison__evidence strong { color:#694b00; }.comparison__evidence small { flex-basis:100%; }
 .comparison__filters { display: grid; grid-template-columns: repeat(3, minmax(150px, 220px)) auto; align-items: end; gap: 12px; margin-top: 12px; }
 .comparison__metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .comparison__metrics span, .comparison__metrics small { display: block; color: #667085; font-size: 12px; }

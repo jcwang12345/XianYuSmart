@@ -51,7 +51,7 @@ export interface MerchantResource {
   xianyuAccountIds?: number[]
   xyGoodsId?: string
   stock: number
-  amount: number
+  amount: number | null
   scheduledTime?: string
   lastRunTime?: string
   data: Record<string, any>

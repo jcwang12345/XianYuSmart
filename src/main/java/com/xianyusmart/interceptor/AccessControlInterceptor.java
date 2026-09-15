@@ -104,6 +104,8 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/qa/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
         if (uri.startsWith("/api/qa/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/qa/fulfillment")) return PermissionCatalog.MENU_KAMI;
+        if (uri.startsWith("/api/qa/growth-workspace")) return PermissionCatalog.MENU_OPERATIONS;
+        if (uri.startsWith("/api/growth-workspace")) return PermissionCatalog.MENU_OPERATIONS;
         if (uri.startsWith("/api/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/account-groups")) return PermissionCatalog.MENU_ACCOUNTS;
         if (uri.startsWith("/api/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
@@ -183,6 +185,17 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (uri.startsWith("/api/qa/growth-workspace") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
+        // 商机采样虽然使用 POST 承载查询条件，但只读取公开平台样本并写本地证据快照，
+        // 不执行店铺侧动作，因此只要求运营菜单读取权限。
+        if (uri.equals("/api/growth-workspace/searches")) {
+            return null;
+        }
+        if (uri.startsWith("/api/growth-workspace") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_OPERATIONS_WRITE;
+        }
         if (uri.startsWith("/api/qa/backup") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
