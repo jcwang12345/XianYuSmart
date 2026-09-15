@@ -1087,14 +1087,29 @@ public class ProductMatrixService {
     private Map<String, Object> metricWindow(Long accountId, String goodsId, int days) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 SELECT COUNT(DISTINCT metric_date) sample_days,
-                       SUM(exposure_count) exposure_count, SUM(visitor_count) visitor_count,
+                       SUM(exposure_count) exposure_count, SUM(exposure_uv_count) exposure_uv_count,
+                       SUM(visitor_count) visitor_count,
                        SUM(click_count) click_count, SUM(favorite_count) favorite_count,
-                       SUM(inquiry_count) inquiry_count, SUM(paid_order_count) paid_order_count,
-                       SUM(paid_amount) paid_amount,
-                       COUNT(exposure_count) exposure_days, COUNT(visitor_count) visitor_days,
-                       COUNT(click_count) click_days, COUNT(favorite_count) favorite_days,
-                       COUNT(inquiry_count) inquiry_days, COUNT(paid_order_count) paid_order_days,
-                       COUNT(paid_amount) paid_amount_days,
+                       SUM(inquiry_count) inquiry_count, SUM(inquiry_buyer_count) inquiry_buyer_count,
+                       SUM(paid_order_count) paid_order_count, SUM(paid_buyer_count) paid_buyer_count,
+                       SUM(completed_buyer_count) completed_buyer_count,
+                       SUM(refund_buyer_count) refund_buyer_count,
+                       SUM(refund_order_count) refund_order_count,
+                       SUM(paid_amount) paid_amount, SUM(refund_amount) refund_amount,
+                       COUNT(DISTINCT IF(exposure_count IS NOT NULL,metric_date,NULL)) exposure_days,
+                       COUNT(DISTINCT IF(exposure_uv_count IS NOT NULL,metric_date,NULL)) exposure_uv_days,
+                       COUNT(DISTINCT IF(visitor_count IS NOT NULL,metric_date,NULL)) visitor_days,
+                       COUNT(DISTINCT IF(click_count IS NOT NULL,metric_date,NULL)) click_days,
+                       COUNT(DISTINCT IF(favorite_count IS NOT NULL,metric_date,NULL)) favorite_days,
+                       COUNT(DISTINCT IF(inquiry_count IS NOT NULL,metric_date,NULL)) inquiry_days,
+                       COUNT(DISTINCT IF(inquiry_buyer_count IS NOT NULL,metric_date,NULL)) inquiry_buyer_days,
+                       COUNT(DISTINCT IF(paid_order_count IS NOT NULL,metric_date,NULL)) paid_order_days,
+                       COUNT(DISTINCT IF(paid_buyer_count IS NOT NULL,metric_date,NULL)) paid_buyer_days,
+                       COUNT(DISTINCT IF(completed_buyer_count IS NOT NULL,metric_date,NULL)) completed_buyer_days,
+                       COUNT(DISTINCT IF(refund_buyer_count IS NOT NULL,metric_date,NULL)) refund_buyer_days,
+                       COUNT(DISTINCT IF(refund_order_count IS NOT NULL,metric_date,NULL)) refund_order_days,
+                       COUNT(DISTINCT IF(paid_amount IS NOT NULL,metric_date,NULL)) paid_amount_days,
+                       COUNT(DISTINCT IF(refund_amount IS NOT NULL,metric_date,NULL)) refund_amount_days,
                        CASE WHEN COUNT(*)=0 THEN 'UNSYNCED'
                             WHEN COUNT(DISTINCT metric_date)>=? AND COUNT(DISTINCT source)=1
                                  AND SUM(coverage_status='FULL')=COUNT(*)
@@ -1109,19 +1124,33 @@ public class ProductMatrixService {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("sampleDays", rs.getInt("sample_days"));
             row.put("exposureCount", nullableLong(rs, "exposure_count"));
+            row.put("exposureUvCount", nullableLong(rs, "exposure_uv_count"));
             row.put("visitorCount", nullableLong(rs, "visitor_count"));
             row.put("clickCount", nullableLong(rs, "click_count"));
             row.put("favoriteCount", nullableLong(rs, "favorite_count"));
             row.put("inquiryCount", nullableLong(rs, "inquiry_count"));
+            row.put("inquiryBuyerCount", nullableLong(rs, "inquiry_buyer_count"));
             row.put("paidOrderCount", nullableLong(rs, "paid_order_count"));
+            row.put("paidBuyerCount", nullableLong(rs, "paid_buyer_count"));
+            row.put("completedBuyerCount", nullableLong(rs, "completed_buyer_count"));
+            row.put("refundBuyerCount", nullableLong(rs, "refund_buyer_count"));
+            row.put("refundOrderCount", nullableLong(rs, "refund_order_count"));
             row.put("paidAmount", rs.getBigDecimal("paid_amount"));
+            row.put("refundAmount", rs.getBigDecimal("refund_amount"));
             row.put("exposureDays", rs.getInt("exposure_days"));
+            row.put("exposureUvDays", rs.getInt("exposure_uv_days"));
             row.put("visitorDays", rs.getInt("visitor_days"));
             row.put("clickDays", rs.getInt("click_days"));
             row.put("favoriteDays", rs.getInt("favorite_days"));
             row.put("inquiryDays", rs.getInt("inquiry_days"));
+            row.put("inquiryBuyerDays", rs.getInt("inquiry_buyer_days"));
             row.put("paidOrderDays", rs.getInt("paid_order_days"));
+            row.put("paidBuyerDays", rs.getInt("paid_buyer_days"));
+            row.put("completedBuyerDays", rs.getInt("completed_buyer_days"));
+            row.put("refundBuyerDays", rs.getInt("refund_buyer_days"));
+            row.put("refundOrderDays", rs.getInt("refund_order_days"));
             row.put("paidAmountDays", rs.getInt("paid_amount_days"));
+            row.put("refundAmountDays", rs.getInt("refund_amount_days"));
             row.put("coverageStatus", rs.getString("coverage_status"));
             row.put("dataStartDate", rs.getDate("data_start_date") == null ? null : rs.getDate("data_start_date").toLocalDate());
             row.put("dataDate", rs.getDate("data_date") == null ? null : rs.getDate("data_date").toLocalDate());
@@ -1220,12 +1249,19 @@ public class ProductMatrixService {
         metric.put("windowDays", days);
         metric.put("sampleDays", samples == 0 ? null : samples);
         metric.put("exposureCount", samples == 0 ? null : row.get("exposureCount"));
+        metric.put("exposureUvCount", samples == 0 ? null : row.get("exposureUvCount"));
         metric.put("visitorCount", samples == 0 ? null : row.get("visitorCount"));
         metric.put("clickCount", samples == 0 ? null : row.get("clickCount"));
         metric.put("favoriteCount", samples == 0 ? null : row.get("favoriteCount"));
         metric.put("inquiryCount", samples == 0 ? null : row.get("inquiryCount"));
+        metric.put("inquiryBuyerCount", samples == 0 ? null : row.get("inquiryBuyerCount"));
         metric.put("paidOrderCount", samples == 0 ? null : row.get("paidOrderCount"));
+        metric.put("paidBuyerCount", samples == 0 ? null : row.get("paidBuyerCount"));
+        metric.put("completedBuyerCount", samples == 0 ? null : row.get("completedBuyerCount"));
+        metric.put("refundBuyerCount", samples == 0 ? null : row.get("refundBuyerCount"));
+        metric.put("refundOrderCount", samples == 0 ? null : row.get("refundOrderCount"));
         metric.put("paidAmount", samples == 0 ? null : row.get("paidAmount"));
+        metric.put("refundAmount", samples == 0 ? null : row.get("refundAmount"));
         metric.put("coverageStatus", coverageStatus);
         metric.put("coverage", coverage(coverageStatus, samples, days));
         metric.put("source", source);
@@ -1239,6 +1275,8 @@ public class ProductMatrixService {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("exposureCount", metricField(metric.get("exposureCount"), source, coverageStatus,
                 integer(row.get("exposureDays")), days, syncedAt, "商品在所选时间范围内获得展示的累计次数"));
+        fields.put("exposureUvCount", metricField(metric.get("exposureUvCount"), source, coverageStatus,
+                integer(row.get("exposureUvDays")), days, syncedAt, "数据源按日去重后提供的曝光人数；跨日相加不等于跨周期绝对去重人数"));
         fields.put("visitorCount", metricField(metric.get("visitorCount"), source, coverageStatus,
                 integer(row.get("visitorDays")), days, syncedAt, "进入商品详情的去重访客累计数"));
         fields.put("clickCount", metricField(metric.get("clickCount"), source, coverageStatus,
@@ -1247,11 +1285,24 @@ public class ProductMatrixService {
                 integer(row.get("favoriteDays")), days, syncedAt, "商品新增收藏的累计次数"));
         fields.put("inquiryCount", metricField(metric.get("inquiryCount"), source, coverageStatus,
                 integer(row.get("inquiryDays")), days, syncedAt, "与该商品关联的新咨询累计数"));
+        fields.put("inquiryBuyerCount", metricField(metric.get("inquiryBuyerCount"), source, coverageStatus,
+                integer(row.get("inquiryBuyerDays")), days, syncedAt, "发起商品咨询的按日去重买家人数"));
         fields.put("paidOrderCount", metricField(metric.get("paidOrderCount"), source, coverageStatus,
                 integer(row.get("paidOrderDays")), days, syncedAt, "与该商品关联且已支付的订单累计数"));
+        fields.put("paidBuyerCount", metricField(metric.get("paidBuyerCount"), source, coverageStatus,
+                integer(row.get("paidBuyerDays")), days, syncedAt, "支付该商品订单的按日去重买家人数"));
+        fields.put("completedBuyerCount", metricField(metric.get("completedBuyerCount"), source, coverageStatus,
+                integer(row.get("completedBuyerDays")), days, syncedAt, "该商品交易已完成的按日去重买家人数"));
+        fields.put("refundBuyerCount", metricField(metric.get("refundBuyerCount"), source, coverageStatus,
+                integer(row.get("refundBuyerDays")), days, syncedAt, "该商品发生退款的按日去重买家人数"));
+        fields.put("refundOrderCount", metricField(metric.get("refundOrderCount"), source, coverageStatus,
+                integer(row.get("refundOrderDays")), days, syncedAt, "与该商品关联且发生退款的订单累计数"));
         fields.put("paidAmount", metricField(metric.get("paidAmount"), source, coverageStatus,
                 integer(row.get("paidAmountDays")), days, syncedAt, "与该商品关联且金额已同步的支付金额合计"));
+        fields.put("refundAmount", metricField(metric.get("refundAmount"), source, coverageStatus,
+                integer(row.get("refundAmountDays")), days, syncedAt, "与该商品关联且金额已同步的退款金额合计"));
         metric.put("fields", fields);
+        metric.put("funnel", buyerFunnel(fields, source, days));
         if (samples == 0) {
             metric.put("emptyState", Map.of(
                     "title", "最近 " + days + " 天指标尚未同步",
@@ -1261,6 +1312,98 @@ public class ProductMatrixService {
             metric.put("emptyState", null);
         }
         return metric;
+    }
+
+    static Map<String, Object> buyerFunnel(Map<String, Object> fields, String source, int windowDays) {
+        List<Map<String, Object>> stages = List.of(
+                funnelStage("EXPOSURE", "曝光人数", "exposureUvCount", fields),
+                funnelStage("DETAIL", "详情访客", "visitorCount", fields),
+                funnelStage("INQUIRY", "咨询买家", "inquiryBuyerCount", fields),
+                funnelStage("PAID", "支付买家", "paidBuyerCount", fields),
+                funnelStage("COMPLETED", "完成买家", "completedBuyerCount", fields),
+                funnelStage("REFUND", "退款买家", "refundBuyerCount", fields));
+        List<Map<String, Object>> transitions = List.of(
+                funnelTransition(stages.get(0), stages.get(1), source, windowDays),
+                funnelTransition(stages.get(1), stages.get(2), source, windowDays),
+                funnelTransition(stages.get(2), stages.get(3), source, windowDays),
+                funnelTransition(stages.get(3), stages.get(4), source, windowDays),
+                funnelTransition(stages.get(3), stages.get(5), source, windowDays));
+        List<String> warnings = new ArrayList<>();
+        for (Map<String, Object> transition : transitions) {
+            if (Boolean.TRUE.equals(transition.get("monotonicityWarning"))) {
+                warnings.add(string(transition.get("fromLabel")) + "少于" + string(transition.get("toLabel"))
+                        + "，请检查数据源口径或跨日去重方式");
+            }
+        }
+        Map<String, Object> funnel = new LinkedHashMap<>();
+        funnel.put("definition", "按数据源日去重人数累计构建；完成和退款均从支付买家分支计算");
+        funnel.put("source", source);
+        funnel.put("windowDays", windowDays);
+        funnel.put("stages", stages);
+        funnel.put("transitions", transitions);
+        funnel.put("warnings", warnings);
+        funnel.put("hasAnyData", stages.stream().anyMatch(stage -> stage.get("value") != null));
+        return funnel;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> funnelStage(String key, String label, String fieldKey,
+                                                    Map<String, Object> fields) {
+        Map<String, Object> field = (Map<String, Object>) fields.get(fieldKey);
+        Map<String, Object> stage = new LinkedHashMap<>();
+        stage.put("key", key);
+        stage.put("label", label);
+        stage.put("fieldKey", fieldKey);
+        stage.put("value", field == null ? null : field.get("value"));
+        stage.put("coverage", field == null ? coverage("UNSYNCED", 0, 1) : field.get("coverage"));
+        stage.put("definition", field == null ? null : field.get("definition"));
+        return stage;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> funnelTransition(Map<String, Object> from, Map<String, Object> to,
+                                                         String source, int windowDays) {
+        Number fromValue = from.get("value") instanceof Number number ? number : null;
+        Number toValue = to.get("value") instanceof Number number ? number : null;
+        Map<String, Object> fromCoverage = from.get("coverage") instanceof Map<?, ?> map
+                ? (Map<String, Object>) map : Map.of();
+        Map<String, Object> toCoverage = to.get("coverage") instanceof Map<?, ?> map
+                ? (Map<String, Object>) map : Map.of();
+        Integer fromDays = integer(fromCoverage.get("numerator"));
+        Integer toDays = integer(toCoverage.get("numerator"));
+        boolean compatible = fromValue != null && toValue != null && fromDays != null && fromDays > 0
+                && Objects.equals(fromDays, toDays) && !"UNSYNCED".equals(source) && !"MULTIPLE".equals(source);
+        BigDecimal rate = null;
+        String status;
+        String reason = null;
+        if (!compatible) {
+            status = "UNAVAILABLE";
+            reason = fromValue == null || toValue == null ? "上下游人数尚未完整同步"
+                    : "上下游覆盖天数或来源不兼容，不能计算";
+        } else if (fromValue.longValue() == 0L) {
+            status = "NOT_COMPUTABLE";
+            reason = "上游人数真实为 0，转化率不可计算";
+        } else {
+            rate = BigDecimal.valueOf(toValue.longValue())
+                    .divide(BigDecimal.valueOf(fromValue.longValue()), 6, RoundingMode.HALF_UP);
+            status = fromDays >= windowDays ? "FULL" : "PARTIAL";
+            if ("PARTIAL".equals(status)) reason = "仅基于 " + fromDays + "/" + windowDays + " 天兼容样本";
+        }
+        Map<String, Object> transition = new LinkedHashMap<>();
+        transition.put("from", from.get("key"));
+        transition.put("fromLabel", from.get("label"));
+        transition.put("to", to.get("key"));
+        transition.put("toLabel", to.get("label"));
+        transition.put("rate", rate);
+        transition.put("ratePercent", rate == null ? null : rate.multiply(BigDecimal.valueOf(100)).setScale(2, RoundingMode.HALF_UP));
+        transition.put("status", status);
+        transition.put("formula", string(to.get("label")) + " ÷ " + string(from.get("label")));
+        transition.put("source", source);
+        transition.put("coverage", coverage(status, fromDays == null ? 0 : fromDays, windowDays));
+        transition.put("reason", reason);
+        transition.put("monotonicityWarning", fromValue != null && toValue != null
+                && toValue.longValue() > fromValue.longValue());
+        return transition;
     }
 
     private static Map<String, Object> metricField(Object value, String source, String coverageStatus,

@@ -262,6 +262,119 @@ class ProductMatrixServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
+    void metricBuyerFunnelUsesDistinctBuyerFieldsAndKeepsUnsyncedUnknown() {
+        Map<String, Object> row = mapWithNulls(
+                "sampleDays", 0, "sources", null,
+                "exposureCount", null, "exposureUvCount", null, "visitorCount", null,
+                "clickCount", null, "favoriteCount", null, "inquiryCount", null,
+                "inquiryBuyerCount", null, "paidOrderCount", null, "paidBuyerCount", null,
+                "completedBuyerCount", null, "refundBuyerCount", null, "refundOrderCount", null,
+                "paidAmount", null, "refundAmount", null);
+
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(row, 30, 101L,
+                "QA-GOODS-0999", Instant.parse("2026-09-16T02:00:00Z"));
+
+        Map<String, Object> funnel = (Map<String, Object>) metric.get("funnel");
+        assertEquals(false, funnel.get("hasAnyData"));
+        List<Map<String, Object>> stages = (List<Map<String, Object>>) funnel.get("stages");
+        assertEquals(List.of("exposureUvCount", "visitorCount", "inquiryBuyerCount", "paidBuyerCount",
+                        "completedBuyerCount", "refundBuyerCount"),
+                stages.stream().map(stage -> String.valueOf(stage.get("fieldKey"))).toList());
+        assertTrue(stages.stream().allMatch(stage -> stage.get("value") == null));
+        List<Map<String, Object>> transitions = (List<Map<String, Object>>) funnel.get("transitions");
+        assertTrue(transitions.stream().allMatch(transition -> transition.get("rate") == null));
+        assertTrue(transitions.stream().allMatch(transition -> "UNAVAILABLE".equals(transition.get("status"))));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void metricBuyerFunnelCalculatesCompatibleUvRatesAndBranchesRefundFromPaid() {
+        Instant syncedAt = Instant.parse("2026-09-16T01:30:00Z");
+        Map<String, Object> row = fullFunnelRow(7, syncedAt,
+                1000L, 500L, 100L, 20L, 18L, 2L);
+
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(row, 7, 101L,
+                "QA-GOODS-0999", Instant.parse("2026-09-16T02:00:00Z"));
+
+        Map<String, Object> funnel = (Map<String, Object>) metric.get("funnel");
+        List<Map<String, Object>> transitions = (List<Map<String, Object>>) funnel.get("transitions");
+        assertEquals(new java.math.BigDecimal("50.00"), transitions.get(0).get("ratePercent"));
+        assertEquals(new java.math.BigDecimal("20.00"), transitions.get(1).get("ratePercent"));
+        assertEquals(new java.math.BigDecimal("20.00"), transitions.get(2).get("ratePercent"));
+        assertEquals("PAID", transitions.get(4).get("from"));
+        assertEquals("REFUND", transitions.get(4).get("to"));
+        assertEquals(new java.math.BigDecimal("10.00"), transitions.get(4).get("ratePercent"));
+        assertTrue(transitions.stream().allMatch(transition -> "FULL".equals(transition.get("status"))));
+        assertEquals(List.of(), funnel.get("warnings"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void metricBuyerFunnelMarksPartialZeroAndAnomalyWithoutClamping() {
+        Instant syncedAt = Instant.parse("2026-09-16T01:30:00Z");
+        Map<String, Object> partial = fullFunnelRow(2, syncedAt,
+                100L, 40L, 10L, 0L, 0L, 0L);
+        partial.put("coverageStatus", "PARTIAL");
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(partial, 7, 101L,
+                "QA-GOODS-0999", Instant.parse("2026-09-16T02:00:00Z"));
+        List<Map<String, Object>> transitions = (List<Map<String, Object>>)
+                ((Map<String, Object>) metric.get("funnel")).get("transitions");
+        assertEquals("PARTIAL", transitions.get(0).get("status"));
+        assertEquals("NOT_COMPUTABLE", transitions.get(3).get("status"));
+        assertNull(transitions.get(3).get("rate"));
+
+        Map<String, Object> anomaly = fullFunnelRow(1, syncedAt,
+                10L, 12L, 5L, 2L, 1L, 0L);
+        Map<String, Object> anomalyMetric = ProductMatrixService.metricWindowResponse(anomaly, 1, 101L,
+                "QA-GOODS-0999", Instant.parse("2026-09-16T02:00:00Z"));
+        Map<String, Object> anomalyFunnel = (Map<String, Object>) anomalyMetric.get("funnel");
+        List<Map<String, Object>> anomalyTransitions = (List<Map<String, Object>>) anomalyFunnel.get("transitions");
+        assertEquals(new java.math.BigDecimal("120.00"), anomalyTransitions.get(0).get("ratePercent"));
+        assertEquals(true, anomalyTransitions.get(0).get("monotonicityWarning"));
+        assertFalse(((List<String>) anomalyFunnel.get("warnings")).isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void metricBuyerFunnelWithholdsRateWhenCoverageOrSourceIsIncompatible() {
+        Instant syncedAt = Instant.parse("2026-09-16T01:30:00Z");
+        Map<String, Object> row = fullFunnelRow(7, syncedAt,
+                100L, 40L, 10L, 2L, 1L, 0L);
+        row.put("sources", "PLATFORM_API,PLATFORM_WEB");
+        row.put("sourceCount", 2);
+        Map<String, Object> metric = ProductMatrixService.metricWindowResponse(row, 7, 101L,
+                "QA-GOODS-0999", Instant.parse("2026-09-16T02:00:00Z"));
+        List<Map<String, Object>> transitions = (List<Map<String, Object>>)
+                ((Map<String, Object>) metric.get("funnel")).get("transitions");
+        assertTrue(transitions.stream().allMatch(transition -> transition.get("rate") == null));
+        assertTrue(transitions.stream().allMatch(transition -> "UNAVAILABLE".equals(transition.get("status"))));
+    }
+
+    private Map<String, Object> fullFunnelRow(int knownDays, Instant syncedAt,
+                                               long exposureUv, long visitors, long inquiryBuyers,
+                                               long paidBuyers, long completedBuyers, long refundBuyers) {
+        return mapWithNulls(
+                "sampleDays", knownDays, "sources", "QA_FIXTURE", "sourceCount", 1,
+                "coverageStatus", knownDays == 7 ? "FULL" : "PARTIAL",
+                "dataStartDate", LocalDate.parse("2026-09-10"), "dataDate", LocalDate.parse("2026-09-16"),
+                "syncedAt", syncedAt, "exposureCount", exposureUv * 2, "exposureDays", knownDays,
+                "exposureUvCount", exposureUv, "exposureUvDays", knownDays,
+                "visitorCount", visitors, "visitorDays", knownDays,
+                "clickCount", visitors, "clickDays", knownDays,
+                "favoriteCount", 1L, "favoriteDays", knownDays,
+                "inquiryCount", inquiryBuyers, "inquiryDays", knownDays,
+                "inquiryBuyerCount", inquiryBuyers, "inquiryBuyerDays", knownDays,
+                "paidOrderCount", paidBuyers, "paidOrderDays", knownDays,
+                "paidBuyerCount", paidBuyers, "paidBuyerDays", knownDays,
+                "completedBuyerCount", completedBuyers, "completedBuyerDays", knownDays,
+                "refundBuyerCount", refundBuyers, "refundBuyerDays", knownDays,
+                "refundOrderCount", refundBuyers, "refundOrderDays", knownDays,
+                "paidAmount", new java.math.BigDecimal("99.00"), "paidAmountDays", knownDays,
+                "refundAmount", new java.math.BigDecimal("9.90"), "refundAmountDays", knownDays);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
     void emptyTimelineExplainsExactScopeAndLastCheck() {
         Instant checkedAt = Instant.parse("2026-09-16T02:00:00Z");
         Map<String, Object> state = ProductMatrixService.timelineState(

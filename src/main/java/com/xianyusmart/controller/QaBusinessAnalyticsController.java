@@ -131,22 +131,35 @@ public class QaBusinessAnalyticsController {
         long favorites = 4L + index % 12L;
         long inquiries = index == 1 ? 20L : 2L + index % 8L;
         long paidOrders = index == 1 ? 0L : 1L + index % 6L;
+        long exposureUv = Math.max(visitor, index == 0 ? 720L : 180L + index);
+        long inquiryBuyers = Math.min(visitor, inquiries);
+        long paidBuyers = Math.min(inquiryBuyers, paidOrders);
+        long completedBuyers = Math.max(0L, paidBuyers - (index % 5 == 0 ? 1L : 0L));
+        long refundBuyers = paidBuyers == 0 ? 0L : index % 5 == 0 ? 1L : 0L;
+        long refundOrders = refundBuyers;
         BigDecimal paidAmount = BigDecimal.valueOf(paidOrders).multiply(BigDecimal.valueOf(29.90 + index));
+        BigDecimal refundAmount = BigDecimal.valueOf(refundOrders).multiply(BigDecimal.valueOf(29.90 + index));
         BigDecimal conversion = visitor == 0 ? null
                 : BigDecimal.valueOf(paidOrders).divide(BigDecimal.valueOf(visitor), 6, java.math.RoundingMode.HALF_UP);
         jdbcTemplate.update("""
                 INSERT INTO xianyu_goods_metric_daily
-                (tenant_id,xianyu_account_id,xy_goods_id,metric_date,exposure_count,visitor_count,
-                 click_count,favorite_count,inquiry_count,paid_order_count,paid_amount,conversion_rate,
+                (tenant_id,xianyu_account_id,xy_goods_id,metric_date,exposure_count,exposure_uv_count,visitor_count,
+                 click_count,favorite_count,inquiry_count,inquiry_buyer_count,paid_order_count,paid_buyer_count,
+                 completed_buyer_count,refund_buyer_count,refund_order_count,paid_amount,refund_amount,conversion_rate,
                  source,coverage_status,synced_at,request_id)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'QA_FIXTURE','FULL',NOW(3),?)
-                ON DUPLICATE KEY UPDATE exposure_count=VALUES(exposure_count),visitor_count=VALUES(visitor_count),
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'QA_FIXTURE','FULL',NOW(3),?)
+                ON DUPLICATE KEY UPDATE exposure_count=VALUES(exposure_count),exposure_uv_count=VALUES(exposure_uv_count),
+                 visitor_count=VALUES(visitor_count),
                  click_count=VALUES(click_count),favorite_count=VALUES(favorite_count),
-                 inquiry_count=VALUES(inquiry_count),paid_order_count=VALUES(paid_order_count),
-                 paid_amount=VALUES(paid_amount),conversion_rate=VALUES(conversion_rate),
+                 inquiry_count=VALUES(inquiry_count),inquiry_buyer_count=VALUES(inquiry_buyer_count),
+                 paid_order_count=VALUES(paid_order_count),paid_buyer_count=VALUES(paid_buyer_count),
+                 completed_buyer_count=VALUES(completed_buyer_count),refund_buyer_count=VALUES(refund_buyer_count),
+                 refund_order_count=VALUES(refund_order_count),paid_amount=VALUES(paid_amount),
+                 refund_amount=VALUES(refund_amount),conversion_rate=VALUES(conversion_rate),
                  coverage_status='FULL',synced_at=NOW(3),request_id=VALUES(request_id)
-                """, tenantId, accountId, goodsId, Date.valueOf(day), exposure, visitor, clicks,
-                favorites, inquiries, paidOrders, paidAmount, conversion, requestId);
+                """, tenantId, accountId, goodsId, Date.valueOf(day), exposure, exposureUv, visitor, clicks,
+                favorites, inquiries, inquiryBuyers, paidOrders, paidBuyers, completedBuyers, refundBuyers,
+                refundOrders, paidAmount, refundAmount, conversion, requestId);
     }
 
     private boolean auditExists(Long tenantId, String requestId) {
