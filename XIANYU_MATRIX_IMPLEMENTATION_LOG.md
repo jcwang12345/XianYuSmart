@@ -953,3 +953,25 @@
 - 实物平台发货、退款同意/拒绝、订单改价、平台原生收货提醒、追评与营销动作仍缺可靠适配证据，继续显示“尚未验证 / 不可用 / 仅本地”，不提供假成功入口。
 - 外部供货“结果未知”无法由系统自动判断供应商是否出卡，必须人工核对；这是安全设计，不会以自动重试掩盖未知。
 - 本批完成 Wave 5 候选，不声明 V6 长期目标全部完成；独立验收通过后才能转正式版本。
+
+## 批次 25：XYM-FUL-001 固定模板键盘可访问性回归（v3.2.0-rc.2）
+
+### 缺陷与修复
+
+- `XYM-FUL-001 / V6-FUL-02 / P2`：固定模板编辑弹窗接入 `useModalFocusTrap`，保存触发元素并在 Escape、右上角关闭、取消、遮罩或保存关闭后恢复焦点；同时补齐 `role=dialog`、`aria-modal`、标题关联、关闭按钮名称、Tab 首尾循环和背景隔离。
+- 同轮 Product Design 复核修复模板卡片操作文字被压成竖排的问题：桌面卡片使用稳定最小列宽和不换行操作区，390×844 下操作区换到标题下方并保持横排。
+
+### 变更文件、迁移与 API
+
+- 源码：`vue-code/src/views/fixed-delivery-templates/index.vue`；最终生产静态资源由修复后源码重新生成。
+- 版本：`pom.xml`、`src/main/resources/application.yaml`、`vue-code/package.json`、`vue-code/package-lock.json` 统一升级到 `3.2.0-rc.2`。
+- API/数据库：无接口和数据模型变更；不新增迁移，MySQL 5.7 继续验证 53 个迁移。
+
+### 测试、部署与安全边界
+
+- 前端类型检查通过；Vite 最终生产构建 `357 modules transformed`。
+- Maven 全量回归 `247 tests / 0 failures / 0 errors / 0 skipped`；MySQL 5.7 启动验证 `53/53` 个迁移成功，schema version 53。
+- 浏览器行为回归：1920×1080 与 390×844 下，Escape、右上角关闭、取消三条路径的 `activeElement` 均为原“编辑”按钮；Tab/Shift+Tab 保持在弹窗首尾循环。
+- 视觉回归：桌面和手机模板操作均为横排，手机弹窗标题/底部动作常驻，无页面级横向溢出。
+- 最终不可变制品：`/Volumes/Data/codex/xianyu/.tools/native-qa/releases/xianyusmart-3.2.0-rc.2-20260915T095758Z-12a8383c71f3.jar`；`127.0.0.1:3000` 健康为 `UP`，版本接口返回 `3.2.0-rc.2`。
+- 仅读取 Tenant 1 / QA 账号 101 固定模板夹具；未保存模板、未触发平台写入。真实账号 202/203 保持只读。

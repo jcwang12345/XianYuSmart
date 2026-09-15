@@ -14,6 +14,7 @@ import {
   type FixedTemplateVersion
 } from '@/api/fixed-delivery-template'
 import type { Account } from '@/types'
+import { useModalFocusTrap } from '@/composables/useModalFocusTrap'
 import { showConfirm, showError, showSuccess } from '@/utils'
 
 const route = useRoute()
@@ -31,7 +32,12 @@ const inspecting = ref<FixedDeliveryTemplate | null>(null)
 const references = ref<FixedTemplateReference[]>([])
 const versions = ref<FixedTemplateVersion[]>([])
 const evidenceLoading = ref(false)
+const templateDialog = ref<HTMLElement | null>(null)
+const evidenceDialog = ref<HTMLElement | null>(null)
 let previewTimer: ReturnType<typeof setTimeout> | undefined
+
+useModalFocusTrap(dialogVisible, templateDialog, () => { dialogVisible.value = false })
+useModalFocusTrap(computed(() => inspecting.value !== null), evidenceDialog, () => { inspecting.value = null })
 
 const newRequestId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`
 const form = ref({
@@ -267,13 +273,20 @@ onBeforeUnmount(() => {
     </section>
 
     <div v-if="dialogVisible" class="template-dialog-mask" @click.self="dialogVisible = false">
-      <form class="template-dialog" @submit.prevent="submit">
+      <form
+        ref="templateDialog"
+        class="template-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="template-dialog-title"
+        @submit.prevent="submit"
+      >
         <header>
           <div>
-            <h2>{{ form.id ? '编辑模板' : '新建模板' }}</h2>
+            <h2 id="template-dialog-title">{{ form.id ? '编辑模板' : '新建模板' }}</h2>
             <p>模板可被多个商品复用，不消耗卡密库存。</p>
           </div>
-          <button type="button" class="close-btn" @click="dialogVisible = false">×</button>
+          <button type="button" class="close-btn" aria-label="关闭模板弹窗" @click="dialogVisible = false">×</button>
         </header>
         <label>
           <span>适用账号（可多选）</span>
@@ -318,7 +331,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="inspecting" class="template-dialog-mask" @click.self="inspecting = null">
-      <section class="template-evidence-dialog" role="dialog" aria-modal="true" aria-labelledby="template-evidence-title">
+      <section ref="evidenceDialog" class="template-evidence-dialog" role="dialog" aria-modal="true" aria-labelledby="template-evidence-title">
         <header>
           <div>
             <span class="evidence-kicker">模板证据</span>
@@ -371,11 +384,13 @@ button { border: 1px solid #d0d5dd; border-radius: 6px; background: #fff; color:
 .primary-btn { border-color: #9a6200; background: #9a6200; color: #fff; }
 .fixed-template-panel { min-height: 240px; padding: 18px; border: 1px solid #e4e7ec; border-radius: 10px; background: #fff; }
 .empty-state { padding: 72px 20px; color: #98a2b3; text-align: center; }
-.template-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.template-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 12px; }
 .template-card { min-width: 0; padding: 15px; border: 1px solid #e4e7ec; border-radius: 8px; }
-.template-card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.template-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .template-card-header > div { display: flex; gap: 6px; }
 .template-card-header .template-card-title { display: grid; gap: 4px; }
+.template-card-header > div:last-child { flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
+.template-card-header button { white-space: nowrap; }
 .template-card-title span { color: #8a6200; font-size: 11px; font-weight: 650; }
 .danger-text { color: #d92d20; }
 dl { margin: 14px 0 0; }
@@ -419,6 +434,8 @@ dd { margin: 5px 0 0; color: #344054; font-size: 13px; line-height: 1.55; white-
   .fixed-template-actions { width: 100%; flex-wrap: wrap; }
   .fixed-template-actions select, .template-search { width: 100%; min-width: 0; }
   .template-list { grid-template-columns: 1fr; }
+  .template-card-header { flex-direction: column; }
+  .template-card-header > div:last-child { width: 100%; justify-content: flex-start; }
   .template-label-row { align-items: flex-start; flex-direction: column; }
   .template-dialog-mask { align-items: end; padding: 0; }
   .template-dialog, .template-evidence-dialog { width: 100%; max-height: 92dvh; border-radius: 18px 18px 0 0; padding: 18px 16px max(18px, env(safe-area-inset-bottom)); }
