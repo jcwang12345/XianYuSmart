@@ -357,6 +357,7 @@ export function useGoodsManager() {
       }
     } catch (error: any) {
       console.error('同步失败:', error)
+      if (!error.messageShown) showError(error?.message || '同步失败，请稍后重试')
     }
   }
 

@@ -1,0 +1,1 @@
+import{r}from"./index-DxHSJhDA.js";function e(){return r({url:"/login/checkUserExists",method:"post"})}function s(o){return r({url:"/login/login",method:"post",data:o,silent:!0,exposeErrorCode:!0})}function n(o){return r({url:"/login/register",method:"post",data:o})}function u(){return r({url:"/login/logout",method:"post"})}export{u as a,e as c,s as l,n as r};

@@ -109,23 +109,49 @@ public class TotpService {
 
     @Transactional
     public boolean verifyForUser(SysUser user, String code) {
-        if (user == null || !Integer.valueOf(1).equals(user.getTotpEnabled())) return true;
-        if (!attemptAllowed(user.getId())) return false;
+        return verifyForUserInternal(user, code) == LoginVerificationStatus.SUCCESS;
+    }
+
+    /** 登录专用校验结果，区分错误验证码与已触发的用户级限速。 */
+    @Transactional
+    public LoginVerificationStatus verifyForLogin(SysUser user, String code) {
+        return verifyForUserInternal(user, code);
+    }
+
+    private LoginVerificationStatus verifyForUserInternal(SysUser user, String code) {
+        if (user == null || !Integer.valueOf(1).equals(user.getTotpEnabled())) {
+            return LoginVerificationStatus.SUCCESS;
+        }
+        if (!attemptAllowed(user.getId())) return LoginVerificationStatus.RATE_LIMITED;
         if (verify(SensitiveDataCodec.decrypt(user.getTotpSecret()), code)) {
             clearFailures(user.getId());
-            return true;
+            return LoginVerificationStatus.SUCCESS;
         }
         String codeHash = hash(normalizeRecoveryCode(code));
-        List<String> hashes = new ArrayList<>(user.getTotpRecoveryCodes() == null || user.getTotpRecoveryCodes().isBlank()
-                ? List.of() : List.of(user.getTotpRecoveryCodes().split(",")));
+        String recoveryCodesSnapshot = user.getTotpRecoveryCodes();
+        List<String> hashes = new ArrayList<>(recoveryCodesSnapshot == null || recoveryCodesSnapshot.isBlank()
+                ? List.of() : List.of(recoveryCodesSnapshot.split(",")));
         if (!hashes.remove(codeHash)) {
             recordFailure(user.getId());
-            return false;
+            return attemptAllowed(user.getId())
+                    ? LoginVerificationStatus.INVALID : LoginVerificationStatus.RATE_LIMITED;
         }
-        user.setTotpRecoveryCodes(String.join(",", hashes));
-        userMapper.updateById(user);
+        String remainingCodes = String.join(",", hashes);
+        if (userMapper.consumeRecoveryCodesIfUnchanged(
+                user.getId(), recoveryCodesSnapshot, remainingCodes) != 1) {
+            recordFailure(user.getId());
+            return attemptAllowed(user.getId())
+                    ? LoginVerificationStatus.INVALID : LoginVerificationStatus.RATE_LIMITED;
+        }
+        user.setTotpRecoveryCodes(remainingCodes);
         clearFailures(user.getId());
-        return true;
+        return LoginVerificationStatus.SUCCESS;
+    }
+
+    public enum LoginVerificationStatus {
+        SUCCESS,
+        INVALID,
+        RATE_LIMITED
     }
 
     public int recoveryCodeCount(SysUser user) {

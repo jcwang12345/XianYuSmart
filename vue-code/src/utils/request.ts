@@ -1,9 +1,39 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse } from 'axios'
-import { toast } from './toast'
+import { toast } from './toast.ts'
 import type { ApiResponse } from '@/types'
 
 export interface RequestConfig extends AxiosRequestConfig {
   silent?: boolean
+  exposeErrorCode?: boolean
+}
+
+export type StructuredApiError = Error & {
+  errorCode?: string
+  businessCode?: number
+  messageShown?: boolean
+}
+
+export function getApiErrorCode(error: unknown): string | undefined {
+  return error instanceof Error ? (error as StructuredApiError).errorCode : undefined
+}
+
+export function isPasswordLoginRequest(url?: string): boolean {
+  return url?.includes('/login/login') === true
+}
+
+function structuredApiError(
+  data: Partial<ApiResponse<unknown>> | undefined,
+  config: RequestConfig | undefined,
+  fallbackMessage: string,
+  fallbackCode?: number
+): StructuredApiError {
+  const message = data?.msg || data?.message || fallbackMessage
+  if (!config?.silent) toast.error(message)
+  const error = new Error(message) as StructuredApiError
+  if (config?.exposeErrorCode) error.errorCode = data?.errorCode
+  error.businessCode = data?.code ?? fallbackCode
+  error.messageShown = true
+  return error
 }
 
 // Token存储key
@@ -119,7 +149,9 @@ service.interceptors.response.use(
     const res = response.data
 
     // 401未登录 -> 跳转登录页
-    if (res.code === 401) {
+    const requestConfig = response.config as RequestConfig
+    const isPasswordLogin = isPasswordLoginRequest(response.config.url)
+    if (res.code === 401 && !isPasswordLogin) {
       try {
         return await retryAfterRefresh(response.config as RetryableConfig)
       } catch {
@@ -135,19 +167,15 @@ service.interceptors.response.use(
 
     // 如果响应码不是 0 或 200，认为是错误
     if (res.code !== 0 && res.code !== 200) {
-      const errorMsg = res.msg || res.message || '请求失败'
-      // 后台轮询和可降级查询由业务页面自行呈现，避免打断当前操作。
-      if (!(response.config as RequestConfig).silent) toast.error(errorMsg)
-      const error = new Error(errorMsg)
-      // 标记这个错误已经显示过消息，避免重复提示
-      ;(error as any).messageShown = true
-      return Promise.reject(error)
+      return Promise.reject(structuredApiError(res, requestConfig, '请求失败'))
     }
 
     return response // 保持返回完整的 AxiosResponse
   },
   async (error) => {
-    if (error.response?.status === 401) {
+    const requestConfig = error.config as RequestConfig | undefined
+    const isPasswordLogin = isPasswordLoginRequest(requestConfig?.url)
+    if (error.response?.status === 401 && !isPasswordLogin) {
       try {
         return await retryAfterRefresh(error.config as RetryableConfig)
       } catch {
@@ -155,8 +183,16 @@ service.interceptors.response.use(
         return Promise.reject(error)
       }
     }
+    if (error.response?.status === 401 && isPasswordLogin) {
+      return Promise.reject(structuredApiError(
+        error.response.data as Partial<ApiResponse<unknown>> | undefined,
+        requestConfig,
+        error.message || '用户名或密码错误',
+        401
+      ))
+    }
     // 只有在错误消息未显示过时才弹出提示
-    if (!(error as any).messageShown && !(error.config as RequestConfig | undefined)?.silent) {
+    if (!(error as any).messageShown && !requestConfig?.silent) {
       toast.error(error.message || '网络请求失败')
     }
     return Promise.reject(error)

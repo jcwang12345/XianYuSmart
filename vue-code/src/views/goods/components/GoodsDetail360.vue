@@ -113,6 +113,9 @@ const loadDetail = async () => {
     const detailResponse = await getGoodsDetail(props.goodsId)
     if (detailResponse.code !== 0 && detailResponse.code !== 200) throw new Error(detailResponse.msg || '获取商品详情失败')
     goodsDetail.value = detailResponse.data?.itemWithConfig || null
+    if (detailResponse.data?.refreshStatus !== 'CACHE' && !detailResponse.data?.refreshed) {
+      showError(detailResponse.data?.refreshMessage || '平台详情暂不可用，当前展示已保存快照')
+    }
     images.value = parseImages(goodsDetail.value?.item.infoPic)
     if (!images.value.length && goodsDetail.value?.item.coverPic) images.value = [goodsDetail.value.item.coverPic]
 

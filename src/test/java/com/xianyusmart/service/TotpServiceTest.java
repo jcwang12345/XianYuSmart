@@ -3,12 +3,21 @@ package com.xianyusmart.service;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -19,6 +28,7 @@ import com.xianyusmart.security.SensitiveDataCodec;
 import com.xianyusmart.cache.CacheService;
 import com.xianyusmart.cache.LocalMapCacheServiceImpl;
 import com.xianyusmart.entity.XianyuOperationLog;
+import org.springframework.test.util.ReflectionTestUtils;
 
 class TotpServiceTest {
 
@@ -59,5 +69,102 @@ class TotpServiceTest {
 
         assertEquals("5", String.valueOf(cache.get("totp_attempt:9")));
         assertTrue(cache.getExpire("totp_attempt:9") > 0);
+    }
+
+    @Test
+    void loginVerificationDistinguishesInvalidFromRateLimited() {
+        SensitiveDataCodec.configure("totp-test-encryption-key-with-at-least-32-bytes");
+        CacheService cache = new LocalMapCacheServiceImpl();
+        SysUser user = enabledUser(10L);
+        TotpService service = new TotpService(mock(SysUserMapper.class), cache,
+                mock(OperationLogService.class));
+        String secret = SensitiveDataCodec.decrypt(user.getTotpSecret());
+        String validCode = ReflectionTestUtils.invokeMethod(service, "generate", secret,
+                Instant.now().getEpochSecond() / 30);
+
+        for (int i = 0; i < 4; i++) {
+            assertEquals(TotpService.LoginVerificationStatus.INVALID,
+                    service.verifyForLogin(user, "not-a-code"));
+        }
+        assertEquals(TotpService.LoginVerificationStatus.RATE_LIMITED,
+                service.verifyForLogin(user, "not-a-code"));
+        assertEquals(TotpService.LoginVerificationStatus.RATE_LIMITED,
+                service.verifyForLogin(user, validCode));
+    }
+
+    @Test
+    void recoveryCodeIsConsumedOnceAndReplayFails() throws Exception {
+        SensitiveDataCodec.configure("totp-test-encryption-key-with-at-least-32-bytes");
+        SysUserMapper mapper = mock(SysUserMapper.class);
+        SysUser user = enabledUser(11L);
+        String recoveryCode = "ABCDE-12345";
+        String normalized = recoveryCode.replace("-", "");
+        user.setTotpRecoveryCodes(HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(normalized.getBytes(StandardCharsets.UTF_8))));
+        when(mapper.consumeRecoveryCodesIfUnchanged(11L, user.getTotpRecoveryCodes(), ""))
+                .thenReturn(1);
+        TotpService service = new TotpService(mapper, new LocalMapCacheServiceImpl(),
+                mock(OperationLogService.class));
+
+        assertEquals(TotpService.LoginVerificationStatus.SUCCESS,
+                service.verifyForLogin(user, recoveryCode));
+        assertEquals("", user.getTotpRecoveryCodes());
+        assertEquals(TotpService.LoginVerificationStatus.INVALID,
+                service.verifyForLogin(user, recoveryCode));
+        verify(mapper).consumeRecoveryCodesIfUnchanged(eq(11L), any(), eq(""));
+    }
+
+    @Test
+    void concurrentIndependentSnapshotsCanConsumeRecoveryCodeOnlyOnce() throws Exception {
+        SensitiveDataCodec.configure("totp-test-encryption-key-with-at-least-32-bytes");
+        SysUserMapper mapper = mock(SysUserMapper.class);
+        String recoveryCode = "ABCDE-12345";
+        String storedHash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest(recoveryCode.replace("-", "").getBytes(StandardCharsets.UTF_8)));
+        AtomicReference<String> persisted = new AtomicReference<>(storedHash);
+        when(mapper.consumeRecoveryCodesIfUnchanged(12L, storedHash, ""))
+                .thenAnswer(invocation -> persisted.compareAndSet(storedHash, "") ? 1 : 0);
+        TotpService service = new TotpService(mapper, new LocalMapCacheServiceImpl(),
+                mock(OperationLogService.class));
+        SysUser firstSnapshot = enabledUser(12L);
+        SysUser secondSnapshot = enabledUser(12L);
+        firstSnapshot.setTotpRecoveryCodes(storedHash);
+        secondSnapshot.setTotpRecoveryCodes(storedHash);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return service.verifyForLogin(firstSnapshot, recoveryCode);
+            });
+            var second = executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return service.verifyForLogin(secondSnapshot, recoveryCode);
+            });
+            assertTrue(ready.await(3, TimeUnit.SECONDS));
+            start.countDown();
+            List<TotpService.LoginVerificationStatus> results =
+                    List.of(first.get(3, TimeUnit.SECONDS), second.get(3, TimeUnit.SECONDS));
+
+            assertEquals(1, results.stream()
+                    .filter(status -> status == TotpService.LoginVerificationStatus.SUCCESS).count());
+            assertEquals(1, results.stream()
+                    .filter(status -> status == TotpService.LoginVerificationStatus.INVALID).count());
+            assertEquals("", persisted.get());
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    private SysUser enabledUser(Long id) {
+        SysUser user = new SysUser();
+        user.setId(id);
+        user.setTotpEnabled(1);
+        user.setTotpSecret(SensitiveDataCodec.encrypt(TotpService.base32Encode(new byte[20])));
+        return user;
     }
 }

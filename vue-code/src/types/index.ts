@@ -3,6 +3,7 @@ export interface ApiResponse<T = any> {
   code: number
   msg: string
   message?: string  // 兼容字段
+  errorCode?: string
   data?: T
 }
 

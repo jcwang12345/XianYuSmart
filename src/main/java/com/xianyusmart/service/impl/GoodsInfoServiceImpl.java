@@ -190,6 +190,22 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
     }
 
     @Override
+    public XianyuGoodsInfo getByXyGoodIdAndAccountId(String xyGoodId, Long xianyuAccountId) {
+        if (xyGoodId == null || xyGoodId.isBlank() || xianyuAccountId == null) {
+            return null;
+        }
+        try {
+            LambdaQueryWrapper<XianyuGoodsInfo> queryWrapper = new LambdaQueryWrapper<>();
+            queryWrapper.eq(XianyuGoodsInfo::getXianyuAccountId, xianyuAccountId)
+                    .eq(XianyuGoodsInfo::getXyGoodId, xyGoodId);
+            return goodsInfoMapper.selectOne(queryWrapper);
+        } catch (Exception e) {
+            log.error("按账号查询商品失败: accountId={}, xyGoodId={}", xianyuAccountId, xyGoodId, e);
+            return null;
+        }
+    }
+
+    @Override
     public List<XianyuGoodsInfo> listByStatus(Integer status) {
         try {
             LambdaQueryWrapper<XianyuGoodsInfo> queryWrapper = new LambdaQueryWrapper<>();

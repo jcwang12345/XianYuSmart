@@ -50,6 +50,9 @@ export interface GoodsListResponse {
 // 商品详情响应
 export interface GoodsDetailResponse {
   itemWithConfig: GoodsItemWithConfig;
+  refreshed: boolean;
+  refreshStatus: 'CACHE' | 'SUCCESS' | 'VERIFICATION_REQUIRED' | 'BUSY' | 'FORBIDDEN' | 'NOT_FOUND' | 'UNAVAILABLE';
+  refreshMessage: string;
 }
 
 export interface UpdateGoodsInfoReq {

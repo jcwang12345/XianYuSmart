@@ -6,12 +6,9 @@ import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.constants.GoodsStatus;
 import com.xianyusmart.controller.dto.*;
 import com.xianyusmart.entity.XianyuGoodsInfo;
-import com.xianyusmart.entity.XianyuGoodsSku;
-import com.xianyusmart.entity.XianyuGoodsSkuProperty;
 import com.xianyusmart.service.ItemService;
 import com.xianyusmart.utils.XianyuApiUtils;
 import com.xianyusmart.utils.XianyuSignUtils;
-import com.xianyusmart.utils.ItemDetailUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -53,6 +50,9 @@ public class ItemServiceImpl implements ItemService {
 
     @Autowired
     private com.xianyusmart.service.ItemDetailSyncService itemDetailSyncService;
+
+    @Autowired
+    private com.xianyusmart.service.PlatformPermissionService platformPermissionService;
 
     @Autowired
     private com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper autoDeliveryConfigMapper;
@@ -459,6 +459,7 @@ public class ItemServiceImpl implements ItemService {
     public ResultObject<ItemDetailRespDTO> getItemDetail(ItemDetailReqDTO reqDTO) {
         try {
             log.info("获取商品详情: xyGoodId={}, cookieId={}", reqDTO.getXyGoodId(), reqDTO.getCookieId());
+            com.xianyusmart.service.ItemDetailSyncService.SyncResult syncResult = null;
             
             // 1. 从数据库获取商品基本信息
             XianyuGoodsInfo item = goodsInfoService.getByXyGoodId(reqDTO.getXyGoodId());
@@ -483,6 +484,11 @@ public class ItemServiceImpl implements ItemService {
             
             // 3. 如果需要获取详情
             if (needFetchDetail) {
+                Long currentUserId = com.xianyusmart.context.UserContext.getUserId();
+                if (currentUserId != null && !platformPermissionService.hasPermission(
+                        currentUserId, com.xianyusmart.service.PermissionCatalog.ACTION_GOODS_WRITE)) {
+                    return ResultObject.failed(403, "当前账号没有同步商品详情的功能权限");
+                }
                 // 3.1 确定使用哪个cookieId
                 String cookieIdToUse = reqDTO.getCookieId();
                 
@@ -501,29 +507,55 @@ public class ItemServiceImpl implements ItemService {
                     }
                 }
                 
-                // 3.2 调用API获取详情
+                Long syncAccountId = getAccountIdFromCookieId(cookieIdToUse);
+                if (syncAccountId == null) {
+                    return ResultObject.failed("未找到商品所属账号，请重新选择账号");
+                }
+                if (item.getXianyuAccountId() != null && !item.getXianyuAccountId().equals(syncAccountId)) {
+                    return ResultObject.failed(403, "所选账号与商品归属不一致，已阻止跨账号读取");
+                }
+
+                // 3.3 使用统一详情同步链路：API重试后才进入账号隔离的只读页面兜底。
                 try {
-                    String detailInfo = fetchItemDetailFromApi(reqDTO.getXyGoodId(), cookieIdToUse);
-                    
-                    if (detailInfo != null && !detailInfo.isEmpty()) {
-                        // 更新数据库中的详情信息
-                        goodsInfoService.updateDetailInfo(item.getXianyuAccountId(), reqDTO.getXyGoodId(), detailInfo);
-                        item.setDetailInfo(detailInfo);
+                    syncResult = itemDetailSyncService.syncSingleItemWithResult(
+                            syncAccountId, reqDTO.getXyGoodId());
+                    if (syncResult.isSuccess()) {
+                        XianyuGoodsInfo refreshed = goodsInfoService.getByXyGoodIdAndAccountId(
+                                reqDTO.getXyGoodId(), syncAccountId);
+                        if (refreshed != null) {
+                            item = refreshed;
+                        }
                         log.info("商品详情已更新: xyGoodId={}", reqDTO.getXyGoodId());
                     } else {
-                        log.warn("未能获取到商品详情: xyGoodId={}", reqDTO.getXyGoodId());
+                        log.warn("未能刷新商品详情，保留现有本地快照: xyGoodId={}, status={}",
+                                reqDTO.getXyGoodId(), syncResult.status());
                     }
                 } catch (Exception e) {
-                    log.error("获取商品详情失败，返回数据库中的信息: xyGoodId={}", reqDTO.getXyGoodId(), e);
+                    log.error("获取商品详情失败，返回数据库中的信息: xyGoodId={}, errorType={}",
+                            reqDTO.getXyGoodId(), e.getClass().getSimpleName());
+                    syncResult = new com.xianyusmart.service.ItemDetailSyncService.SyncResult(
+                            com.xianyusmart.service.ItemDetailSyncService.SyncStatus.UNAVAILABLE,
+                            "平台详情暂不可用，已保留原快照", null);
                     // 即使获取详情失败，也返回数据库中的基本信息
                 }
             }
             
             ItemDetailRespDTO respDTO = new ItemDetailRespDTO();
             respDTO.setItemWithConfig(buildItemWithConfig(item));
+            if (syncResult == null) {
+                respDTO.setRefreshed(false);
+                respDTO.setRefreshStatus("CACHE");
+                respDTO.setRefreshMessage("当前展示已保存的商品快照");
+            } else {
+                respDTO.setRefreshed(syncResult.isSuccess());
+                respDTO.setRefreshStatus(syncResult.status().name());
+                respDTO.setRefreshMessage(syncResult.message());
+            }
             
             log.info("获取商品详情成功: xyGoodId={}", reqDTO.getXyGoodId());
-            return ResultObject.success(respDTO);
+            String message = syncResult != null && !syncResult.isSuccess()
+                    ? syncResult.message() : "操作成功";
+            return ResultObject.success(respDTO, message);
         } catch (Exception e) {
             log.error("获取商品详情失败: xyGoodId={}", reqDTO.getXyGoodId(), e);
             return ResultObject.failed("获取商品详情失败: " + e.getMessage());
@@ -587,180 +619,6 @@ public class ItemServiceImpl implements ItemService {
         return itemWithConfig;
     }
     
-    /**
-     * 从闲鱼API获取商品详情
-     * 实现流程：
-     * 1. 检查缓存（24小时内的详情不重复获取）
-     * 2. 首选：通过闲鱼API mtop.taobao.idle.pc.detail 获取
-     * 3. 备选：如果API失败，可以考虑使用浏览器访问（需要额外实现）
-     *
-     * @param itemId 商品ID
-     * @param cookieId Cookie ID
-     * @return 商品详情JSON字符串
-     */
-    private String fetchItemDetailFromApi(String itemId, String cookieId) {
-        try {
-            log.info("开始获取商品详情: itemId={}, cookieId={}", itemId, cookieId);
-            
-            // 1. 检查缓存：如果数据库中已有详情且在24小时内，直接返回
-            XianyuGoodsInfo cachedItem = goodsInfoService.getByXyGoodId(itemId);
-            if (cachedItem != null && cachedItem.getDetailInfo() != null && !cachedItem.getDetailInfo().isEmpty()) {
-                // 检查更新时间是否在24小时内
-                if (isDetailInfoFresh(cachedItem.getUpdatedTime())) {
-                    log.info("使用缓存的商品详情: itemId={}, 缓存时间={}", itemId, cachedItem.getUpdatedTime());
-                    return cachedItem.getDetailInfo();
-                } else {
-                    log.info("缓存的商品详情已过期，重新获取: itemId={}", itemId);
-                }
-            } else {
-                log.info("数据库中没有商品详情缓存，需要调用API获取: itemId={}", itemId);
-            }
-            
-            // 2. 从数据库获取Cookie
-            String cookiesStr = getCookieFromDb(cookieId);
-            if (cookiesStr == null || cookiesStr.isEmpty()) {
-                log.error("未找到账号Cookie: cookieId={}", cookieId);
-                return null;
-            }
-            
-            log.info("Cookie获取成功，准备调用API: itemId={}", itemId);
-            
-            // 3. 首选方式：通过闲鱼API获取商品详情
-            String detailJson = fetchDetailFromApi(itemId, cookiesStr, getAccountIdFromCookieId(cookieId));
-            
-            if (detailJson != null && !detailJson.isEmpty()) {
-                log.info("通过API获取商品详情成功: itemId={}, 详情长度={}", itemId, detailJson.length());
-                return detailJson;
-            }
-            
-            // 4. 备选方式：通过浏览器访问获取（暂未实现）
-            log.warn("API获取商品详情失败，备选方式（浏览器访问）暂未实现: itemId={}", itemId);
-            
-            // 如果有缓存的详情（即使过期），也返回它
-            if (cachedItem != null && cachedItem.getDetailInfo() != null && !cachedItem.getDetailInfo().isEmpty()) {
-                log.info("返回过期的缓存详情: itemId={}", itemId);
-                return cachedItem.getDetailInfo();
-            }
-            
-            log.error("无法获取商品详情，且没有可用的缓存: itemId={}", itemId);
-            return null;
-            
-        } catch (Exception e) {
-            log.error("获取商品详情异常: itemId={}", itemId, e);
-            return null;
-        }
-    }
-    
-    /**
-     * 通过闲鱼API获取商品详情
-     *
-     * @param itemId 商品ID
-     * @param cookiesStr Cookie字符串
-     * @param accountId 闲鱼账号ID
-     * @return 商品详情JSON字符串
-     */
-    private String fetchDetailFromApi(String itemId, String cookiesStr, Long accountId) {
-        try {
-            log.info("调用闲鱼API获取商品详情: itemId={}", itemId);
-            
-            // 构建请求数据
-            Map<String, Object> dataMap = new HashMap<>();
-            dataMap.put("itemId", itemId);
-            
-            // 调用闲鱼API
-            String response = XianyuApiUtils.callApi(
-                "mtop.taobao.idle.pc.detail",
-                dataMap,
-                cookiesStr,
-                accountBrowserProfileService.headersForAccount(accountId)
-            );
-            
-            if (response == null) {
-                log.error("API调用失败：响应为空, itemId={}", itemId);
-                return null;
-            }
-            
-            log.info("API响应成功，响应长度: {}, itemId={}", response.length(), itemId);
-            
-            // 检查响应是否成功
-            if (!XianyuApiUtils.isSuccess(response)) {
-                String error = XianyuApiUtils.extractError(response);
-                log.error("API返回失败: {}, itemId={}", error, itemId);
-                return null;
-            }
-            
-            log.info("API响应状态检查通过，开始提取data字段: itemId={}", itemId);
-            
-            // 提取data字段
-            Map<String, Object> data = XianyuApiUtils.extractData(response);
-            if (data == null) {
-                log.error("无法提取data字段, itemId={}", itemId);
-                return null;
-            }
-            
-            log.info("data字段提取成功，包含 {} 个字段, itemId={}", data.size(), itemId);
-            
-            // 将data转换为JSON字符串
-            String detailJson = objectMapper.writeValueAsString(data);
-            log.info("API获取商品详情成功: itemId={}, 详情长度={}", itemId, detailJson.length());
-            
-            // 提取desc字段
-            String extractedDesc = ItemDetailUtils.extractDescFromDetailJson(detailJson);
-            log.info("提取desc字段成功: itemId={}, 原始长度={}, 提取后长度={}", 
-                    itemId, detailJson.length(), extractedDesc.length());
-            
-            List<XianyuGoodsSku> skuList = ItemDetailUtils.extractSkuList(detailJson);
-            if (!skuList.isEmpty() && accountId != null) {
-                goodsSkuService.saveSkus(itemId, accountId, skuList);
-                goodsInfoService.updateSkuCount(accountId, itemId, skuList.size());
-                List<XianyuGoodsSkuProperty> propertyList = ItemDetailUtils.extractSkuPropertyList(detailJson);
-                if (!propertyList.isEmpty()) {
-                    goodsSkuPropertyService.saveProperties(itemId, accountId, propertyList);
-                }
-            }
-            
-            return extractedDesc;
-            
-        } catch (Exception e) {
-            log.error("API获取商品详情异常: itemId={}", itemId, e);
-            return null;
-        }
-    }
-    
-    /**
-     * 检查详情信息是否新鲜（24小时内）
-     *
-     * @param updatedTime 更新时间字符串（格式：yyyy-MM-dd HH:mm:ss）
-     * @return 是否新鲜
-     */
-    private boolean isDetailInfoFresh(String updatedTime) {
-        if (updatedTime == null || updatedTime.isEmpty()) {
-            return false;
-        }
-        
-        try {
-            // 解析更新时间
-            java.time.LocalDateTime updateDateTime = java.time.LocalDateTime.parse(
-                updatedTime, 
-                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-            );
-            
-            // 计算时间差
-            java.time.Duration duration = java.time.Duration.between(updateDateTime, java.time.LocalDateTime.now());
-            long hours = duration.toHours();
-            
-            // 24小时内认为是新鲜的
-            boolean isFresh = hours < 24;
-            log.debug("详情缓存检查: 更新时间={}, 距今{}小时, 是否新鲜={}", updatedTime, hours, isFresh);
-            
-            return isFresh;
-            
-        } catch (Exception e) {
-            log.error("解析更新时间失败: {}", updatedTime, e);
-            return false;
-        }
-    }
-
     /**
      * 解析商品列表响应
      */

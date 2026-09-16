@@ -1,5 +1,7 @@
 package com.xianyusmart.common;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 /**
  * 统一返回结果封装类
  * @param <T> 返回数据的类型
@@ -19,6 +21,10 @@ public class ResultObject<T> {
      * 数据
      */
     private T data;
+
+    /** 可选的稳定机器码；当前仅登录挑战失败响应使用。 */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String errorCode;
 
     public ResultObject() {}
 
@@ -68,6 +74,12 @@ public class ResultObject<T> {
      */
     public static <T> ResultObject<T> failed(Integer code, String message) {
         return new ResultObject<T>(code, message, null);
+    }
+
+    public static <T> ResultObject<T> failed(Integer code, String message, String errorCode) {
+        ResultObject<T> result = new ResultObject<>(code, message, null);
+        result.setErrorCode(errorCode);
+        return result;
     }
 
     /**
@@ -124,12 +136,21 @@ public class ResultObject<T> {
         this.data = data;
     }
 
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
     @Override
     public String toString() {
         return "ResultObject{" +
                 "code=" + code +
                 ", msg='" + msg + '\'' +
                 ", data=" + data +
+                ", errorCode='" + errorCode + '\'' +
                 '}';
     }
 }

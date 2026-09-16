@@ -13,7 +13,9 @@ export function login(data: { username: string; password: string; totpCode?: str
   return request<{ token: string; refreshToken: string; username: string; accessTokenExpiresInMs: number; refreshTokenExpireTime: string }>({
     url: '/login/login',
     method: 'post',
-    data
+    data,
+    silent: true,
+    exposeErrorCode: true
   })
 }
 

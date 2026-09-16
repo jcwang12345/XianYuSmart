@@ -42,7 +42,8 @@ public class ItemDetailUtils {
             log.warn("无法提取desc字段，返回原始JSON，长度: {}", detailJson.length());
             return detailJson;
         } catch (Exception e) {
-            log.error("解析商品详情JSON失败，返回原始JSON: {}", e.getMessage());
+            log.error("解析商品详情JSON失败，返回原始JSON: errorType={}",
+                    e.getClass().getSimpleName());
             return detailJson;
         }
     }
@@ -131,7 +132,7 @@ public class ItemDetailUtils {
             log.info("解析SKU列表成功，数量: {}", result.size());
             return result;
         } catch (Exception e) {
-            log.error("解析商品SKU失败: {}", e.getMessage());
+            log.error("解析商品SKU失败: errorType={}", e.getClass().getSimpleName());
             return result;
         }
     }
@@ -183,7 +184,7 @@ public class ItemDetailUtils {
             log.info("解析SKU属性维度成功，数量: {}", result.size());
             return result;
         } catch (Exception e) {
-            log.error("解析SKU属性维度失败: {}", e.getMessage());
+            log.error("解析SKU属性维度失败: errorType={}", e.getClass().getSimpleName());
             return result;
         }
     }

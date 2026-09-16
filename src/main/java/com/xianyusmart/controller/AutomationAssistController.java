@@ -39,7 +39,8 @@ public class AutomationAssistController {
     @PostMapping("/skus/sync")
     public ResultObject<List<XianyuGoodsSku>> sync(@RequestBody GoodsTarget target) {
         requireAccount(target.accountId());
-        if(!sync.syncSingleItem(target.accountId(),target.goodsId()))return ResultObject.failed("规格同步失败，请检查账号凭证、平台验证状态和商品状态");
+        ItemDetailSyncService.SyncResult result = sync.syncSingleItemWithResult(target.accountId(),target.goodsId());
+        if(!result.isSuccess())return ResultObject.failed(result.businessCode(),result.message());
         return ResultObject.success(skus.listByXyGoodsId(target.goodsId(),target.accountId()));
     }
     @PostMapping("/skus/name")

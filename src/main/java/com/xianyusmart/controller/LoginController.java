@@ -6,6 +6,7 @@ import com.xianyusmart.controller.dto.CheckUserExistsRespDTO;
 import com.xianyusmart.controller.dto.LoginReqDTO;
 import com.xianyusmart.controller.dto.LoginRespDTO;
 import com.xianyusmart.controller.dto.RegisterReqDTO;
+import com.xianyusmart.exception.LoginOutcomeException;
 import com.xianyusmart.service.AuthService;
 import com.xianyusmart.service.bo.*;
 import com.xianyusmart.util.RegistrationPasswordPolicy;
@@ -95,20 +96,22 @@ public class LoginController {
      */
     @PostMapping("/login")
     public ResultObject<LoginRespDTO> login(@RequestBody LoginReqDTO reqDTO, HttpServletRequest request) {
+        String ip = getClientIp(request);
         try {
-            String ip = getClientIp(request);
-
             // 检查登录错误次数限制
             if (!authService.checkLoginAttempt(ip)) {
-                return ResultObject.failed("登录错误次数过多，请10分钟后再试");
+                return ResultObject.failed(429, "登录尝试过多，请稍后重试",
+                        LoginOutcomeException.ErrorCode.LOGIN_RATE_LIMITED.name());
             }
 
-            // 参数校验
+            // 缺失凭据与错误凭据保持同一外部语义，但空请求不消耗 IP 失败额度。
             if (reqDTO.getUsername() == null || reqDTO.getUsername().trim().isEmpty()) {
-                return ResultObject.validateFailed("用户名不能为空");
+                return ResultObject.failed(401, "用户名或密码错误",
+                        LoginOutcomeException.ErrorCode.INVALID_CREDENTIALS.name());
             }
             if (reqDTO.getPassword() == null || reqDTO.getPassword().trim().isEmpty()) {
-                return ResultObject.validateFailed("密码不能为空");
+                return ResultObject.failed(401, "用户名或密码错误",
+                        LoginOutcomeException.ErrorCode.INVALID_CREDENTIALS.name());
             }
 
             String deviceId = request.getHeader("User-Agent");
@@ -135,12 +138,16 @@ public class LoginController {
             respDTO.setRefreshTokenExpireTime(respBO.getRefreshTokenExpireTime());
             respDTO.setUsername(respBO.getUsername());
             return ResultObject.success(respDTO);
+        } catch (LoginOutcomeException e) {
+            if (e.shouldRecordIpFailure()) {
+                authService.recordLoginFailure(ip);
+            }
+            log.warn("登录未完成: outcome={}", e.getErrorCode());
+            return ResultObject.failed(e.getBusinessCode(), e.getMessage(), e.getErrorCode().name());
         } catch (Exception e) {
-            log.error("登录失败", e);
-            // 登录失败，记录错误次数
-            String ip = getClientIp(request);
-            authService.recordLoginFailure(ip);
-            return ResultObject.failed(e.getMessage());
+            log.error("登录处理异常: outcome=INTERNAL_ERROR, errorType={}",
+                    e.getClass().getSimpleName());
+            return ResultObject.failed("登录服务暂不可用，请稍后重试");
         }
     }
 

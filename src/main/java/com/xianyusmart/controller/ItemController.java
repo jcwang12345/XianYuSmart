@@ -199,15 +199,15 @@ public class ItemController {
             Long accountId = Long.parseLong(params.get("xianyuAccountId").toString());
             String xyGoodsId = params.get("xyGoodsId").toString();
             log.info("同步单个商品: xianyuAccountId={}, xyGoodsId={}", accountId, xyGoodsId);
-            boolean success = itemDetailSyncService.syncSingleItem(accountId, xyGoodsId);
-            if (success) {
+            ItemDetailSyncService.SyncResult syncResult =
+                    itemDetailSyncService.syncSingleItemWithResult(accountId, xyGoodsId);
+            if (syncResult.isSuccess()) {
                 return ResultObject.success("同步成功");
-            } else {
-                return ResultObject.failed("同步失败");
             }
+            return ResultObject.failed(syncResult.businessCode(), syncResult.message());
         } catch (Exception e) {
-            log.error("同步单个商品失败", e);
-            return ResultObject.failed("同步失败: " + e.getMessage());
+            log.error("同步单个商品失败: errorType={}", e.getClass().getSimpleName());
+            return ResultObject.failed("同步失败，请稍后重试");
         }
     }
 

@@ -267,8 +267,13 @@ public class ProductBatchExecutionService {
     }
 
     private Map<String, Object> sync(Long accountId, String goodsId) {
-        boolean success = itemDetailSyncService.syncSingleItem(accountId, goodsId);
-        return Map.of("success", success, "itemId", goodsId);
+        ItemDetailSyncService.SyncResult syncResult =
+                itemDetailSyncService.syncSingleItemWithResult(accountId, goodsId);
+        if (!syncResult.isSuccess()) {
+            throw new IllegalStateException(syncResult.message());
+        }
+        return Map.of("success", true, "itemId", goodsId,
+                "source", syncResult.source() == null ? "UNKNOWN" : syncResult.source());
     }
 
     private boolean updateLocalState(Long tenantId, Long accountId, String goodsId, String operation,

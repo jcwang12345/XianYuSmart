@@ -208,8 +208,10 @@ public class XianyuApiCallUtils {
             return new ApiCallResult(false, response, retCode, false);
 
         } catch (Exception e) {
-            log.error("【账号{}】API调用异常: apiName={}", accountId, apiName, e);
-            return new ApiCallResult(false, null, "调用异常: " + e.getMessage(), false);
+            // 网络异常可能携带含签名、令牌的完整请求 URL，不把异常正文写入日志或接口结果。
+            log.error("【账号{}】API调用异常: apiName={}, errorType={}",
+                    accountId, apiName, e.getClass().getSimpleName());
+            return new ApiCallResult(false, null, "平台接口调用异常", false);
         }
     }
 
@@ -235,7 +237,8 @@ public class XianyuApiCallUtils {
                 log.info("【账号{}】Cookie已从响应Set-Cookie更新到数据库", accountId);
             }
         } catch (Exception e) {
-            log.error("【账号{}】处理响应Set-Cookie失败", accountId, e);
+            log.error("【账号{}】处理响应Set-Cookie失败: errorType={}",
+                    accountId, e.getClass().getSimpleName());
         }
     }
 

@@ -45,6 +45,11 @@ public interface GoodsInfoService {
      * @return 商品信息
      */
     XianyuGoodsInfo getByXyGoodId(String xyGoodId);
+
+    /**
+     * 按账号与商品联合键读取，供平台详情读取前校验归属。
+     */
+    XianyuGoodsInfo getByXyGoodIdAndAccountId(String xyGoodId, Long xianyuAccountId);
     
     /**
      * 根据状态查询商品列表

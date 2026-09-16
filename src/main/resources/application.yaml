@@ -141,6 +141,13 @@ websocket:
   # 打印原始消息开关（解密后的消息）
   print-raw-message: ${PRINT_RAW_MESSAGE:false}
 
+xianyu:
+  item-detail:
+    # 只读商品页响应捕获兜底；关闭后 API 失败会直接安全降级。
+    browser-fallback-enabled: ${ITEM_DETAIL_BROWSER_FALLBACK_ENABLED:true}
+    # 服务端还会将非法配置限制在 5-120 秒内。
+    browser-fallback-timeout-ms: ${ITEM_DETAIL_BROWSER_FALLBACK_TIMEOUT_MS:45000}
+
 management:
   endpoints:
     web:

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, onMounted, watch } from 'vue'
 import { checkUserExists, login, register } from '@/api/auth'
-import { setAuthToken, isLoggedIn } from '@/utils/request'
+import { getApiErrorCode, setAuthToken, isLoggedIn } from '@/utils/request'
 import { evaluateRegistrationPassword } from '@/utils/registration-password'
+import { resolveLoginFailure } from './login-challenge'
 
 // 'checking' -> 'login' -> 'register'
 const mode = ref<'checking' | 'login' | 'register'>('checking')
@@ -14,6 +15,7 @@ const confirmPassword = ref('')
 const totpCode = ref('')
 const totpRequired = ref(false)
 const totpInput = ref<HTMLInputElement | null>(null)
+const loginError = ref('')
 
 const showPassword = ref(false)
 const showConfirmPassword = ref(false)
@@ -37,11 +39,13 @@ const switchMode = (targetMode: 'login' | 'register') => {
   confirmPassword.value = ''
   totpCode.value = ''
   totpRequired.value = false
+  loginError.value = ''
 }
 
 watch(username, () => {
   totpCode.value = ''
   totpRequired.value = false
+  loginError.value = ''
 })
 
 onMounted(async () => {
@@ -65,32 +69,43 @@ onMounted(async () => {
 })
 
 async function handleLogin() {
+  if (loading.value) return
   if (!username.value.trim()) return
   if (!password.value) return
   if (totpRequired.value && !totpCode.value.trim()) {
+    loginError.value = '请输入验证码或恢复码继续登录'
     await nextTick()
     totpInput.value?.focus()
     return
   }
   loading.value = true
+  loginError.value = ''
+  let focusTotpAfterRequest = false
   try {
     const res = await login({ username: username.value.trim(), password: password.value, totpCode: totpCode.value.trim() || undefined })
     if (res.code === 200 && res.data && res.data.token) {
       setAuthToken(res.data.token, res.data.username, res.data.refreshToken)
       window.location.href = '/dashboard'
     } else {
-      console.error('[Login] login response invalid:', res)
+      loginError.value = '登录响应无效，请稍后重试'
     }
   } catch (e) {
-    const message = e instanceof Error ? e.message : ''
-    if (message.includes('两步验证码') || message.includes('恢复码')) {
-      totpRequired.value = true
-      await nextTick()
-      totpInput.value?.focus()
-    }
-    console.error('[Login] login failed:', e)
+    const state = resolveLoginFailure(
+      getApiErrorCode(e),
+      e instanceof Error ? e.message : '',
+      totpRequired.value
+    )
+    totpRequired.value = state.totpRequired
+    if (state.clearTotp) totpCode.value = ''
+    if (state.clearPassword) password.value = ''
+    loginError.value = state.message
+    focusTotpAfterRequest = state.focusTotp
   } finally {
     loading.value = false
+  }
+  if (focusTotpAfterRequest) {
+    await nextTick()
+    totpInput.value?.focus()
   }
 }
 
@@ -106,11 +121,9 @@ async function handleRegister() {
     if (res.code === 200 && res.data && res.data.token) {
       setAuthToken(res.data.token, res.data.username, res.data.refreshToken)
       window.location.href = '/dashboard'
-    } else {
-      console.error('[Login] register response invalid:', res)
     }
-  } catch (e) {
-    console.error('[Login] register failed:', e)
+  } catch {
+    // 通用请求层已经展示脱敏提示；不要把可能含请求配置的异常写入控制台。
   } finally {
     loading.value = false
   }
@@ -176,15 +189,18 @@ function handleKeydown(e: KeyboardEvent) {
           </div>
         </div>
 
-        <div v-if="totpRequired" class="login-field login-totp-field" aria-live="polite">
-          <label class="login-label">两步验证码</label>
+        <div v-if="totpRequired" class="login-field login-totp-field">
+          <label class="login-label" for="login-second-factor">验证码或恢复码</label>
           <div class="login-input-wrap">
-            <input ref="totpInput" v-model="totpCode" type="text" inputmode="numeric"
+            <input id="login-second-factor" ref="totpInput" v-model="totpCode" type="text" inputmode="text"
               autocomplete="one-time-code" maxlength="11" class="login-input"
+              autocapitalize="characters" :spellcheck="false" aria-describedby="login-second-factor-help"
               placeholder="请输入 6 位验证码或恢复码" :disabled="loading" @keydown="handleKeydown" />
           </div>
-          <p class="login-field-message is-pending">此账号已启用两步验证，请完成第三步。</p>
+          <p id="login-second-factor-help" class="login-field-message is-pending">密码已验证，请完成第三步。</p>
         </div>
+
+        <p v-if="loginError" class="login-field-message is-invalid" role="alert" aria-live="assertive">{{ loginError }}</p>
 
         <button class="login-btn" :disabled="loading" @click="handleLogin">
           <span v-if="loading" class="login-btn-spinner"></span>

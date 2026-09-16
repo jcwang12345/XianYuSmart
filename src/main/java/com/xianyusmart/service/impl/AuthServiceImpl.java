@@ -5,6 +5,7 @@ import com.xianyusmart.cache.CacheService;
 import com.xianyusmart.entity.SysLoginToken;
 import com.xianyusmart.entity.SysUser;
 import com.xianyusmart.exception.BusinessException;
+import com.xianyusmart.exception.LoginOutcomeException;
 import com.xianyusmart.mapper.SysLoginTokenMapper;
 import com.xianyusmart.mapper.SysUserMapper;
 import com.xianyusmart.service.AuthService;
@@ -65,6 +66,7 @@ public class AuthServiceImpl implements AuthService {
     private TotpService totpService;
 
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
+    private final String dummyPasswordHash = passwordEncoder.encode("xianyusmart-login-dummy-password");
     private final SecureRandom secureRandom = new SecureRandom();
 
     @org.springframework.beans.factory.annotation.Value("${jwt.refresh-expiration:2592000000}")
@@ -117,28 +119,35 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
+    @Transactional
     public LoginRespBO login(LoginReqBO reqBO) {
         // 查找用户
         LambdaQueryWrapper<SysUser> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(SysUser::getUsername, reqBO.getUsername());
         SysUser user = sysUserMapper.selectOne(wrapper);
 
-        if (user == null) {
-            throw new RuntimeException("用户名或密码错误");
+        // 用户不存在也执行一次 BCrypt，减少通过响应耗时枚举账号的差异。
+        String passwordHash = user == null || user.getPassword() == null
+                ? dummyPasswordHash : user.getPassword();
+        boolean passwordMatches = passwordEncoder.matches(reqBO.getPassword(), passwordHash);
+        // 用户不存在、停用和密码错误保持完全相同的外部语义，且密码校验前不暴露 2FA 状态。
+        if (user == null || !Integer.valueOf(1).equals(user.getStatus()) || !passwordMatches) {
+            throw LoginOutcomeException.invalidCredentials();
         }
 
-        if (user.getStatus() != null && user.getStatus() == 0) {
-            throw new RuntimeException("账号已被禁用");
-        }
-
-        // 验证密码
-        if (!passwordEncoder.matches(reqBO.getPassword(), user.getPassword())) {
-            throw new RuntimeException("用户名或密码错误");
-        }
-
-        if (Integer.valueOf(1).equals(user.getTotpEnabled())
-                && !totpService.verifyForUser(user, reqBO.getTotpCode())) {
-            throw new RuntimeException("请输入正确的两步验证码或恢复码");
+        if (Integer.valueOf(1).equals(user.getTotpEnabled())) {
+            String secondFactor = reqBO.getTotpCode();
+            if (secondFactor == null || secondFactor.isBlank()) {
+                throw LoginOutcomeException.totpRequired();
+            }
+            TotpService.LoginVerificationStatus status =
+                    totpService.verifyForLogin(user, secondFactor.trim());
+            if (status == TotpService.LoginVerificationStatus.RATE_LIMITED) {
+                throw LoginOutcomeException.totpRateLimited();
+            }
+            if (status != TotpService.LoginVerificationStatus.SUCCESS) {
+                throw LoginOutcomeException.totpInvalid();
+            }
         }
 
         // 生成Token
@@ -176,7 +185,7 @@ public class AuthServiceImpl implements AuthService {
         user.setLastLoginIp(reqBO.getIp());
         sysUserMapper.updateById(user);
 
-        log.info("[Auth] 登录成功: username={}, ip={}", reqBO.getUsername(), reqBO.getIp());
+        log.info("[Auth] 登录完成: outcome=SUCCESS");
 
         LoginRespBO respBO = new LoginRespBO();
         respBO.setToken(token);

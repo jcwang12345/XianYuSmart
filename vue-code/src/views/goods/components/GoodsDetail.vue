@@ -114,6 +114,9 @@ const loadDetail = async () => {
     const response = await getGoodsDetail(props.goodsId)
     if (response.code === 0 || response.code === 200) {
       goodsDetail.value = response.data?.itemWithConfig || null
+      if (response.data?.refreshStatus !== 'CACHE' && !response.data?.refreshed) {
+        showError(response.data?.refreshMessage || '平台详情暂不可用，当前展示已保存快照')
+      }
 
       if (goodsDetail.value?.item.infoPic) {
         try {

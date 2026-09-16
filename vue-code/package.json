@@ -13,6 +13,8 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
+    "test:login-challenge": "node --experimental-strip-types --test src/views/login/__tests__/login-challenge.test.ts",
+    "test:login-request": "node --experimental-strip-types --test src/utils/__tests__/request-login.test.ts",
     "lint": "eslint . --fix --cache"
   },
   "dependencies": {
