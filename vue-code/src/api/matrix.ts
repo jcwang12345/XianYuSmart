@@ -1,3 +1,4 @@
+import { normalizeAccountId } from './account'
 import service, { getAuthToken, request } from '@/utils/request'
 
 export type CoverageStatus = 'FULL' | 'PARTIAL' | 'UNSYNCED'
@@ -41,13 +42,18 @@ export interface AccountDatasetEvidence {
   coverageStatus: CoverageStatus
   asOfTime?: string
   lastAttemptTime?: string
+  startedAt?: string
   lastSuccessTime?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  retryAfter?: string
+  recoveryHint?: string
   requestId?: string
 }
 
 export interface MatrixAccount {
+  lifecycleState?: 'ACTIVE' | 'DISABLED' | 'ARCHIVED'
+  rowVersion?: number | string
   accountId: number
   accountNote?: string
   unb?: string
@@ -85,6 +91,23 @@ export interface MatrixAccount {
     shopProfile: AccountDatasetEvidence
     shopRisks: AccountDatasetEvidence
   }
+  profileRefresh?: ProfileSyncStatus
+}
+
+export interface ProfileSyncStatus {
+  accountId?: number
+  requestId?: string
+  triggerType?: string
+  status: 'UNSYNCED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BUSY'
+  source?: string
+  coverageStatus?: CoverageStatus
+  startedAt?: string
+  completedAt?: string
+  retryAfter?: string
+  errorCode?: string
+  errorMessage?: string
+  recoveryHint?: string
+  idempotentReplay?: boolean
 }
 
 export interface AccountMatrixSummary {
@@ -110,7 +133,15 @@ export function getAccountMatrixSummary() {
   return request<AccountMatrixSummary>({ url: '/account-matrix/summary', method: 'GET' })
 }
 
+export function bootstrapAccountSessions() {
+  return request<{ accepted: boolean; accountCount: number; accountIds: number[]; message: string }>({
+    url: '/account-matrix/session-bootstrap',
+    method: 'POST',
+  })
+}
+
 export function queryAccountMatrix(params: {
+  lifecycleState?: string
   search?: string
   connectionStatus?: string
   riskSeverity?: string
@@ -118,14 +149,55 @@ export function queryAccountMatrix(params: {
   page?: number
   pageSize?: number
 }) {
-  return request<MatrixPage<MatrixAccount>>({ url: '/account-matrix/accounts', method: 'GET', params })
+  return request<MatrixPage<MatrixAccount>>({ url: '/account-matrix/accounts', method: 'GET', params }).then(response => ({
+    ...response, data: response.data ? { ...response.data, records: response.data.records.map(account => ({ ...account, accountId: normalizeAccountId(account.accountId) })) } : response.data
+  }))
 }
 
 export function getAccountMatrixDetail(accountId: number) {
-  return request<MatrixAccount>({ url: `/account-matrix/accounts/${accountId}`, method: 'GET' })
+  return request<MatrixAccount>({ url: `/account-matrix/accounts/${accountId}`, method: 'GET' }).then(response => ({
+    ...response, data: response.data ? { ...response.data, accountId: normalizeAccountId(response.data.accountId) } : response.data
+  }))
 }
 
-export type AccountBatchOperation = 'ENABLE' | 'DISABLE' | 'SYNC' | 'RENEW'
+export function syncAccountProfile(accountId: number, requestId: string) {
+  return request<ProfileSyncStatus>({
+    url: `/account-matrix/accounts/${accountId}/profile-sync`,
+    method: 'POST',
+    data: { requestId },
+  })
+}
+
+export function getAccountProfileSync(accountId: number, requestId?: string) {
+  return request<ProfileSyncStatus>({
+    url: `/account-matrix/accounts/${accountId}/profile-sync`,
+    method: 'GET',
+    params: requestId ? { requestId } : undefined,
+  })
+}
+
+export function syncAccountRisks(accountId: number, requestId: string) {
+  return request<{
+    accountId: number
+    requestId: string
+    status: 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'BUSY'
+    coverageStatus: CoverageStatus
+    recordCount?: number
+    errorCode?: string
+    errorMessage?: string
+    idempotentReplay?: boolean
+  }>({
+    url: `/account-matrix/accounts/${accountId}/risk-sync`,
+    method: 'POST',
+    data: { requestId },
+  })
+}
+
+export function exportAccountRisks(accountId: number) {
+  return service.get(`/account-matrix/accounts/${accountId}/risks/export`, { responseType: 'blob' })
+}
+
+export type AccountBatchOperation = 'ENABLE' | 'DISABLE' | 'SYNC' | 'PROFILE_SYNC' | 'RENEW'
 export type AccountBatchSelectionMode = 'EXPLICIT' | 'FILTER_SNAPSHOT'
 
 export interface AccountBatchCandidate {
@@ -248,6 +320,13 @@ export interface BusinessAnalyticsOverview {
   anomalies: Array<Record<string, unknown>>
   productAnomalies: Array<Record<string, unknown>>
   definitions: Record<string, string>
+  fanMetrics?: {
+    newFollowers: number | 'UNSYNCED' | null
+    lostFollowers: number | 'UNSYNCED' | null
+    netFollowers: number | 'UNSYNCED' | null
+    followerGmv: number | 'UNSYNCED' | null
+    notice?: string
+  }
   generatedAt: string
 }
 
@@ -334,6 +413,27 @@ export function queryProductMatrix(filter: ProductFilter) {
 
 export function getProductMatrixDetail(accountId: number, goodsId: string) {
   return request<Record<string, any>>({ url: `/product-matrix/accounts/${accountId}/products/${goodsId}`, method: 'GET' })
+}
+
+export interface ProductEventSnapshot {
+  storageStatus: 'SANITIZED_STRUCTURED' | 'HASH_ONLY' | 'CONTENT_OMITTED'
+  message?: string
+  safeContent: { before: Record<string, unknown>; after: Record<string, unknown>; fieldDiff: Record<string, unknown> }
+  safeContentHash: string | null
+  snapshotHashBasis: 'SANITIZED_CONTENT' | 'LEGACY_UNSPECIFIED'
+}
+
+export function getProductEventSnapshot(accountId: string | number, goodsId: string, eventId: string | number) {
+  const idSegment = (id: string | number) => {
+    if ((typeof id === 'number' && (!Number.isSafeInteger(id) || id <= 0)) || !/^[1-9]\d*$/.test(String(id))) {
+      throw new Error('快照 ID 无效；大整数 ID 必须保留为字符串')
+    }
+    return encodeURIComponent(String(id))
+  }
+  return request<ProductEventSnapshot>({
+    url: `/product-matrix/accounts/${idSegment(accountId)}/products/${encodeURIComponent(goodsId)}/events/${idSegment(eventId)}/raw-snapshot`,
+    method: 'GET',
+  })
 }
 
 export async function exportProductMatrix(filter: ProductFilter, requestId: string) {
@@ -423,6 +523,14 @@ export function previewProductBatch(data: ProductBatchRequest) {
 export function createProductBatch(data: ProductBatchRequest) {
   const operation = data.operationType.toLowerCase().replace(/_/g, '-')
   return request<Record<string, any>>({ url: `/product-matrix/batches/${operation}/create`, method: 'POST', data })
+}
+
+export function executeProductSingleNow(jobId: number, operationType: string) {
+  const operation = operationType.toLowerCase().replace(/_/g, '-')
+  return request<Record<string, any>>({
+    url: `/product-matrix/batches/${encodeURIComponent(operation)}/${jobId}/execute-now`,
+    method: 'POST'
+  })
 }
 
 export function getProductBatches(params?: { status?: string; operationType?: string; accountId?: number; operatorUserId?: number; search?: string; createdFrom?: string; createdTo?: string; limit?: number }) {
@@ -540,6 +648,14 @@ export function queryOrderMatrix(filter: OrderFilter) {
 
 export function getOrderMatrixDetail(orderRecordId: number) {
   return request<Record<string, any>>({ url: `/order-matrix/orders/${orderRecordId}`, method: 'GET' })
+}
+
+export function getOrderMatrixDetailByOrderId(accountId: number, orderId: string) {
+  return request<Record<string, any>>({ url: `/order-matrix/accounts/${accountId}/order-detail`, method: 'GET', params: { orderId } })
+}
+
+export function recordRefundHandling(refundCaseId: number, data: { requestId: string; status: 'IN_PROGRESS' | 'RESOLVED'; note: string; platformChecked: boolean }) {
+  return request<Record<string, any>>({ url: `/order-matrix/refunds/${refundCaseId}/handling`, method: 'POST', data })
 }
 
 export function updateOrderNote(orderRecordId: number, data: { requestId: string; flag: string; note: string }) {

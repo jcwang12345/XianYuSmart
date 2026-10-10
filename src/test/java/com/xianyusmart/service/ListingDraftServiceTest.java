@@ -2,6 +2,11 @@ package com.xianyusmart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.test.util.ReflectionTestUtils;
+import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.exception.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.ArrayList;
@@ -14,13 +19,145 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
 
 class ListingDraftServiceTest {
+
+    @Test
+    void qrBasicLocalSupportMetadataIsOptionalButProvidedValidityMustBeValid() {
+        Map<String, Object> request = basicVirtual();
+        request.remove("supportPolicy"); request.remove("validityDays"); request.remove("fulfillmentMode");
+        assertTrue(ListingDraftService.validatePayload(request).errors().isEmpty());
+        request.put("validityDays", 0);
+        assertTrue(ListingDraftService.validatePayload(request).fieldErrors().stream()
+                .anyMatch(field -> "validityDays".equals(field.get("field"))));
+    }
+
+    @Test
+    void qrBasicStockMatchesRealPublishBuilderLimitWithoutChangingOtherDraftModes() {
+        Map<String, Object> request = basicVirtual();
+        request.put("stock", 9999);
+        assertTrue(ListingDraftService.validatePayload(request).fieldErrors().stream()
+                .noneMatch(field -> "stock".equals(field.get("field"))));
+        request.put("stock", 10000);
+        assertTrue(ListingDraftService.validatePayload(request).fieldErrors().stream()
+                .anyMatch(field -> "stock".equals(field.get("field"))));
+        request.put("stock", 1.5);
+        assertTrue(ListingDraftService.validatePayload(request).fieldErrors().stream()
+                .anyMatch(field -> "stock".equals(field.get("field"))));
+        request = validVirtual();
+        request.put("stock", 10000);
+        assertTrue(ListingDraftService.validatePayload(request).fieldErrors().stream()
+                .noneMatch(field -> "stock".equals(field.get("field"))));
+    }
+
+    @Test
+    void explicitQrBasicModeValidatesWithoutLocalCategoryButNeedsConfirmationForExecute() {
+        Map<String, Object> request = basicVirtual();
+        ListingDraftService service = basicService(mock(JdbcTemplate.class));
+        assertTrue((Boolean) service.requirePreflightEligible(request).get("valid"));
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.requireExecutable(request)).getCode());
+        request.put("confirmedPlatformCategoryId", "50023914");
+        assertTrue((Boolean) service.requireExecutable(request).get("valid"));
+    }
+
+    @Test
+    void basicModeRejectsSpecifiedFieldsAndRetainsAdvancedGuards() {
+        for (Map<String, Object> fields : List.of(Map.<String, Object>of("leafCategoryCode", "OFFICE_PLUGIN"),
+                Map.<String, Object>of("categoryAttributes", Map.of("deliveryFormat", "文档")),
+                Map.<String, Object>of("categoryAttributes", List.of("invalid")))) {
+            Map<String, Object> request = basicVirtual(); request.putAll(fields);
+            assertFalse(ListingDraftService.validatePayload(request).errors().isEmpty());
+        }
+        Map<String, Object> request = basicVirtual(); request.put("videoUrl", "https://example.test/movie.mp4");
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> basicService(mock(JdbcTemplate.class)).requirePreflightEligible(request)).getCode());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"QA_LOCAL", "OFFICIAL_OAUTH", "UNKNOWN_CHANNEL"})
+    void basicModeCannotExpandOtherChannels(String channel) {
+        Map<String, Object> request = basicVirtual(); request.put("publishChannel", channel);
+        assertTrue(ListingDraftService.validatePayload(request).fieldErrors().stream()
+                .anyMatch(field -> "categoryMode".equals(field.get("field"))));
+    }
+
+    @Test
+    void unknownModeIsRejectedAndOldDraftIsNotMigrated() {
+        Map<String, Object> basic = basicVirtual(); basic.put("categoryMode", "basic_platform_recommended");
+        assertFalse(ListingDraftService.validatePayload(basic).errors().isEmpty());
+        Map<String, Object> legacy = validVirtual(); legacy.put("xianyuAccountId", 9L);
+        legacy.put("publishChannel", "QR_COOKIE"); legacy.put("businessMode", "NORMAL");
+        BusinessException refusal = assertThrows(BusinessException.class,
+                () -> basicService(mock(JdbcTemplate.class)).requirePreflightEligible(legacy));
+        assertEquals(409, refusal.getCode());
+        assertTrue(refusal.getMessage().contains("指定叶子类目"));
+        assertEquals("OFFICE_PLUGIN", legacy.get("leafCategoryCode"));
+    }
+
+    @Test
+    void recommendationMustBeConfirmedAndStillMatch() {
+        ListingDraftService service = basicService(mock(JdbcTemplate.class));
+        Map<String, Object> request = basicVirtual();
+        Map<String, Object> result = Map.of("platform", Map.of("category", Map.of("catId", "50023914")));
+        assertFalse(service.preflightCategoryConfirmed(request, result));
+        request.put("confirmedPlatformCategoryId", "50023914");
+        assertTrue(service.preflightCategoryConfirmed(request, result));
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> service.preflightCategoryConfirmed(request,
+                        Map.of("platform", Map.of("category", Map.of("catId", "50023915"))))).getCode());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"categoryMode", "confirmedPlatformCategoryId"})
+    void changedModeOrConfirmedCategoryInvalidatesPreflightFingerprint(String field) {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        ListingDraftService service = basicService(jdbc);
+        Map<String, Object> request = basicVirtual();
+        request.put("requestId", "basic-fingerprint-test"); request.put("previewToken", "synthetic-preview");
+        request.put("confirmedPlatformCategoryId", "50023914");
+        String fingerprint = ReflectionTestUtils.invokeMethod(service, "fingerprint", request);
+        when(jdbc.queryForList(contains("preview_token=?"), any(Object[].class)))
+                .thenReturn(List.of(Map.of("id", 1L, "xianyu_account_id", 9L,
+                        "request_id", "basic-fingerprint-test", "payload_fingerprint", fingerprint,
+                        "expires_time", Timestamp.from(Instant.now().plusSeconds(600)))));
+        request.put(field, field.equals("categoryMode") ? "SPECIFIED_CATALOG" : "50023915");
+        TenantContext.set(1L);
+        try {
+            assertEquals(409, assertThrows(BusinessException.class, () -> service.consumePreflight(request)).getCode());
+            verify(jdbc, never()).update(contains("status='CONSUMED'"), any(Object[].class));
+        } finally { TenantContext.clear(); }
+    }
+
+    private Map<String, Object> basicVirtual() {
+        Map<String, Object> request = validVirtual();
+        request.remove("industryCode"); request.remove("leafCategoryCode");
+        request.put("xianyuAccountId", 9L); request.put("publishChannel", "QR_COOKIE");
+        request.put("categoryMode", "BASIC_PLATFORM_RECOMMENDED"); request.put("businessMode", "NORMAL");
+        return request;
+    }
+
+    private ListingDraftService basicService(JdbcTemplate jdbc) {
+        ListingCatalogService catalog = mock(ListingCatalogService.class);
+        when(catalog.active("VIRTUAL")).thenReturn(new ListingCatalogService.Catalog("catalog-v1",
+                "LOCAL_REFERENCE", "REFERENCE_ONLY", "VIRTUAL",
+                List.of(Map.of("code", "SOFTWARE", "leafCategories", List.of(Map.of("code", "OFFICE_PLUGIN")))),
+                Map.of("OFFICE_PLUGIN", Map.of("code", "OFFICE_PLUGIN", "attributes", List.of()))));
+        PublishCapabilityService capabilities = mock(PublishCapabilityService.class);
+        when(capabilities.capabilities(9L)).thenReturn(Map.of("channels",
+                List.of(Map.of("channelCode", "QR_COOKIE", "features", Map.of()))));
+        ProductContentPolicyService content = mock(ProductContentPolicyService.class);
+        when(content.inspect(anyMap())).thenReturn(Map.of("valid", true));
+        return new ListingDraftService(jdbc, new ObjectMapper(), mock(AccountAccessService.class),
+                capabilities, catalog, mock(OperationLogService.class), content);
+    }
 
     @Test
     void acceptsCompleteVirtualListingAndKeepsAdvancedFieldsAsWarnings() {

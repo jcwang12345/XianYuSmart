@@ -29,6 +29,10 @@ public class XianyuAccount {
      * 闲鱼账号备注
      */
     private String accountNote;
+    @TableField(exist = false)
+    private String lifecycleState;
+    @TableField(exist = false)
+    private Long rowVersion;
     
     /**
      * UNB标识

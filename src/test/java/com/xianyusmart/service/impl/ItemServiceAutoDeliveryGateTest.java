@@ -44,8 +44,9 @@ class ItemServiceAutoDeliveryGateTest {
 
     @Test
     void blocksEnableWhenSkuSnapshotIsPartial() {
-        when(readinessService.requireComplete(101L, "G-1"))
-                .thenThrow(new IllegalStateException("主档4个，已验证2个"));
+        when(readinessService.inspect(101L, "G-1"))
+                .thenReturn(new GoodsSkuReadinessService.Readiness(4, 2, GoodsSkuReadinessService.Status.PARTIAL, "主档4个，已验证2个"));
+        when(configMapper.findByAccountIdAndGoodsId(101L, "G-1")).thenReturn(List.of());
 
         ResultObject<UpdateAutoDeliveryRespDTO> result = service.updateAutoDeliveryStatus(request(1));
 
@@ -56,7 +57,7 @@ class ItemServiceAutoDeliveryGateTest {
 
     @Test
     void blocksEnableUntilEveryVerifiedSkuHasConfig() {
-        when(readinessService.requireComplete(101L, "G-1"))
+        when(readinessService.inspect(101L, "G-1"))
                 .thenReturn(new GoodsSkuReadinessService.Readiness(4, 4,
                         GoodsSkuReadinessService.Status.FULL, "完整"));
         when(configMapper.findByAccountIdAndGoodsId(101L, "G-1"))
@@ -71,7 +72,7 @@ class ItemServiceAutoDeliveryGateTest {
 
     @Test
     void enablesAfterAllVerifiedSkusAreConfigured() {
-        when(readinessService.requireComplete(101L, "G-1"))
+        when(readinessService.inspect(101L, "G-1"))
                 .thenReturn(new GoodsSkuReadinessService.Readiness(4, 4,
                         GoodsSkuReadinessService.Status.FULL, "完整"));
         when(configMapper.findByAccountIdAndGoodsId(101L, "G-1"))
@@ -83,6 +84,51 @@ class ItemServiceAutoDeliveryGateTest {
         assertEquals(200, result.getCode());
         verify(autoDeliveryService).saveOrUpdateGoodsConfig(org.mockito.ArgumentMatchers.argThat(value ->
                 value.getXianyuAutoDeliveryOn() == 1 && value.getXianyuAccountId().equals(101L)));
+    }
+
+    @Test
+    void enablesOnlyOwnedGenericFixedTemplateForUnverifiedZeroOfZero() {
+        var snapshot = new GoodsSkuReadinessService.Readiness(0, 0,
+                GoodsSkuReadinessService.Status.PARTIAL, "规格待验证");
+        var fixed = config(null);
+        fixed.setDeliveryMode(1);
+        fixed.setFixedTemplateId(8L);
+        when(readinessService.inspect(101L, "G-1")).thenReturn(snapshot);
+        when(configMapper.findByAccountIdAndGoodsId(101L, "G-1")).thenReturn(List.of(fixed));
+        when(readinessService.permitsLimitedFixedTemplate(101L, "G-1", snapshot, fixed)).thenReturn(true);
+
+        var result = service.updateAutoDeliveryStatus(request(1));
+
+        assertEquals(200, result.getCode());
+        verify(autoDeliveryService).saveOrUpdateGoodsConfig(org.mockito.ArgumentMatchers.argThat(value ->
+                value.getXianyuAutoDeliveryOn() == 1));
+    }
+
+    @Test
+    void cardPoolCannotUseUnverifiedZeroOfZeroException() {
+        var snapshot = new GoodsSkuReadinessService.Readiness(0, 0,
+                GoodsSkuReadinessService.Status.PARTIAL, "规格待验证");
+        var card = config(null);
+        card.setDeliveryMode(2);
+        when(readinessService.inspect(101L, "G-1")).thenReturn(snapshot);
+        when(configMapper.findByAccountIdAndGoodsId(101L, "G-1")).thenReturn(List.of(card));
+
+        var result = service.updateAutoDeliveryStatus(request(1));
+
+        assertEquals(500, result.getCode());
+        verify(autoDeliveryService, never()).saveOrUpdateGoodsConfig(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void explicitUniformCardPolicyEnablesWhileSkuRemainsPartial() {
+        var snapshot=new GoodsSkuReadinessService.Readiness(4,0,GoodsSkuReadinessService.Status.PARTIAL,"not synced");
+        var card=config(null); card.setDeliveryMode(2);
+        when(readinessService.inspect(101L,"G-1")).thenReturn(snapshot);
+        when(configMapper.findByAccountIdAndGoodsId(101L,"G-1")).thenReturn(List.of(card));
+        when(readinessService.permitsUniformCard(101L,"G-1",card)).thenReturn(true);
+        assertEquals(200,service.updateAutoDeliveryStatus(request(1)).getCode());
+        verify(autoDeliveryService).saveOrUpdateGoodsConfig(org.mockito.ArgumentMatchers.any());
+        assertEquals(GoodsSkuReadinessService.Status.PARTIAL,snapshot.status());
     }
 
     private UpdateAutoDeliveryReqDTO request(int enabled) {

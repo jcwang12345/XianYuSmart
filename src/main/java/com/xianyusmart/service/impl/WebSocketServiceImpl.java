@@ -41,6 +41,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Slf4j
 @Service
 public class WebSocketServiceImpl implements WebSocketService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
 
     @Autowired
     private AccountService accountService;
@@ -141,14 +144,19 @@ public class WebSocketServiceImpl implements WebSocketService {
      */
     private static final String WEBSOCKET_URL = "wss://wss-goofish.dingtalk.com/";
 
+    @Autowired
+    private com.xianyusmart.service.R01QaPlatformService r01Qa;
+
     @Override
     public boolean startWebSocket(Long accountId) {
+        if(!accountAutomationPolicy.allows(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.CONNECT))return false;
         manuallyStoppedAccounts.remove(accountId);
         return startWebSocketInternal(accountId);
     }
 
     @Override
     public boolean ensureConnected(Long accountId) {
+        if(!accountAutomationPolicy.allows(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.CONNECT))return false;
         if (manuallyStoppedAccounts.contains(accountId)) {
             return false;
         }
@@ -156,6 +164,11 @@ public class WebSocketServiceImpl implements WebSocketService {
     }
 
     private boolean startWebSocketInternal(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.CONNECT,
+                () -> startWebSocketInternalAllowed(accountId));
+    }
+
+    private boolean startWebSocketInternalAllowed(Long accountId) {
         synchronized (connectionLocks.computeIfAbsent(accountId, key -> new Object())) {
             return startWebSocketLocked(accountId);
         }
@@ -163,6 +176,7 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     private boolean startWebSocketLocked(Long accountId) {
         try {
+            if(r01Qa!=null && r01Qa.handles(accountId)) { r01Qa.connection(accountId,true);return true; }
             log.info("启动WebSocket连接: accountId={}", accountId);
 
             // 检查是否已经连接
@@ -207,7 +221,7 @@ public class WebSocketServiceImpl implements WebSocketService {
             if (accessToken == null || accessToken.isEmpty()) {
                 log.error("获取accessToken失败: accountId={}", accountId);
                 log.error("无法继续WebSocket连接，请检查Cookie是否有效");
-                throw new com.xianyusmart.exception.TokenInvalidException("无法获取WebSocket Token，请检查Cookie是否有效");
+                throw new com.xianyusmart.exception.BusinessException(503,"WebSocket Token暂不可用，原凭据状态保留");
             }
             log.info("accessToken获取成功: accountId={}, token长度={}", accountId, accessToken.length());
             
@@ -225,6 +239,12 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     @Override
     public boolean startWebSocketWithToken(Long accountId, String accessToken) {
+        if(!accountAutomationPolicy.allows(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.CONNECT))return false;
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.CONNECT,
+                () -> startWebSocketWithTokenAllowed(accountId,accessToken));
+    }
+
+    private boolean startWebSocketWithTokenAllowed(Long accountId, String accessToken) {
         manuallyStoppedAccounts.remove(accountId);
         try {
             log.info("========== 使用手动Token启动WebSocket连接 ==========");
@@ -465,6 +485,7 @@ public class WebSocketServiceImpl implements WebSocketService {
                 manuallyStoppedAccounts.add(accountId);
             }
 
+            if(r01Qa!=null && r01Qa.handles(accountId)) { r01Qa.connection(accountId,false);return true; }
             // 停止心跳任务
             stopHeartbeat(accountId);
 
@@ -528,6 +549,7 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     @Override
     public boolean isConnected(Long accountId) {
+        if (r01Qa != null && r01Qa.handles(accountId)) return r01Qa.connected(accountId);
         XianyuWebSocketClient client = webSocketClients.get(accountId);
         return isConnectionHealthy(accountId, client);
     }
@@ -664,6 +686,12 @@ public class WebSocketServiceImpl implements WebSocketService {
                 }), delay, TimeUnit.MILLISECONDS));
     }
     private void refreshTokenAndReconnect(Long accountId) {
+        if(!accountAutomationPolicy.allows(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH))return;
+        accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> { refreshTokenAndReconnectAllowed(accountId);return null; });
+    }
+
+    private void refreshTokenAndReconnectAllowed(Long accountId) {
         if (!canRenew(accountId) || !renewalsRunning.add(accountId)) return;
         try {
             log.info("【账号{}】开始刷新Token并重连...", accountId);
@@ -969,6 +997,7 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     @Override
     public boolean sendMessageWithResult(Long accountId, String cid, String toId, String text) {
+        if (r01Qa != null && (r01Qa.handles(accountId, cid) || r01Qa.handles(accountId, toId))) return r01Qa.send(accountId, cid, toId);
         try {
             if (!platformWritePolicy.enabled()) {
                 log.warn("QA 环境已阻止真实消息发送: accountId={}, cid={}", accountId, cid);
@@ -1007,11 +1036,16 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     @Override
     public java.util.List<Map<String, Object>> listConversationHistory(Long accountId, String cid, int maxMessages) {
+        return listConversationHistoryResult(accountId,cid,maxMessages).messages();
+    }
+
+    @Override
+    public WebSocketService.HistoryResult listConversationHistoryResult(Long accountId,String cid,int maxMessages) {
         XianyuWebSocketClient client = webSocketClients.get(accountId);
         if (client == null || !isConnected(accountId)) {
             throw new IllegalStateException("账号实时连接未建立，请先恢复连接");
         }
-        return client.listConversationHistory(cid, maxMessages);
+        return client.listConversationHistoryResult(cid, maxMessages);
     }
     
     @Override
@@ -1046,6 +1080,10 @@ public class WebSocketServiceImpl implements WebSocketService {
 
     @Override
     public boolean sendImageMessageWithResult(Long accountId, String cid, String toId, String imageUrl, int width, int height) {
+        if (r01Qa != null && (r01Qa.handles(accountId, cid) || r01Qa.handles(accountId, toId))) {
+            r01Qa.require(accountId, cid.replace("@goofish", ""));
+            throw new com.xianyusmart.exception.BusinessException(403, "R01 QA 不允许图片外发");
+        }
         try {
             if (!platformWritePolicy.enabled()) {
                 log.warn("QA 环境已阻止真实图片发送: accountId={}, cid={}", accountId, cid);

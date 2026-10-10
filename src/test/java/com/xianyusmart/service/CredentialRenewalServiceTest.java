@@ -35,10 +35,11 @@ class CredentialRenewalServiceTest {
         ObjectProvider<EmailNotifyService> mp=mock(ObjectProvider.class);when(mp.getObject()).thenReturn(mail);
         var account=new XianyuAccount();account.setId(1L);account.setTenantId(7L);account.setStatus(1);when(accounts.selectById(1L)).thenReturn(account);
         when(mail.isEmailConfigured()).thenReturn(true);when(mail.isCookieExpireNotifyEnabled()).thenReturn(true);
-        when(qr.generateQRCode(1L)).thenReturn(new QRLoginResponse(true,"session",png(),"ok",System.currentTimeMillis()+QRLoginSession.MAX_WAIT_MS));
+        when(qr.generateRenewalQRCode(1L)).thenReturn(new QRLoginResponse(true,"session",png(),"ok",System.currentTimeMillis()+QRLoginSession.MAX_WAIT_MS));
         var service=new CredentialRenewalService(accounts,qr,wsp,mp,notices,new RenewalImageStore(),Runnable::run);
+        AccountPolicyFixture.active(service);
         TenantContext.set(7L);service.request(1L);TenantContext.set(7L);service.request(1L);
-        verify(qr,times(1)).generateQRCode(1L);
+        verify(qr,times(1)).generateRenewalQRCode(1L);
         verify(mail).sendCredentialRenewalMail(contains("需扫码续期"),contains("无需登录管理网页"),any(byte[].class));
         verify(notices,never()).dispatch(eq("ACCOUNT_RECOVERED"),any(),any(),any(),any());
         verifyNoInteractions(ws);
@@ -58,6 +59,7 @@ class CredentialRenewalServiceTest {
         var accounts=mock(XianyuAccountMapper.class);var qr=mock(QRLoginService.class);
         var account=new XianyuAccount();account.setId(1L);account.setTenantId(7L);account.setStatus(0);when(accounts.selectById(1L)).thenReturn(account);
         var service=new CredentialRenewalService(accounts,qr,mock(ObjectProvider.class),mock(ObjectProvider.class),mock(NotificationCenterService.class),new RenewalImageStore(),Runnable::run);
+        AccountPolicyFixture.active(service);
         service.request(1L);verifyNoInteractions(qr);
     }
 }

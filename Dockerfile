@@ -1,7 +1,7 @@
 # ===== 多阶段构建 =====
 
 # 阶段1: 构建前端
-FROM node:20-alpine AS frontend-build
+FROM node:22-alpine AS frontend-build
 
 WORKDIR /app/vue-code
 
@@ -10,7 +10,7 @@ RUN npm config set registry https://registry.npmmirror.com
 
 # 先复制依赖文件，利用缓存
 COPY vue-code/package.json vue-code/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN npm ci
 
 # 复制前端源码并构建
 COPY vue-code/ ./
@@ -46,7 +46,7 @@ FROM eclipse-temurin:21-jre-jammy
 
 LABEL org.opencontainers.image.title="XianYuSmart"
 LABEL org.opencontainers.image.description="多租户闲鱼虚拟商品运营平台"
-LABEL org.opencontainers.image.version="2.7.1"
+LABEL org.opencontainers.image.version="4.0.0-rc.1"
 LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
 
 WORKDIR /app
@@ -67,7 +67,7 @@ RUN groupadd --system xianyusmart && useradd --system --gid xianyusmart --home-d
     && chown -R xianyusmart:xianyusmart /app
 
 # 从构建阶段复制 JAR
-COPY --from=backend-build --chown=xianyusmart:xianyusmart /app/target/xianyusmart-2.7.1.jar app.jar
+COPY --from=backend-build --chown=xianyusmart:xianyusmart /app/target/xianyusmart-*.jar app.jar
 COPY --from=backend-build --chown=xianyusmart:xianyusmart /ms-playwright /app/ms-playwright
 
 # 暴露端口

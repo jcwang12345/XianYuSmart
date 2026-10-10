@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onScopeDispose, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   acknowledgeAllOperationExceptions,
@@ -19,6 +19,7 @@ import {
   type NotificationChannelType,
   type NotificationLog,
   type InboxNotification,
+  type NotificationInboxQuery,
   type OperationException
 } from '@/api/operations-health'
 import { toast } from '@/utils/toast'
@@ -128,6 +129,10 @@ const inboxFilters = ref({
   view: 'ALL' as 'ALL' | 'UNREAD' | 'PENDING' | 'SENT',
   accountId: '' as number | '',
   search: '',
+  severity: '' as NonNullable<NotificationInboxQuery['severity']> | '',
+  eventType: '',
+  handlingStatus: '' as NonNullable<NotificationInboxQuery['handlingStatus']> | '',
+  deliveryStatus: '' as NonNullable<NotificationInboxQuery['deliveryStatus']> | '',
   page: 1,
   pageSize: 20
 })
@@ -168,13 +173,26 @@ const load = async () => {
     if (result.applied && result.value) exceptions.value = result.value.data || []
   }
   if (tab === 'inbox') {
-    const result = await state.execute(() => getNotificationInbox({
+    const result = await state.execute(async () => {
+      const response = await getNotificationInbox({
         view: inboxFilters.value.view,
         accountId: inboxFilters.value.accountId || undefined,
         search: inboxFilters.value.search.trim() || undefined,
+        severity: inboxFilters.value.severity || undefined,
+        eventType: inboxFilters.value.eventType || undefined,
+        handlingStatus: inboxFilters.value.handlingStatus || undefined,
+        deliveryStatus: inboxFilters.value.deliveryStatus || undefined,
         page: inboxFilters.value.page,
         pageSize: inboxFilters.value.pageSize
-      }), {
+      })
+      // The normal backend serializer sends Long counts as decimal strings.
+      const rawTotal: unknown = response.data?.total
+      const total = typeof rawTotal === 'number' ? rawTotal
+        : typeof rawTotal === 'string' && /^\d+$/.test(rawTotal) ? Number(rawTotal) : NaN
+      if (!response.data || !Array.isArray(response.data.records) || !Number.isSafeInteger(total) || total < 0) throw new Error('站内通知响应缺少数据')
+      response.data.total = total
+      return response
+    }, {
         isEmpty: response => !(response.data?.records || []).length,
         errorMessage: '站内通知读取失败，请重试。'
       })
@@ -187,6 +205,8 @@ const load = async () => {
         inboxFilters.value.page = inboxTotalPages.value
         await load()
       }
+    } else if (result.applied && result.error && [401,403].includes(Number((result.error as any)?.response?.status || (result.error as any)?.status || (result.error as any)?.response?.data?.code))) {
+      inbox.value = []; inboxTotal.value = 0; inboxTotalPages.value = 0
     }
   }
   if (tab === 'channels') {
@@ -212,8 +232,14 @@ const changeTab = (key: string) => {
 }
 
 const applyInboxFilters = () => {
+  inbox.value = []; inboxTotal.value = 0; inboxTotalPages.value = 0
   inboxFilters.value.page = 1
-  load()
+  void load()
+}
+
+const clearInboxFilters = () => {
+  inboxFilters.value = { view: 'ALL', accountId: '', search: '', severity: '', eventType: '', handlingStatus: '', deliveryStatus: '', page: 1, pageSize: 20 }
+  applyInboxFilters()
 }
 
 const changeInboxPage = (page: number) => {
@@ -241,7 +267,7 @@ const openChannel = (channel?: NotificationChannel) => {
     channelType: 'WECHAT_WORK',
     config: {},
     messageTemplate: defaultMessageTemplate,
-    eventTypes: ['DELIVERY_EXCEPTION', 'ACCOUNT_OFFLINE', 'CREDENTIAL_EXPIRED', 'KAMI_STOCK_LOW'],
+    eventTypes: ['DELIVERY_EXCEPTION', 'REFUND_REQUESTED', 'ACCOUNT_OFFLINE', 'CREDENTIAL_EXPIRED', 'KAMI_STOCK_LOW'],
     scopeType: 'ALL',
     scopeIds: [],
     enabled: true
@@ -345,6 +371,7 @@ let initialized = false
 watch(() => route.query.tab, value => {
   const tab = normalizeTab(value)
   if (tab === activeTab.value) return
+  tabStates[activeTab.value].invalidate()
   activeTab.value = tab
   if (initialized) void load()
 })
@@ -356,6 +383,7 @@ onMounted(async () => {
   initialized = true
   await load()
 })
+onScopeDispose(() => Object.values(tabStates).forEach(state => state.invalidate()))
 </script>
 
 <template>
@@ -456,13 +484,18 @@ onMounted(async () => {
         <label class="inbox-search">搜索
           <input v-model="inboxFilters.search" maxlength="100" placeholder="标题、内容或业务对象 ID" />
         </label>
+        <label>严重度<select v-model="inboxFilters.severity"><option value="">全部严重度</option><option value="INFO">提醒</option><option value="WARNING">警告</option><option value="ERROR">紧急</option></select></label>
+        <label>通知类型<select v-model="inboxFilters.eventType"><option value="">全部类型</option><option v-for="event in eventOptions" :key="event.value" :value="event.value">{{ event.label }}</option></select></label>
+        <label>处理状态<select v-model="inboxFilters.handlingStatus"><option value="">全部处理状态</option><option value="UNHANDLED">待处理</option><option value="IN_PROGRESS">处理中</option><option value="RESOLVED">已解决</option><option value="IGNORED">已忽略</option></select></label>
+        <label>投递状态<select v-model="inboxFilters.deliveryStatus"><option value="">全部投递状态</option><option value="NOT_CONFIGURED">未配置外部渠道</option><option value="PENDING">等待投递</option><option value="SENT">已全部送达</option><option value="FAILED">投递失败</option><option value="PARTIAL">部分送达</option><option value="RETRYING_OR_FAILED">重试中或已失败</option></select></label>
+        <button type="button" @click="clearInboxFilters">清除筛选</button>
         <button type="submit">查询</button>
       </form>
       <div class="inbox-scope-note">
-        <span>共 {{ inboxTotal }} 条；每页最多只渲染 {{ inboxFilters.pageSize }} 条</span>
+        <span>{{ loading ? '筛选结果读取中…' : `共 ${inboxTotal} 条` }}；每页最多只渲染 {{ inboxFilters.pageSize }} 条</span>
         <span>已读表示已查看，已解决表示业务问题已处理，两者互不替代。</span>
       </div>
-      <div v-if="inbox.length === 0" class="empty">当前筛选范围没有站内通知。</div>
+      <div v-if="inbox.length === 0 && !loading && !loadError" class="empty">当前筛选范围没有站内通知。</div>
       <article v-for="item in inbox" :key="item.id">
         <div class="item-main"><span :class="['badge', item.severity === 'ERROR' ? 'danger-badge' : item.severity === 'WARNING' ? 'warning' : '']">{{ severityLabel(item.severity) }}</span><div><strong>{{ item.title }}</strong><p>{{ item.contentSummary }}</p><div class="event-tags"><span>{{ eventLabel(item.eventType) }}</span><span>{{ item.accountName || '全局' }}</span><span>{{ item.readTime ? '已读' : '未读' }}</span><span>{{ handlingLabel(item.handlingStatus) }}</span><span>{{ deliveryLabel(item.deliveryStatus) }}<template v-if="item.deliveryTotal > 0"> {{ item.deliverySent }}/{{ item.deliveryTotal }}</template></span><span>事件 {{ item.eventId }}</span></div></div></div>
         <div class="actions"><router-link v-if="item.targetRoute" :to="item.targetRoute">查看业务</router-link><button @click="handleInbox(item, 'IN_PROGRESS')">处理中</button><button class="primary" @click="handleInbox(item, 'RESOLVED')">已解决</button><button @click="handleInbox(item, 'IGNORED')">忽略</button></div>
@@ -581,7 +614,7 @@ button, input { font: inherit; } button { padding: 8px 14px; border: 1px solid #
 .resource-error { display: flex; align-items: center; gap: 12px; padding: 22px; color: #7a271a; background: #fff7f5; }
 .resource-error span { flex: 1; color: #912018; font-size: 13px; }
 .refresh-warning { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid #fedf89; border-radius: 8px; color: #93370d; background: #fffaeb; font-size: 12px; }
-.inbox-toolbar { display: grid; grid-template-columns: 180px 220px minmax(220px, 1fr) auto; align-items: end; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #eaecf0; background: #fcfcfd; }
+.inbox-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #eaecf0; background: #fcfcfd; }
 .inbox-toolbar label { display: grid; gap: 5px; color: #667085; font-size: 12px; }
 .inbox-toolbar input, .inbox-toolbar select { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #d0d5dd; border-radius: 6px; box-sizing: border-box; background: #fff; color: #344054; font: inherit; }
 .inbox-scope-note { display: flex; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #eaecf0; color: #667085; background: #fffaf0; font-size: 12px; }

@@ -49,6 +49,19 @@ class PublishCapabilityServiceTest {
     }
 
     @Test
+    void advertisedOAuthSupportCannotExecuteThroughMissingAdapter() throws Exception {
+        var rs = mock(java.sql.ResultSet.class);
+        when(rs.getString("channel_code")).thenReturn("OFFICIAL_OAUTH");
+        when(rs.getString("connection_status")).thenReturn("CONNECTED");
+        when(rs.getString("authorization_status")).thenReturn("AUTHORIZED");
+        when(rs.getString("capabilities_json")).thenReturn("{\"publishing\":\"SUPPORTED\"}");
+        Map<String, Object> channel = org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "channel", rs);
+        assertEquals(false, channel.get("available"));
+        assertEquals(false, channel.get("executionAvailable"));
+        assertTrue(String.valueOf(channel.get("reason")).contains("适配器"));
+    }
+
+    @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     void officialChannelIsReservedButCannotBeSelectedWithoutAuthorization() {
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))

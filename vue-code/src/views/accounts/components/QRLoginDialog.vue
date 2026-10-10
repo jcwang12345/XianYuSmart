@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onScopeDispose } from 'vue'
 import { generateQRCode, getQRCodeStatus } from '@/api/qrlogin'
 import { showSuccess, showError } from '@/utils'
 import type { QRLoginSession } from '@/types'
@@ -32,6 +32,26 @@ const generating = ref(false)
 let pollTimer: number | null = null
 let pollRequestPending = false
 let countdownTimer: number | null = null
+let generation = 0
+let closed = !props.modelValue
+let disposed = false
+const invalidate = () => {
+  generation++
+  closed = true
+  stopPolling()
+  stopCountdown()
+  pollRequestPending = false
+  generating.value = false
+  qrCodeUrl.value = ''
+  sessionId.value = ''
+  generatedAt.value = null
+  expiresAt.value = null
+}
+onScopeDispose(() => {
+  disposed = true
+  invalidate()
+  window.removeEventListener('resize', checkScreenSize)
+})
 
 const normalizeEpoch = (value: unknown) => {
   const epoch = Number(value)
@@ -53,18 +73,21 @@ const canRegenerate = computed(() => !generating.value && status.value !== 'conf
 
 watch(() => props.modelValue, (newVal) => {
   if (newVal) {
+    closed = false
     checkScreenSize()
     window.addEventListener('resize', checkScreenSize)
     startCountdown()
     generateQR()
   } else {
     window.removeEventListener('resize', checkScreenSize)
-    stopPolling()
-    stopCountdown()
+    invalidate()
   }
 })
 
 const generateQR = async () => {
+  if (disposed || closed || !props.modelValue) return
+  const mine = ++generation
+  pollRequestPending = false
   stopPolling()
   qrCodeUrl.value = ''
   sessionId.value = ''
@@ -75,6 +98,7 @@ const generateQR = async () => {
   generating.value = true
   try {
     const response = await generateQRCode()
+    if (disposed || closed || !props.modelValue || mine !== generation) return
     if (response.code === 0 || response.code === 200) {
       qrCodeUrl.value = response.data?.qrCodeUrl || ''
       sessionId.value = response.data?.sessionId || ''
@@ -86,12 +110,13 @@ const generateQR = async () => {
       throw new Error(response.msg || '生成二维码失败')
     }
   } catch (error: any) {
+    if (disposed || closed || !props.modelValue || mine !== generation) return
     console.error('生成二维码失败:', error)
     status.value = 'error'
     statusText.value = error?.message || '生成二维码失败，请重试'
     showError(statusText.value)
   } finally {
-    generating.value = false
+    if (mine === generation) generating.value = false
   }
 }
 
@@ -117,11 +142,14 @@ const stopCountdown = () => {
 
 const startPolling = () => {
   if (!sessionId.value) return
+  const mine = generation
+  const requestedSession = sessionId.value
   pollTimer = window.setInterval(async () => {
-    if (!sessionId.value || pollRequestPending) return
+    if (disposed || closed || !props.modelValue || mine !== generation || sessionId.value !== requestedSession || pollRequestPending) return
     pollRequestPending = true
     try {
-      const response = await getQRCodeStatus(sessionId.value)
+      const response = await getQRCodeStatus(requestedSession)
+      if (disposed || closed || !props.modelValue || mine !== generation || sessionId.value !== requestedSession) return
       if (response.code === 0 || response.code === 200) {
         const data = response.data
         status.value = data?.status || 'pending'
@@ -152,9 +180,10 @@ const startPolling = () => {
         }
       }
     } catch (error) {
+      if (disposed || closed || mine !== generation) return
       console.error('检查登录状态失败:', error)
     } finally {
-      pollRequestPending = false
+      if (mine === generation) pollRequestPending = false
     }
   }, 2000)
 }
@@ -174,8 +203,7 @@ const handleLoginSuccess = async () => {
 }
 
 const handleClose = () => {
-  stopPolling()
-  stopCountdown()
+  invalidate()
   emit('update:modelValue', false)
 }
 </script>

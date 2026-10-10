@@ -16,6 +16,8 @@ public class OrderConfirmationService {
     private final XianyuAccountMapper accounts;
     private final OrderService service;
     private final NotificationCenterService notifications;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
     public OrderConfirmationService(OrderConfirmationMapper mapper, XianyuGoodsOrderMapper orders,
             XianyuAccountMapper accounts, OrderService service, NotificationCenterService notifications) {
         this.mapper=mapper; this.orders=orders; this.accounts=accounts; this.service=service; this.notifications=notifications;
@@ -30,6 +32,7 @@ public class OrderConfirmationService {
 
     @Scheduled(fixedDelay=5000,initialDelay=20000)
     public void poll() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         for(var task:mapper.due()) {
             String token=UUID.randomUUID().toString();
             try {

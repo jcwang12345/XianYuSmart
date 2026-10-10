@@ -104,7 +104,7 @@ const router = createRouter({
       path: '/product-tasks',
       name: 'product-tasks',
       component: () => import('@/views/product-tasks/index.vue'),
-      meta: { title: '商品任务', icon: '⇄', permission: 'menu:goods', writePermission: 'action:goods-write' }
+      meta: { title: '任务中心', icon: '⇄', permission: 'menu:goods', writePermission: 'action:goods-write' }
     },
     {
       path: '/operations',
@@ -179,6 +179,12 @@ const router = createRouter({
       meta: { title: '系统设置', icon: '⚙️', permission: 'menu:settings', writePermission: 'action:system-write' }
     },
     {
+      path: '/pdca',
+      name: 'pdca',
+      component: () => import('@/views/pdca/index.vue'),
+      meta: { title: 'PDCA进度', managerOnly: true, permission: 'menu:settings' }
+    },
+    {
       path: '/admin/users',
       name: 'admin-users',
       component: () => import('@/views/admin-users/index.vue'),
@@ -200,7 +206,7 @@ router.beforeEach(async (to, _from, next) => {
     return
   }
   if (!isLoggedIn()) {
-    next('/login')
+    next({path:'/login',query:{redirect:to.fullPath}})
     return
   }
   try {
@@ -219,7 +225,7 @@ router.beforeEach(async (to, _from, next) => {
     }
     next()
   } catch {
-    next('/login')
+    next({path:'/login',query:{redirect:to.fullPath}})
   }
 })
 

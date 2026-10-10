@@ -76,12 +76,18 @@ public class PublishingController {
 
     @PostMapping("/preflight")
     public ResultObject<Map<String, Object>> preflight(@RequestBody Map<String, Object> request) {
-        Map<String, Object> listingValidation = listingDraftService.requireValidForPublish(request);
+        Map<String, Object> listingValidation = listingDraftService.requirePreflightEligible(request);
         Map<String, Object> dryRun = new java.util.LinkedHashMap<>(request);
         dryRun.put("dryRun", true);
         Map<String, Object> result = new java.util.LinkedHashMap<>(operationsService.createPublishPlan(dryRun));
         result.put("listingValidation", listingValidation);
         result.put("platformDifferences", listingDraftService.platformDifferences(request, result));
+        if (!listingDraftService.preflightCategoryConfirmed(request, result)) {
+            result.put("valid", false);
+            result.put("requiresCategoryConfirmation", true);
+            result.put("outcomeState", "CATEGORY_CONFIRMATION_REQUIRED");
+            return ResultObject.success(result);
+        }
         Map<String, Object> snapshot = listingDraftService.recordPreflight(request, listingValidation, result);
         result.putAll(snapshot);
         return ResultObject.success(result);

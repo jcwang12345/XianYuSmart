@@ -1,6 +1,8 @@
 package com.xianyusmart.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xianyusmart.context.UserContext;
+import com.xianyusmart.exception.BusinessException;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -11,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -21,6 +24,51 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ProductBatchExecutionServiceTest {
+
+    @Test
+    void immediateExecutionRefusesAnotherOperatorsJobOrBatchScope() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        ProductBatchExecutionService service = new ProductBatchExecutionService(
+                jdbc, mock(PlatformPublishService.class), mock(ItemDetailSyncService.class),
+                mock(GoodsAutomationService.class), new ObjectMapper(), mock(NotificationCenterService.class),
+                mock(ProductBatchQaMockService.class), false);
+        UserContext.set(7L, "operator", 1L);
+        try {
+            Map<String, Object> job = new LinkedHashMap<>(Map.of(
+                    "operator_user_id", 8L, "selection_mode", "EXPLICIT_IDS",
+                    "selected_count", 1, "executable_count", 1, "conflict_count", 0,
+                    "status", "QUEUED"));
+            when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(job));
+            assertThrows(BusinessException.class, () -> service.dispatchOneUserJob(12L));
+            job.put("operator_user_id", 7L);
+            job.put("selected_count", 2);
+            assertThrows(BusinessException.class, () -> service.dispatchOneUserJob(12L));
+            verify(jdbc, never()).update(anyString(), any(Object[].class));
+        } finally {
+            UserContext.clear();
+        }
+    }
+
+    @Test
+    void immediateExecutionDoesNotRestartCancelledSingleItem() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        ProductBatchExecutionService service = new ProductBatchExecutionService(
+                jdbc, mock(PlatformPublishService.class), mock(ItemDetailSyncService.class),
+                mock(GoodsAutomationService.class), new ObjectMapper(), mock(NotificationCenterService.class),
+                mock(ProductBatchQaMockService.class), false);
+        UserContext.set(7L, "operator", 1L);
+        try {
+            Map<String, Object> job = new LinkedHashMap<>(Map.of(
+                    "operator_user_id", 7L, "selection_mode", "EXPLICIT_IDS",
+                    "selected_count", 1, "executable_count", 1, "conflict_count", 0,
+                    "status", "CANCEL_REQUESTED"));
+            when(jdbc.queryForList(anyString(), any(Object[].class))).thenReturn(List.of(job));
+            service.dispatchOneUserJob(12L);
+            verify(jdbc, never()).update(anyString(), any(Object[].class));
+        } finally {
+            UserContext.clear();
+        }
+    }
 
     @Test
     void restartRecoveryMarksInFlightItemsUnknownAndRequeuesRemainingWork() {

@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class PlatformItemDetailFetchServiceTest {
@@ -36,6 +37,19 @@ class PlatformItemDetailFetchServiceTest {
         playwrightManager = mock(PlaywrightManager.class);
         service = new PlatformItemDetailFetchService(
                 playwrightManager, apiCallUtils, new ObjectMapper());
+    }
+
+    @Test
+    void forwardsRealChallengeOnlyToEphemeralCaptureAndStops() {
+        ItemVerificationEntryService entries = mock(ItemVerificationEntryService.class);
+        ReflectionTestUtils.setField(service, "verificationEntries", entries);
+        String raw = "{\"ret\":[\"FAIL_SYS_USER_VALIDATE::verify\"],\"data\":{\"url\":\"https://h5api.m.goofish.com/_____tmd_____/punish?ticket=SECRET_SENTINEL\"}}";
+        stubApiFailure(raw, null, false);
+        var result = service.fetch(7L, "12345678", "sid=abc");
+        verify(entries).observe(7L, "12345678", raw);
+        verifyNoInteractions(playwrightManager);
+        assertFalse(result.toString().contains("SECRET_SENTINEL"));
+        assertNull(result.response());
     }
 
     @Test
@@ -99,8 +113,7 @@ class PlatformItemDetailFetchServiceTest {
     }
 
     @Test
-    void disabledFallbackReturnsRedactedApiFailure() {
-        ReflectionTestUtils.setField(service, "browserFallbackEnabled", false);
+    void defaultApiOnlyReturnsRedactedFailureWithoutOpeningPage() {
         when(apiCallUtils.callApiWithRetry(7L, PlatformItemDetailFetchService.DETAIL_API,
                 java.util.Map.of("itemId", "12345678"), "sid=abc"))
                 .thenReturn(new XianyuApiCallUtils.ApiCallResult(
@@ -112,6 +125,7 @@ class PlatformItemDetailFetchServiceTest {
         assertEquals(PlatformItemDetailFetchService.Status.UNAVAILABLE, result.status());
         assertFalse(result.errorMessage().contains("secret"));
         assertFalse(result.errorMessage().contains("private"));
+        verifyNoInteractions(playwrightManager);
     }
 
     @Test
@@ -130,11 +144,131 @@ class PlatformItemDetailFetchServiceTest {
         assertTrue(result.errorMessage().contains("连接管理"));
         assertFalse(result.errorMessage().contains("api-secret"));
         assertFalse(result.errorMessage().contains("page-secret"));
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void userValidateStopsAllFallbackAndRetainsOnlySafeRecoveryMetadata() throws Exception {
+        String json = new ObjectMapper().writeValueAsString(java.util.Map.of(
+                "ret", java.util.List.of("FAIL_SYS_USER_VALIDATE::RGV587_ERROR::sensitive-ret-detail"),
+                "data", java.util.Map.of("url", "https://h5api.m.goofish.com/_____tmd_____/punish"
+                        + "?ticket=private-ticket&sign=private-sign#private-fragment")));
+        stubApiFailure(json, "登录验证 token=private-api-token", false);
+
+        var result = service.fetch(7L, "12345678", "sid=abc");
+
+        assertEquals(PlatformItemDetailFetchService.Status.VERIFICATION_REQUIRED, result.status());
+        assertEquals(PlatformItemDetailFetchService.FailureKind.REQUEST_VERIFICATION, result.recoveryInfo().kind());
+        assertEquals("FAIL_SYS_USER_VALIDATE", result.recoveryInfo().platformCode());
+        assertEquals(PlatformItemDetailFetchService.EntryPresence.PRESENT, result.recoveryInfo().entryPresence());
+        assertEquals("h5api.m.goofish.com", result.recoveryInfo().officialHost());
+        assertEquals("/_____tmd_____/punish", result.recoveryInfo().staticPath());
+        assertNull(result.response());
+        assertFalse(result.errorMessage().contains("登录状态失效"));
+        for (String secret : java.util.List.of("private-ticket", "private-sign", "private-fragment",
+                "private-api-token", "sensitive-ret-detail", "https://", "?", "#")) {
+            assertFalse(result.toString().contains(secret));
+        }
+        verifyNoInteractions(playwrightManager);
+        verify(apiCallUtils, times(1)).callApiWithRetry(7L, PlatformItemDetailFetchService.DETAIL_API,
+                java.util.Map.of("itemId", "12345678"), "sid=abc");
+    }
+
+    @Test
+    void userValidateWithoutResponseEntryDoesNotInventVerificationUrl() {
+        stubApiFailure("{\"ret\":[\"FAIL_SYS_USER_VALIDATE::验证\"],\"data\":{}}", "登录", false);
+        var result = service.fetch(7L, "12345678", "sid=abc");
+        assertEquals(PlatformItemDetailFetchService.EntryPresence.ABSENT, result.recoveryInfo().entryPresence());
+        assertNull(result.recoveryInfo().officialHost());
+        assertNull(result.recoveryInfo().staticPath());
+        assertTrue(result.errorMessage().contains("未提供验证入口"));
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void explicitValidationCodeWithoutRawResponseLeavesEntryPresenceUnknown() {
+        stubApiFailure(null, "FAIL_SYS_USER_VALIDATE::验证", false);
+        var result = service.fetch(7L, "12345678", "sid=abc");
+        assertEquals(PlatformItemDetailFetchService.EntryPresence.UNKNOWN, result.recoveryInfo().entryPresence());
+        assertTrue(result.errorMessage().contains("存在性未知"));
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void explicitTokenAndSessionExpirationNeverBecomeRequestChallengeOrBrowserRetry() {
+        for (String code : java.util.List.of("FAIL_SYS_TOKEN_EXOIRED", "FAIL_SYS_TOKEN_EXPIRED", "FAIL_SYS_SESSION_EXPIRED")) {
+            stubApiFailure("{\"ret\":[\"" + code + "::过期\"]}", "未分类", false);
+            var result = service.fetch(7L, "12345678", "sid=abc");
+            assertEquals(PlatformItemDetailFetchService.FailureKind.TOKEN_EXPIRED, result.recoveryInfo().kind());
+            assertTrue(result.errorMessage().contains("明确过期"));
+            assertFalse(result.errorMessage().contains("FAIL_SYS_USER_VALIDATE"));
+        }
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void genericLoginTokenOrVerificationWordsDoNotProveExpiration() {
+        ReflectionTestUtils.setField(service, "browserFallbackEnabled", false);
+        stubApiFailure("{\"ret\":[\"FAIL_BIZ_UNKNOWN::验证登录令牌\"],\"data\":{}}",
+                "验证登录令牌 ticket=private https://example.invalid/?secret=private", false);
+        var result = service.fetch(7L, "12345678", "sid=abc");
+        assertEquals(PlatformItemDetailFetchService.Status.UNAVAILABLE, result.status());
+        assertNull(result.recoveryInfo());
+        assertFalse(result.errorMessage().contains("private"));
+        assertFalse(result.errorMessage().contains("过期"));
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void recognizedBusyResponseDoesNotStartBrowserOrPretendCredentialFailure() {
+        stubApiFailure("{\"ret\":[\"FAIL_SYS_TRAFFIC_LIMIT::busy\"]}", "忙", false);
+        var result = service.fetch(7L, "12345678", "sid=abc");
+        assertEquals(PlatformItemDetailFetchService.Status.BUSY, result.status());
+        assertEquals(PlatformItemDetailFetchService.FailureKind.PLATFORM_BUSY, result.recoveryInfo().kind());
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void unapprovedHostsSchemesCredentialsPortsAndDynamicPathsNeverLeak() throws Exception {
+        for (String url : java.util.List.of("https://www.goofish.com.evil.invalid/_____tmd_____/punish?ticket=secret",
+                "http://www.goofish.com/_____tmd_____/punish?ticket=secret",
+                "https://secret@www.goofish.com/_____tmd_____/punish",
+                "https://www.goofish.com:444/_____tmd_____/punish?ticket=secret",
+                "https://secret.taobao.com/secret?ticket=secret", "malformed-secret")) {
+            stubApiFailure(new ObjectMapper().writeValueAsString(java.util.Map.of(
+                    "ret", java.util.List.of("FAIL_SYS_USER_VALIDATE::verify"), "data", java.util.Map.of("url", url))), null, false);
+            var result = service.fetch(7L, "12345678", "sid=abc");
+            assertEquals(PlatformItemDetailFetchService.EntryPresence.PRESENT, result.recoveryInfo().entryPresence());
+            assertNull(result.recoveryInfo().officialHost());
+            assertNull(result.recoveryInfo().staticPath());
+            assertFalse(result.toString().contains("secret"));
+        }
+        stubApiFailure("{\"ret\":[\"FAIL_SYS_USER_VALIDATE\"],\"data\":{\"url\":\"https://www.goofish.com/private-dynamic-path?ticket=secret\"}}", null, false);
+        var result = service.fetch(7L, "12345678", "sid=abc");
+        assertEquals("www.goofish.com", result.recoveryInfo().officialHost());
+        assertNull(result.recoveryInfo().staticPath());
+        assertFalse(result.toString().contains("private-dynamic-path"));
+        verifyNoInteractions(playwrightManager);
+    }
+
+    @Test
+    void validationWordsInsideDataDoNotOverrideStructuredUnknownRetCode() {
+        ReflectionTestUtils.setField(service, "browserFallbackEnabled", false);
+        stubApiFailure("{\"ret\":[\"FAIL_BIZ_UNKNOWN\"],\"data\":{\"desc\":\"FAIL_SYS_USER_VALIDATE\"}}", null, false);
+        assertEquals(PlatformItemDetailFetchService.Status.UNAVAILABLE,
+                service.fetch(7L, "12345678", "sid=abc").status());
+    }
+
+    private void stubApiFailure(String response, String message, boolean expired) {
+        when(apiCallUtils.callApiWithRetry(7L, PlatformItemDetailFetchService.DETAIL_API,
+                java.util.Map.of("itemId", "12345678"), "sid=abc"))
+                .thenReturn(new XianyuApiCallUtils.ApiCallResult(false, response, message, expired));
     }
 
     @Test
     @SuppressWarnings("unchecked")
     void apiFailureUsesReadOnlyAccountIsolatedPageCapture() {
+        ReflectionTestUtils.setField(service, "browserFallbackEnabled", true);
         String json = response("12345678", "SUCCESS::调用成功");
         when(apiCallUtils.callApiWithRetry(7L, PlatformItemDetailFetchService.DETAIL_API,
                 java.util.Map.of("itemId", "12345678"), "sid=abc"))
@@ -171,6 +305,7 @@ class PlatformItemDetailFetchServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void sameAccountReturnsBusyThenReusesReleasedLock() throws Exception {
+        ReflectionTestUtils.setField(service, "browserFallbackEnabled", true);
         String json = response("12345678", "SUCCESS::调用成功");
         when(apiCallUtils.callApiWithRetry(
                 org.mockito.ArgumentMatchers.eq(7L),
@@ -218,6 +353,7 @@ class PlatformItemDetailFetchServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void differentAccountsCanRunFallbackInParallel() throws Exception {
+        ReflectionTestUtils.setField(service, "browserFallbackEnabled", true);
         when(apiCallUtils.callApiWithRetry(
                 org.mockito.ArgumentMatchers.anyLong(),
                 org.mockito.ArgumentMatchers.eq(PlatformItemDetailFetchService.DETAIL_API),

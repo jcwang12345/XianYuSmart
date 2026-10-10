@@ -31,7 +31,15 @@ class QRLoginServiceImplTest {
         var accounts=org.mockito.Mockito.mock(com.xianyusmart.service.AccountService.class);
         org.springframework.test.util.ReflectionTestUtils.setField(service,"accountService",accounts);
         org.mockito.Mockito.when(accounts.getXianyuUserId(1L)).thenReturn("expected");
+        TenantContext.set(7L);
+        var jdbc=org.mockito.Mockito.mock(org.springframework.jdbc.core.JdbcTemplate.class);
+        org.mockito.Mockito.when(jdbc.queryForList(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(Long.class))).thenReturn(java.util.List.of(Map.of("lifecycleState","ACTIVE","autoReplyAllowed",1,"autoDeliveryAllowed",1)));
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"automation",new com.xianyusmart.service.AccountAutomationPolicy(jdbc));
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"accountAccessService",new com.xianyusmart.service.AccountAccessService(jdbc));
         QRLoginSession session=new QRLoginSession("mismatch");session.setTenantId(7L);session.setTargetAccountId(1L);session.setUnb("different");
+        session.setTrustedRenewal(true);
+        org.mockito.Mockito.when(jdbc.queryForObject(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.eq(Integer.class),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.anyLong())).thenReturn(1);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"authorityJdbc",jdbc);
         session.getCookies().put("unb","different");
         org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"saveCookieToDatabase",session);
         assertEquals("error",session.getStatus());
@@ -41,6 +49,8 @@ class QRLoginServiceImplTest {
     @AfterEach
     void clearTenant() {
         TenantContext.clear();
+        com.xianyusmart.context.AccountScopeContext.clear();
+        com.xianyusmart.context.UserContext.clear();
     }
 
     @Test

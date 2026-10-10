@@ -92,6 +92,9 @@ public class NotificationCenterService {
     @Value("${app.notification.lease-seconds:60}")
     private int leaseSeconds;
 
+    @Value("${app.notification.site-base-url:}")
+    private String siteBaseUrl;
+
     public NotificationCenterService(XianyuNotificationChannelMapper channelMapper,
                                      XianyuNotificationLogMapper logMapper,
                                      XianyuNotificationOutboxMapper outboxMapper,
@@ -446,8 +449,20 @@ public class NotificationCenterService {
         String message = NotificationTemplateRenderer.render(
                 channel.getMessageTemplate(), eventName(eventType), title, content, accountId);
         if (accountId != null) message += "\n账号 ID：" + accountId;
+        if ("REFUND_REQUESTED".equals(eventType) && accountId != null) {
+            XianyuAccount account = accountMapper.selectById(accountId);
+            if (account != null && hasText(account.getAccountNote())) {
+                message += "\n店铺备注：" + limit(account.getAccountNote(), 100);
+            }
+        }
         if (data.get("orderId") != null) message += "\n订单：" + data.get("orderId");
         if (data.get("xyGoodsId") != null) message += "\n商品：" + data.get("xyGoodsId");
+        if ("REFUND_REQUESTED".equals(eventType) && hasText(siteBaseUrl) && accountId != null) {
+            String route = data.get("orderId") != null
+                    ? "/orders?accountId=" + accountId + "&orderId=" + URLEncoder.encode(String.valueOf(data.get("orderId")), StandardCharsets.UTF_8) + (eventType.startsWith("REFUND") ? "&detailTab=refund" : "")
+                    : "/messages?accountId=" + accountId;
+            message += "\n处理入口：" + trimSlash(siteBaseUrl) + route;
+        }
         if (!"TEST".equals(eventType)) message += "\n" + NotificationGuide.advice(eventType);
         String url = resolveWebhookUrl(channelType, config);
         Map<String, Object> payload = new LinkedHashMap<>();

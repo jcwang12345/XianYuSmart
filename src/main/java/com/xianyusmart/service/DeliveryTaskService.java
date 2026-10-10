@@ -10,6 +10,9 @@ public interface DeliveryTaskService {
 
     XianyuGoodsOrder discover(XianyuGoodsOrder order, DeliveryChannel channel);
 
+    /** Record a trusted payment locally; protected orders remain non-executable. */
+    XianyuGoodsOrder recordPaymentProjection(XianyuGoodsOrder order, DeliveryChannel channel);
+
     boolean claimOrderCreatedNotification(Long taskId);
 
     List<XianyuGoodsOrder> claimDueTasks(String workerId, int limit);
@@ -21,8 +24,6 @@ public interface DeliveryTaskService {
     void deferForRisk(Long taskId, LocalDateTime retryAt, String errorMessage);
 
     void markReviewRequired(Long taskId, String errorMessage);
-
-    void requeue(Long taskId);
 
     boolean requeueFailed(Long taskId, Long accountId);
 

@@ -13,13 +13,18 @@ public class OrderOperationsService {
     private final OrderConfirmationMapper confirmations;
     private final OrderDetailFetcher details;
     private final WebSocketTokenService tokens;
+    @org.springframework.beans.factory.annotation.Autowired
+    private RefundObservationService refunds;
     private final Map<Long,Long> nextCheck=new java.util.concurrent.ConcurrentHashMap<>();
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
     public OrderOperationsService(OrderOperationsMapper operations,XianyuGoodsOrderMapper orders,XianyuAccountMapper accounts,
             OrderConfirmationMapper confirmations,OrderDetailFetcher details,WebSocketTokenService tokens) {
         this.operations=operations;this.orders=orders;this.accounts=accounts;this.confirmations=confirmations;this.details=details;this.tokens=tokens;
     }
     @Scheduled(fixedDelay=30000,initialDelay=90000)
     public void reconcile() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         for(var account:accounts.selectReconnectableAccounts()) {
             if(nextCheck.getOrDefault(account.getId(),0L)>System.currentTimeMillis() || tokens.getPendingCaptchaUrl(account.getId())!=null) continue;
             nextCheck.put(account.getId(),System.currentTimeMillis()+300000+java.util.concurrent.ThreadLocalRandom.current().nextLong(60000));
@@ -28,8 +33,13 @@ public class OrderOperationsService {
                 for(var order:operations.due(account.getId())) {
                     var detail=details.fetch(account.getId(),order.getXyGoodsId(),order.getOrderId());
                     operations.reconcile(order.getId(),detail==null?null:detail.tradeStatus,detail==null?null:detail.skuId,detail==null?null:detail.buyerUserId);
-                    if(detail!=null && Set.of("REFUNDING","REFUNDED","CLOSED").contains(detail.tradeStatus==null?"":detail.tradeStatus))
-                        orders.skipPendingTaskForRefund(account.getId(),order.getOrderId(),"平台订单已退款或关闭");
+                    if(detail!=null && Set.of("REFUNDING","REFUNDED","CLOSED").contains(detail.tradeStatus==null?"":detail.tradeStatus)) {
+                        if ("CLOSED".equals(detail.tradeStatus)) {
+                            orders.skipPendingTaskForRefund(account.getId(),order.getOrderId(),"平台订单已关闭");
+                        } else {
+                            refunds.observeStatus(account.getId(), order.getOrderId(), detail.buyerUserId, detail.tradeStatus);
+                        }
+                    }
                     if(detail==null) break;
                 }
             } catch (RuntimeException e) {

@@ -68,7 +68,7 @@ public class MerchantOperationsService {
     public static final Set<String> TASK_TYPES = Set.of(
             "COLLECT", "SELECT", "PUBLISH", "DELETE", "COMPENSATE", "REFRESH_PROMOTION", "WORKFLOW",
             "BARGAIN_FREE_SHIPPING", "CONFIRM_SHIPMENT", "ACCOUNT_ENABLE", "ACCOUNT_DISABLE",
-            "ACCOUNT_SYNC", "ACCOUNT_RENEW"
+            "ACCOUNT_SYNC", "ACCOUNT_PROFILE_SYNC", "ACCOUNT_RENEW"
     );
 
     private final MerchantResourceMapper resourceMapper;
@@ -911,8 +911,9 @@ public class MerchantOperationsService {
                 case "WORKFLOW" -> executeWorkflow(task);
                 case "BARGAIN_FREE_SHIPPING" -> executeBargainFreeShipping(task);
                 case "CONFIRM_SHIPMENT" -> executeConfirmShipment(task);
-                case "ACCOUNT_ENABLE", "ACCOUNT_DISABLE", "ACCOUNT_SYNC", "ACCOUNT_RENEW" ->
-                        accountBatchExecutionService.execute(task.getTaskType().replace("ACCOUNT_", ""), task.getXianyuAccountId());
+                case "ACCOUNT_ENABLE", "ACCOUNT_DISABLE", "ACCOUNT_SYNC", "ACCOUNT_PROFILE_SYNC", "ACCOUNT_RENEW" ->
+                        accountBatchExecutionService.execute(task.getTaskType().replace("ACCOUNT_", ""),
+                                task.getXianyuAccountId(), "batch-profile-" + task.getRequestKey());
                 default -> throw new IllegalArgumentException("不支持的任务类型");
             };
             taskMapper.complete(task.getId(), writeJson(result));

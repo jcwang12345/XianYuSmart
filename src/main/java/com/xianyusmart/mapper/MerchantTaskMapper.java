@@ -50,7 +50,7 @@ public interface MerchantTaskMapper extends BaseMapper<MerchantTask> {
     List<MerchantTask> selectDue(@Param("limit") int limit);
 
     @Select("SELECT * FROM merchant_task WHERE task_type IN " +
-            "('ACCOUNT_ENABLE', 'ACCOUNT_DISABLE', 'ACCOUNT_SYNC', 'ACCOUNT_RENEW') " +
+            "('ACCOUNT_ENABLE', 'ACCOUNT_DISABLE', 'ACCOUNT_SYNC', 'ACCOUNT_PROFILE_SYNC', 'ACCOUNT_RENEW') " +
             "AND ((status = 0 AND scheduled_time <= NOW(3)) " +
             "OR (status = 1 AND updated_time <= DATE_SUB(NOW(3), INTERVAL 10 MINUTE))) " +
             "ORDER BY xianyu_account_id, scheduled_time, id LIMIT #{limit}")

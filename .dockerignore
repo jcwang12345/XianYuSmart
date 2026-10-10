@@ -12,7 +12,8 @@
 .codeartsdoer
 
 # Build outputs
-target/
+target/*
+!target/xianyusmart-4.0.0-rc.1.jar
 dist/
 vue-code/dist/
 vue-code/node_modules/

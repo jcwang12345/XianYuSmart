@@ -16,11 +16,21 @@ import java.util.List;
 @Slf4j
 @Service
 public class DeliveryTaskServiceImpl implements DeliveryTaskService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
 
     private final XianyuGoodsOrderMapper orderMapper;
 
     @org.springframework.beans.factory.annotation.Autowired
     private com.xianyusmart.mapper.DeliveryExecutionMapper executionMapper;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.mapper.XianyuAccountMapper accountMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.mapper.XianyuGoodsInfoMapper goodsInfoMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.mapper.XianyuGoodsConfigMapper goodsConfigMapper;
 
     @Value("${app.delivery.lease-seconds:120}")
     private int leaseSeconds;
@@ -35,6 +45,79 @@ public class DeliveryTaskServiceImpl implements DeliveryTaskService {
     @Override
     @Transactional
     public XianyuGoodsOrder discover(XianyuGoodsOrder order, DeliveryChannel channel) {
+        return accountAutomationPolicy.guarded(order.getXianyuAccountId(),com.xianyusmart.service.AccountAutomationPolicy.Action.DISCOVERY,
+                () -> discoverAllowed(order,channel));
+    }
+
+    @Override
+    @Transactional
+    public XianyuGoodsOrder recordPaymentProjection(XianyuGoodsOrder order, DeliveryChannel channel) {
+        Long tenant = com.xianyusmart.context.TenantContext.get();
+        if (tenant == null || order == null || order.getXianyuAccountId() == null
+                || order.getXianyuGoodsId() == null || channel == null
+                || order.getOrderId() == null || !order.getOrderId().matches("[A-Za-z0-9_-]{1,100}")
+                || order.getXyGoodsId() == null || order.getXyGoodsId().isBlank()
+                || order.getTenantId() != null && !tenant.equals(order.getTenantId())) {
+            throw new IllegalArgumentException("付款投影缺少可信租户或订单引用");
+        }
+        var scope = com.xianyusmart.context.AccountScopeContext.get();
+        if (scope != null && !scope.unrestricted() && !scope.accountIds().contains(order.getXianyuAccountId())) {
+            throw new IllegalArgumentException("付款投影账号不在当前范围");
+        }
+        // Reuse the existing transaction-held lifecycle read guards without authorizing execution.
+        accountAutomationPolicy.protectTenantExecutionClaims();
+        var account = accountMapper.selectById(order.getXianyuAccountId());
+        var goods = goodsInfoMapper.selectById(order.getXianyuGoodsId());
+        if (account == null || !tenant.equals(account.getTenantId()) || goods == null
+                || !order.getXianyuAccountId().equals(goods.getXianyuAccountId())
+                || !order.getXyGoodsId().equals(goods.getXyGoodId())) {
+            throw new IllegalArgumentException("付款投影账号或商品归属不符");
+        }
+        order.setTenantId(tenant);
+        var existing = orderMapper.selectByAccountIdAndOrderId(order.getXianyuAccountId(), order.getOrderId());
+        if (existing != null) return validatePaymentProjection(existing, order);
+
+        var config = goodsConfigMapper.selectByAccountAndGoodsId(order.getXianyuAccountId(), order.getXyGoodsId());
+        String reason = order.getFailReason();
+        if (reason == null && (config == null || !Integer.valueOf(1).equals(config.getXianyuAutoDeliveryOn()))) {
+            reason = "已记录付款消息，自动发货未开启，待人工核对";
+        }
+        if (reason == null && (!accountAutomationPolicy.allows(order.getXianyuAccountId(), com.xianyusmart.service.AccountAutomationPolicy.Action.DISCOVERY)
+                || !accountAutomationPolicy.allows(order.getXianyuAccountId(), com.xianyusmart.service.AccountAutomationPolicy.Action.DELIVERY))) {
+            reason = "已记录付款消息，账号本地状态或策略保护，待人工核对";
+        }
+        order.setId(null);
+        if (reason == null) {
+            return accountAutomationPolicy.guarded(order.getXianyuAccountId(), com.xianyusmart.service.AccountAutomationPolicy.Action.DISCOVERY,
+                    () -> validatePaymentProjection(discoverAllowed(order, channel), order));
+        }
+        order.setState(-1);
+        order.setDeliveryStatus(DeliveryStatus.REVIEW_REQUIRED.name());
+        order.setFailReason(reason);
+        order.setContent(null);
+        order.setConfirmState(0);
+        // Existing NOT NULL columns use zero only for a non-executable, unverified quantity.
+        order.setBuyNum(order.getBuyNum() != null && order.getBuyNum() > 0 ? order.getBuyNum() : 0);
+        order.setExpectedQuantity(order.getBuyNum());
+        order.setDeliveryChannel(channel.name());
+        orderMapper.insert(order);
+        var persisted = orderMapper.selectByAccountIdAndOrderId(order.getXianyuAccountId(), order.getOrderId());
+        if (persisted == null) throw new IllegalStateException("付款投影持久化失败");
+        return validatePaymentProjection(persisted, order);
+    }
+
+    private XianyuGoodsOrder validatePaymentProjection(XianyuGoodsOrder persisted, XianyuGoodsOrder requested) {
+        if (!java.util.Objects.equals(persisted.getTenantId(), requested.getTenantId())
+                || !java.util.Objects.equals(persisted.getXianyuAccountId(), requested.getXianyuAccountId())
+                || !java.util.Objects.equals(persisted.getXianyuGoodsId(), requested.getXianyuGoodsId())
+                || !java.util.Objects.equals(persisted.getXyGoodsId(), requested.getXyGoodsId())
+                || !java.util.Objects.equals(persisted.getOrderId(), requested.getOrderId())) {
+            throw new IllegalStateException("付款投影幂等引用冲突");
+        }
+        return persisted;
+    }
+
+    private XianyuGoodsOrder discoverAllowed(XianyuGoodsOrder order, DeliveryChannel channel) {
         int quantity = order.getBuyNum() != null && order.getBuyNum() > 0 ? order.getBuyNum() : 1;
         if (!DeliveryStatus.REVIEW_REQUIRED.name().equals(order.getDeliveryStatus())) {
             order.setDeliveryStatus(DeliveryStatus.PENDING.name());
@@ -64,9 +147,12 @@ public class DeliveryTaskServiceImpl implements DeliveryTaskService {
     @Override
     @Transactional
     public List<XianyuGoodsOrder> claimDueTasks(String workerId, int limit) {
+        accountAutomationPolicy.protectTenantExecutionClaims();
         executionMapper.recoverUncertain();
         int batchSize = Math.max(1, Math.min(limit, 100));
-        List<XianyuGoodsOrder> tasks = orderMapper.lockDueTasks(batchSize);
+        List<XianyuGoodsOrder> tasks = orderMapper.lockDueTasks(batchSize).stream()
+                .filter(task -> accountAutomationPolicy.allows(task.getXianyuAccountId(),com.xianyusmart.service.AccountAutomationPolicy.Action.DELIVERY))
+                .toList();
         if (tasks.isEmpty()) {
             return tasks;
         }
@@ -114,11 +200,6 @@ public class DeliveryTaskServiceImpl implements DeliveryTaskService {
         String safeMessage = errorMessage == null ? "发送结果不确定，请人工核对" :
                 errorMessage.substring(0, Math.min(errorMessage.length(), 500));
         orderMapper.markTaskReviewRequired(taskId, safeMessage);
-    }
-
-    @Override
-    public void requeue(Long taskId) {
-        orderMapper.requeueTask(taskId);
     }
 
     @Override

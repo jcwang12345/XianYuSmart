@@ -69,6 +69,14 @@ public interface XianyuKamiItemMapper extends BaseMapper<XianyuKamiItem> {
                                              @Param("accountId") Long accountId,
                                              @Param("orderId") String orderId);
 
+    /** Cross-pool order fence; unlike a pool lookup this also sees delivered/review cards. */
+    @Select("SELECT * FROM xianyu_kami_item WHERE tenant_id = #{tenantId} " +
+            "AND reserved_account_id = #{accountId} AND order_id = #{orderId} " +
+            "AND status IN (1, 2, 3) ORDER BY id ASC FOR UPDATE")
+    List<XianyuKamiItem> lockFulfilledByOrderAcrossPools(@Param("tenantId") Long tenantId,
+                                                          @Param("accountId") Long accountId,
+                                                          @Param("orderId") String orderId);
+
     @Select("SELECT * FROM xianyu_kami_item WHERE reserved_account_id = #{accountId} " +
             "AND order_id = #{orderId} AND status = #{status} ORDER BY id ASC")
     List<XianyuKamiItem> findByOrderAndStatus(@Param("accountId") Long accountId,

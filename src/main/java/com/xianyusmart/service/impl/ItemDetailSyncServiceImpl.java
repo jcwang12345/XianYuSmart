@@ -13,6 +13,7 @@ import com.xianyusmart.service.ItemDetailSyncService;
 import com.xianyusmart.service.ItemDetailSnapshotService;
 import com.xianyusmart.service.PlatformItemDetailFetchService;
 import com.xianyusmart.utils.ItemDetailUtils;
+import com.xianyusmart.utils.ItemSkuSnapshotDiagnostics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
@@ -194,6 +195,9 @@ public class ItemDetailSyncServiceImpl implements ItemDetailSyncService {
 
             JsonNode skuDataNode = ItemDetailUtils.findSkuListNode(itemDONode);
             if (!isCompleteSkuSnapshot(skuDataNode)) {
+                log.warn("商品规格快照诊断: accountId={}, itemId={}, source={}, code=SNAPSHOT_INCOMPLETE, shape={}",
+                        accountId, itemId, fetchResult.source(),
+                        ItemSkuSnapshotDiagnostics.describe(response, skuDataNode));
                 return result(SyncStatus.UNAVAILABLE, "平台详情响应中的规格快照不完整，已保留旧数据", null);
             }
             List<XianyuGoodsSku> skuList = ItemDetailUtils.extractSkuList(response);

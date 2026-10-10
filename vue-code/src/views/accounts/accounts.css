@@ -35,6 +35,19 @@
 .status.bad,.bad{color:#b42318;background:#fff0ef}
 .status.muted,.muted{color:#77736b;background:#f2f1ed}
 .row-action{border:0;color:#8a5a00;background:transparent;cursor:pointer}
+.account-matrix__row-actions{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.row-action--danger{color:#b42318}
+.row-action:focus-visible{outline:2px solid #b77800;outline-offset:3px;border-radius:4px}
+.account-delete-dialog__body{display:grid;gap:14px;padding:18px 20px}
+.account-delete-dialog__body p{margin:0;line-height:1.6}
+.account-delete-dialog__body label{display:grid;gap:7px;font-size:13px}
+.account-delete-dialog__warning{padding:12px;border:1px solid #f3c7c2;border-radius:10px;background:#fff4f2;color:#8f2820}
+.account-delete-dialog__error{color:#b42318}
+.account-delete-dialog__progress{padding:10px 12px;border-radius:9px;background:#fff7df;color:#755200}
+.account-matrix__delete-feedback{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0;padding:13px 15px;border:1px solid #9bd4ae;border-radius:11px;background:#ebfff0;color:#166534;font-size:13px}
+.account-matrix__delete-feedback button{border:0;background:transparent;color:inherit;text-decoration:underline;cursor:pointer}
+.account-delete-dialog__submit{border:1px solid #aa271e!important;background:#b42318!important;color:#fff!important}
+.account-delete-dialog__submit:disabled{opacity:.45;cursor:not-allowed}
 .account-matrix__empty{padding:60px;text-align:center;color:#8b877e}
 .account-matrix__pagination{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;color:#77736b;font-size:12px}
 .account-matrix__pagination div{display:flex;align-items:center;gap:10px}

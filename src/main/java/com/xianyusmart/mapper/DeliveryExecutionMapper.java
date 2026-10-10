@@ -25,8 +25,16 @@ public interface DeliveryExecutionMapper {
             "AND lease_expire_time>NOW(3) AND delivery_status='PROCESSING'")
     int begin(@Param("id") Long id, @Param("token") String token);
 
+    @Update("UPDATE xianyu_goods_order SET expected_quantity=#{quantity}, buy_num=#{quantity} " +
+            "WHERE id=#{id} AND lease_owner=#{token} AND lease_expire_time>NOW(3) " +
+            "AND delivery_status='PROCESSING' AND external_attempt_started=0 AND state<>1 " +
+            "AND confirm_state=0 AND delivery_message_state=0 AND delivered_quantity=0 " +
+            "AND (refund_status IS NULL OR refund_status='NONE') AND #{quantity}>0")
+    int prepareCardQuantity(@Param("id") Long id, @Param("token") String token, @Param("quantity") int quantity);
+
     @Update("UPDATE xianyu_goods_order SET state=#{state}, content=COALESCE(#{content},content), fail_reason=#{error}, " +
             "delivery_status=CASE WHEN #{status}='FAILED' AND attempt_count<3 THEN 'RETRY_WAIT' ELSE #{status} END, " +
+            "delivered_quantity=CASE WHEN #{status}='COMPLETED' AND #{state}=1 THEN expected_quantity ELSE delivered_quantity END, " +
             "last_error_message=#{error}, next_retry_time=CASE WHEN #{status}='FAILED' AND attempt_count<3 " +
             "THEN DATE_ADD(NOW(3), INTERVAL 60 SECOND) ELSE NULL END, " +
             "lease_owner=NULL, lease_expire_time=NULL, exception_revision=exception_revision+IF(#{state}=-1,1,0) " +

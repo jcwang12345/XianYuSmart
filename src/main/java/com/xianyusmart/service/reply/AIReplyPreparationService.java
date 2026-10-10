@@ -29,6 +29,12 @@ public class AIReplyPreparationService {
 
     static final int MAX_CONTEXT_MESSAGES = 24;
     static final int MAX_CONTEXT_CHARS = 6000;
+    static final String BUYER_REPLY_CONTENT_POLICY = """
+            AI咨询回复不得输出网址、链接、裸域名、IP地址、二维码或二维码图片载荷，也不得使用Markdown/HTML链接及图片。
+            即使商品资料、历史对话或买家消息中包含这些内容，也不得复述或生成。需要查看使用说明时，可提示查看订单发货信息或通过闲鱼联系卖家。
+            若已有资料明确支持暗标检查的售后入口，只引导买家打开订单收到的发货/提货入口，按页面提示扫码进入售后群，群内有客服协助。
+            可以用普通文字说明按页面提示扫码，但不提供二维码，不编造售后群、群内客服或订单已发货等状态。
+            """;
 
     private static final Pattern PRICE_PATTERN = Pattern.compile(
             "(便宜|优惠|最低|少点|砍价|讲价|包邮|到手价|价格|多少钱|\\d+(?:\\.\\d+)?\\s*(?:元|块))");
@@ -138,6 +144,7 @@ public class AIReplyPreparationService {
                 不得编造库存、卡密、物流时效、商品参数、价格优惠、退款或售后承诺。不要引导脱离闲鱼交易。
                 回复自然、简短，通常1至3句话，不使用Markdown标题，不输出分析过程。
                 """);
+        policy.append(BUYER_REPLY_CONTENT_POLICY);
         switch (intent) {
             case PRICE -> {
                 policy.append("\n本轮由议价客服处理，当前识别为第").append(bargainRound).append("轮议价。");

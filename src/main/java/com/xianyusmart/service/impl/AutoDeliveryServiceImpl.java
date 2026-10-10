@@ -52,6 +52,9 @@ import java.util.concurrent.Executor;
 @Slf4j
 @Service
 public class AutoDeliveryServiceImpl implements AutoDeliveryService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
     @Autowired
     private com.xianyusmart.service.delivery.OrderRecipientVerifier recipientVerifier;
     @Autowired
@@ -340,6 +343,11 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
     @Override
     public void executeDelivery(Long recordId, Long accountId, String xyGoodsId, String sId, String orderId, String buyerUserName, boolean needHumanLikeDelay) {
+        accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.DELIVERY,
+                () -> { executeDeliveryAllowed(recordId,accountId,xyGoodsId,sId,orderId,buyerUserName,needHumanLikeDelay);return null; });
+    }
+
+    private void executeDeliveryAllowed(Long recordId, Long accountId, String xyGoodsId, String sId, String orderId, String buyerUserName, boolean needHumanLikeDelay) {
         if (com.xianyusmart.service.delivery.DeliveryExecution.token() == null) {
             XianyuGoodsOrder task = orderMapper.selectById(recordId);
             if (task == null || !accountId.equals(task.getXianyuAccountId())) throw new IllegalArgumentException("订单不存在");
@@ -384,6 +392,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             orderMapper.updateVerifiedBuyer(recordId, verifiedBuyer, sId);
             com.xianyusmart.service.delivery.DeliveryExecution.check();
             String orderSkuId = orderDetail.skuId != null ? orderDetail.skuId : verifiedOrder.getSkuId();
+            String orderSkuName = orderDetail.skuName != null ? orderDetail.skuName : verifiedOrder.getSkuName();
             int buyNum = (orderDetail != null && orderDetail.buyNum != null && orderDetail.buyNum > 0) ? orderDetail.buyNum : 1;
             log.info("【账号{}】订单SKU: orderId={}, skuId={}, buyNum={}", accountId, orderId, orderSkuId, buyNum);
 
@@ -396,7 +405,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
             XianyuGoodsAutoDeliveryConfig deliveryConfig;
             try {
-                deliveryConfig = resolveDeliveryConfig(accountId, xyGoodsId, orderSkuId);
+                deliveryConfig = resolveDeliveryConfig(accountId, xyGoodsId, orderSkuId, orderSkuName);
             } catch (IllegalStateException e) {
                 log.warn("【账号{}】商品规格发货配置校验失败: xyGoodsId={}, skuId={}, reason={}",
                         accountId, xyGoodsId, orderSkuId, e.getMessage());
@@ -411,6 +420,21 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             }
 
             int deliveryMode = deliveryConfig.getDeliveryMode() != null ? deliveryConfig.getDeliveryMode() : 1;
+            if (deliveryMode == 2) {
+                // A disabled payment projection may have expected_quantity=0. Prepare it only under the current,
+                // unstarted lease after strict platform preflight, then re-read before any reservation.
+                recipientVerifier.verifyCardOrderBeforeQuantityPreparation(verifiedOrder, orderDetail);
+                int officialQuantity = orderDetail.buyNum;
+                if (executionMapper.prepareCardQuantity(recordId,
+                        com.xianyusmart.service.delivery.DeliveryExecution.token(), officialQuantity) != 1) {
+                    // A changed lease/protection guard must not be overwritten by the ordinary failure handler.
+                    throw new com.xianyusmart.service.delivery.DeliveryExecution.LeaseLostException();
+                }
+                verifiedOrder.setBuyNum(officialQuantity);
+                verifiedOrder.setExpectedQuantity(officialQuantity);
+                recipientVerifier.verifyCardOrder(verifiedOrder, orderDetail);
+                buyNum = officialQuantity;
+            }
             cardDelivery = deliveryMode == 2;
             boolean voucherDeliveryEnabled = !Integer.valueOf(0).equals(deliveryConfig.getVoucherDeliveryEnabled());
             boolean chatDeliveryEnabled = !Integer.valueOf(0).equals(deliveryConfig.getChatDeliveryEnabled());
@@ -426,6 +450,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
                     .orderId(orderId)
                     .buyerUserName(resolvedBuyerName)
                     .quantity(buyNum)
+                    .uniformCardRequired(deliveryConfig.isUniformCardDeliveryRequired())
                     .deliveryConfig(deliveryConfig)
                     .build();
 
@@ -490,6 +515,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
             // 两个渠道共用同一次渲染结果，开启双渠道时严格先写凭证再发私聊。
             if (voucherDeliveryEnabled) {
+                requireUniformPolicyBeforeFirstWrite(accountId, xyGoodsId, deliveryConfig);
                 com.xianyusmart.service.delivery.DeliveryExecution.beforeExternal();
                 cardDeliveryAttempted = cardDelivery;
                 String deliveryResult = orderService.consignDummyDelivery(
@@ -567,6 +593,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
             if (cardDelivery) {
                 com.xianyusmart.service.delivery.DeliveryExecution.check();
+                if (!anySuccess) requireUniformPolicyBeforeFirstWrite(accountId, xyGoodsId, deliveryConfig);
                 try {
                     // 私聊内容已处于不可调度状态，卡密提交成功后再激活发送。
                     kamiConfigService.commitReservation(orderId, accountId, xyGoodsId, cid, resolvedBuyerName);
@@ -644,8 +671,35 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
         }
     }
 
-    XianyuGoodsAutoDeliveryConfig resolveDeliveryConfig(Long accountId, String xyGoodsId, String orderSkuId) {
-        GoodsSkuReadinessService.Readiness readiness = goodsSkuReadinessService.requireComplete(accountId, xyGoodsId);
+    XianyuGoodsAutoDeliveryConfig resolveDeliveryConfig(Long accountId, String xyGoodsId,
+                                                         String orderSkuId, String orderSkuName) {
+        GoodsSkuReadinessService.Readiness readiness = goodsSkuReadinessService.inspect(accountId, xyGoodsId);
+        // Explicit all-variant SAME entitlement is independent of SKU synchronization completeness.
+        // The policy revalidates the single mapping, account/product and card-pool ownership each time.
+        XianyuGoodsAutoDeliveryConfig uniform = autoDeliveryConfigMapper.findByAccountIdAndGoodsIdNoSku(accountId, xyGoodsId);
+        if (goodsSkuReadinessService.permitsUniformCard(accountId, xyGoodsId, uniform)) {
+            uniform.setUniformCardDeliveryRequired(true);
+            return uniform;
+        }
+        if (!readiness.complete()) {
+            // A fixed, SKU-independent template can serve an order that carries
+            // no SKU evidence even when a list-only product snapshot is partial.
+            // Never use this fallback for card pools or variant-specific configs.
+            if (Integer.valueOf(0).equals(readiness.declaredCount()) && readiness.verifiedCount() == 0
+                    && (orderSkuId == null || orderSkuId.isBlank())
+                    && (orderSkuName == null || orderSkuName.isBlank())
+                    && autoDeliveryConfigMapper.countSkuSpecificByAccountAndGoodsId(accountId, xyGoodsId) == 0) {
+                XianyuGoodsAutoDeliveryConfig generic = autoDeliveryConfigMapper
+                        .findByAccountIdAndGoodsIdNoSku(accountId, xyGoodsId);
+                if (generic != null && Integer.valueOf(1).equals(generic.getDeliveryMode())
+                        && generic.getFixedTemplateId() != null) {
+                    log.warn("【账号{}】商品规格快照仅部分同步，订单无规格且使用唯一通用固定模板，允许发货: xyGoodsId={}",
+                            accountId, xyGoodsId);
+                    return generic;
+                }
+            }
+            throw new IllegalStateException(readiness.message() + "；为避免错发，已停止自动发货");
+        }
         if (!readiness.hasSkuChildren()) {
             return autoDeliveryConfigMapper.findByAccountIdAndGoodsIdNoSku(accountId, xyGoodsId);
         }
@@ -663,6 +717,16 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
             throw new IllegalStateException("当前商品规格未配置自动发货");
         }
         return config;
+    }
+
+    /** Once a delivery has started, finish the original confirmed payload rather than allocate anew. */
+    private void requireUniformPolicyBeforeFirstWrite(Long accountId, String goodsId,
+                                                      XianyuGoodsAutoDeliveryConfig config) {
+        if (config.isUniformCardDeliveryRequired()
+                && !com.xianyusmart.service.delivery.DeliveryExecution.started()
+                && !goodsSkuReadinessService.permitsUniformCard(accountId, goodsId, config)) {
+            throw new IllegalStateException("商品统一卡密配置或授权已变化，停止新外发并释放未交付卡密");
+        }
     }
 
     private void sendDeliveryImages(Long accountId, String xyGoodsId, String cid, String toId,
@@ -706,7 +770,7 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
         }
         try {
             XianyuGoodsAutoDeliveryConfig config = resolveDeliveryConfig(
-                    order.getXianyuAccountId(), order.getXyGoodsId(), order.getSkuId());
+                    order.getXianyuAccountId(), order.getXyGoodsId(), order.getSkuId(), order.getSkuName());
             if (config == null || !Integer.valueOf(0).equals(config.getVoucherDeliveryEnabled())
                     || Integer.valueOf(0).equals(config.getChatDeliveryEnabled())
                     || !Integer.valueOf(1).equals(config.getAutoConfirmShipment())) {
@@ -771,6 +835,11 @@ public class AutoDeliveryServiceImpl implements AutoDeliveryService {
 
     @Override
     public com.xianyusmart.common.ResultObject<String> manualDelivery(Long xianyuAccountId, String orderId, String content) {
+        return accountAutomationPolicy.guarded(xianyuAccountId,com.xianyusmart.service.AccountAutomationPolicy.Action.DELIVERY,
+                () -> manualDeliveryAllowed(xianyuAccountId,orderId,content));
+    }
+
+    private com.xianyusmart.common.ResultObject<String> manualDeliveryAllowed(Long xianyuAccountId, String orderId, String content) {
         try {
             if (orderId == null || orderId.isEmpty()) {
                 return com.xianyusmart.common.ResultObject.failed("订单ID不能为空");

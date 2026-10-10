@@ -43,6 +43,8 @@ public class MybatisPlusConfig {
             ,"xianyu_order_confirmation", "xianyu_reply_preference", "xianyu_welcome_claim",
             "operational_issue", "xianyu_account_capability", "conversation_assignment",
             "xianyu_account_access_channel", "xianyu_account_dataset_state", "xianyu_shop_profile_snapshot",
+            "xianyu_shop_profile_sync_attempt",
+            "xianyu_shop_risk_sync_attempt",
             "xianyu_shop_risk_event", "xianyu_shop_risk_action",
             "xianyu_goods_event", "xianyu_goods_metric_daily",
             "xianyu_goods_batch_job", "xianyu_goods_batch_item",

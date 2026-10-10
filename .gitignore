@@ -48,6 +48,10 @@ build/
 /.arts/
 /.worktrees/
 /.tools/
+/.rescue-work/
+/efi-backups/
+/hs_err_pid*.log
+/replay_pid*.log
 /XianyuAutoAgent/
 /.pnpm-store/
 /vue-code/pnpm-workspace.yaml

@@ -10,6 +10,24 @@ class MemoryStorage {
   clear() { this.values.clear() }
 }
 
+test('expired session preserves notification order target instead of dropping it', async () => {
+  const storage = new MemoryStorage()
+  storage.setItem('xianyu_auth_token', 'expired-access')
+  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true })
+  const location = { pathname: '/orders', search: '?accountId=1&orderId=QA-B07-link-ui&detailTab=refund', hash: '', href: '/orders' }
+  Object.defineProperty(globalThis, 'window', { value: { location }, configurable: true })
+  const { default: service } = await import('../request.ts')
+  const { toast } = await import('../toast.ts')
+  const originalError = toast.error
+  toast.error = () => undefined
+  try {
+    service.defaults.adapter = async config => ({ data: { code: 401, msg: '登录已过期' }, status: 200, statusText: 'OK', headers: {}, config })
+    await service.request({ url: '/order-matrix/orders/1' }).catch(() => undefined)
+    assert.equal(location.href, '/login?redirect=' + encodeURIComponent(location.pathname + location.search))
+    assert.equal(storage.getItem('xianyu_auth_token'), null)
+  } finally { toast.error = originalError }
+})
+
 test('password login never refreshes or redirects for business and HTTP 401', async () => {
   const storage = new MemoryStorage()
   storage.setItem('xianyu_auth_token', 'existing-access')

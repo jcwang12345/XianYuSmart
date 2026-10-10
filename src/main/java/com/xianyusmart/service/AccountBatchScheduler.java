@@ -7,6 +7,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class AccountBatchScheduler {
     private final MerchantOperationsService operations;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
 
     public AccountBatchScheduler(MerchantOperationsService operations) {
         this.operations = operations;
@@ -14,6 +16,7 @@ public class AccountBatchScheduler {
 
     @Scheduled(fixedDelayString = "${app.account-batch.dispatch-delay-ms:1500}", initialDelayString = "${app.account-batch.initial-delay-ms:3000}")
     public void dispatch() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         operations.processDueAccountTasks();
     }
 }

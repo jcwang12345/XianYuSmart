@@ -62,6 +62,16 @@ public class MessageDecryptUtils {
             }
 
             // 使用MessagePack解码
+            String decodedText = new String(decodedBytes, StandardCharsets.UTF_8);
+            try {
+                Object jsonObject = objectMapper.readValue(decodedText, Object.class);
+                String result = objectMapper.writeValueAsString(jsonObject);
+                log.debug("Base64 JSON解码成功，长度={}", result.length());
+                return result;
+            } catch (Exception ignored) {
+                // Current protocol uses both Base64 JSON and MessagePack. Fall through.
+            }
+
             try (MessageUnpacker unpacker = MessagePack.newDefaultUnpacker(decodedBytes)) {
                 Value value = unpacker.unpackValue();
                 log.debug("MessagePack解码成功");
@@ -77,11 +87,10 @@ public class MessageDecryptUtils {
                 return result;
                 
             } catch (Exception e) {
-                log.error("MessagePack解码失败", e);
+                log.debug("MessagePack解码失败，使用UTF-8文本fallback: {}", e.getMessage());
                 // 如果MessagePack解码失败，尝试直接返回字符串
-                String fallback = new String(decodedBytes, StandardCharsets.UTF_8);
-                log.debug("使用文本fallback，长度: {}", fallback.length());
-                return fallback;
+                log.debug("使用文本fallback，长度: {}", decodedText.length());
+                return decodedText;
             }
 
         } catch (Exception e) {

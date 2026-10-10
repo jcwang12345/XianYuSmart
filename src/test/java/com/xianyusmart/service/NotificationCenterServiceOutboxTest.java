@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.entity.XianyuNotificationChannel;
 import com.xianyusmart.entity.XianyuNotificationOutbox;
+import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuNotificationChannelMapper;
 import com.xianyusmart.mapper.XianyuNotificationLogMapper;
@@ -102,6 +103,49 @@ class NotificationCenterServiceOutboxTest {
         assertEquals("account:1:order:order-1", tasks.get(0).getDedupeKey());
         assertEquals(tasks.get(0).getDedupeKey(), tasks.get(1).getDedupeKey());
         assertNotEquals(tasks.get(0).getEventId(), tasks.get(1).getEventId());
+    }
+
+    @Test
+    void refundRequestsUseOrderScopedDedupeForWecom() {
+        TenantContext.set(7L);
+        channel.setEventTypes("REFUND_REQUESTED");
+        when(channelMapper.selectEnabled()).thenReturn(List.of(channel));
+        Map<String, Object> data = Map.of("orderId", "order-1",
+                "dedupeKey", "refund-requested:1:order-1");
+
+        service.dispatch("REFUND_REQUESTED", 1L, "退款待处理", "请核对", data);
+        service.dispatch("REFUND_REQUESTED", 1L, "退款待处理", "请核对", data);
+
+        ArgumentCaptor<XianyuNotificationOutbox> tasks = ArgumentCaptor.forClass(XianyuNotificationOutbox.class);
+        verify(outboxMapper, times(2)).insert(tasks.capture());
+        assertTrue(tasks.getAllValues().stream().allMatch(task ->
+                "refund-requested:1:order-1".equals(task.getDedupeKey())));
+    }
+
+    @Test
+    void refundWecomMessageIncludesStoreIdentityActionLinkAndManualSteps() {
+        ReflectionTestUtils.setField(service, "siteBaseUrl", "https://xy.ljazg.com:2000");
+        channel.setEventTypes("REFUND_REQUESTED");
+        XianyuAccount account = new XianyuAccount();
+        account.setAccountNote("小村店铺");
+        when(accountMapper.selectById(1L)).thenReturn(account);
+        XianyuNotificationOutbox task = task();
+        task.setEventType("REFUND_REQUESTED");
+        task.setTitle("退款待处理");
+        when(outboxMapper.selectDue(50)).thenReturn(List.of(task));
+        when(outboxMapper.claim(eq(101L), anyString(), eq(60))).thenReturn(1);
+        when(channelMapper.selectById(11L)).thenReturn(channel);
+        when(httpsClient.post(anyString(), anyMap(), anyString(), any(Duration.class)))
+                .thenReturn(new PinnedHttpsClient.Response(200, "{\"errcode\":0}"));
+        when(outboxMapper.markSent(eq(101L), anyString())).thenReturn(1);
+
+        service.dispatchOutbox();
+
+        ArgumentCaptor<String> body = ArgumentCaptor.forClass(String.class);
+        verify(httpsClient).post(anyString(), anyMap(), body.capture(), any(Duration.class));
+        assertTrue(body.getValue().contains("小村店铺"));
+        assertTrue(body.getValue().contains("https://xy.ljazg.com:2000/orders?accountId=1&orderId=order-1"));
+        assertTrue(body.getValue().contains("核对退款原因"));
     }
 
     @Test

@@ -22,6 +22,15 @@ import java.util.UUID;
 public class NotificationInboxService {
 
     private static final Set<String> HANDLING = Set.of("UNHANDLED", "IN_PROGRESS", "RESOLVED", "IGNORED");
+    private static final Set<String> SEVERITIES = Set.of("INFO", "WARNING", "ERROR");
+    private static final Set<String> DELIVERIES = Set.of("NOT_CONFIGURED", "PENDING", "SENT", "FAILED", "PARTIAL", "RETRYING_OR_FAILED");
+    private static final String DELIVERY_TOTAL = "(SELECT COUNT(*) FROM xianyu_notification_outbox outbox WHERE outbox.tenant_id=event.tenant_id AND outbox.event_id=event.event_id)";
+    private static final String DELIVERY_SENT = "(SELECT COUNT(*) FROM xianyu_notification_outbox outbox WHERE outbox.tenant_id=event.tenant_id AND outbox.event_id=event.event_id AND outbox.status='SENT')";
+    private static final String DELIVERY_FAILED = "(SELECT COUNT(*) FROM xianyu_notification_outbox outbox WHERE outbox.tenant_id=event.tenant_id AND outbox.event_id=event.event_id AND outbox.status='FAILED')";
+    private static final String DELIVERY_STATE = "CASE WHEN " + DELIVERY_TOTAL + "=0 THEN 'NOT_CONFIGURED' WHEN "
+            + DELIVERY_SENT + "=" + DELIVERY_TOTAL + " THEN 'SENT' WHEN " + DELIVERY_FAILED + "=" + DELIVERY_TOTAL
+            + " THEN 'FAILED' WHEN " + DELIVERY_SENT + ">0 THEN 'PARTIAL' WHEN " + DELIVERY_FAILED
+            + ">0 THEN 'RETRYING_OR_FAILED' ELSE 'PENDING' END";
     private final JdbcTemplate jdbcTemplate;
     private final AccountAccessService accountAccessService;
     private final ObjectMapper objectMapper;
@@ -68,6 +77,15 @@ public class NotificationInboxService {
     }
 
     public Map<String, Object> list(String view, Long accountId, String search, Integer page, Integer pageSize) {
+        return list(view,accountId,search,page,pageSize,null,null,null,null);
+    }
+
+    public Map<String, Object> list(String view, Long accountId, String search, Integer page, Integer pageSize,
+                                    String severity, String eventType, String handlingStatus, String deliveryStatus) {
+        String selectedSeverity = filter(severity, SEVERITIES, "通知严重度无效");
+        String selectedEvent = filter(eventType, NotificationCenterService.EVENT_TYPES, "通知类型无效");
+        String selectedHandling = filter(handlingStatus, HANDLING, "通知处理状态无效");
+        String selectedDelivery = filter(deliveryStatus, DELIVERIES, "通知投递状态无效");
         if (accountId != null) accountAccessService.requireAccess(accountId);
         String normalizedView = view == null || view.isBlank() ? "ALL" : view.trim().toUpperCase(Locale.ROOT);
         if (!Set.of("ALL", "UNREAD", "PENDING", "SENT").contains(normalizedView)) {
@@ -82,6 +100,10 @@ public class NotificationInboxService {
         if ("UNREAD".equals(normalizedView)) where.append(" AND event.read_time IS NULL");
         if ("PENDING".equals(normalizedView)) where.append(" AND event.handling_status IN ('UNHANDLED','IN_PROGRESS')");
         if ("SENT".equals(normalizedView)) where.append(" AND EXISTS (SELECT 1 FROM xianyu_notification_log log WHERE log.tenant_id=event.tenant_id AND log.event_id=event.event_id AND log.send_status=1)");
+        if (selectedSeverity != null) { where.append(" AND event.severity=?"); args.add(selectedSeverity); }
+        if (selectedEvent != null) { where.append(" AND event.event_type=?"); args.add(selectedEvent); }
+        if (selectedHandling != null) { where.append(" AND event.handling_status=?"); args.add(selectedHandling); }
+        if (selectedDelivery != null) { where.append(" AND (").append(DELIVERY_STATE).append(")=?"); args.add(selectedDelivery); }
         String keyword = trim(search);
         if (keyword != null) { where.append(" AND (event.title LIKE ? OR event.content_summary LIKE ? OR event.business_object_id LIKE ?)"); String like="%"+keyword+"%"; args.add(like);args.add(like);args.add(like); }
         Long total = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM xianyu_notification_event event" + where,
@@ -191,7 +213,7 @@ public class NotificationInboxService {
             String target = String.valueOf(explicit).trim();
             if (target.startsWith("/") && !target.startsWith("//") && target.length() <= 500) return target;
         }
-        if (data.get("orderId") != null) return "/orders?accountId=" + accountId + "&orderId=" + data.get("orderId");
+        if (data.get("orderId") != null) return "/orders?accountId=" + accountId + "&orderId=" + java.net.URLEncoder.encode(String.valueOf(data.get("orderId")), java.nio.charset.StandardCharsets.UTF_8) + (eventType.startsWith("REFUND") ? "&detailTab=refund" : "");
         if (data.get("xyGoodsId") != null) return "/goods?accountId=" + accountId + "&goodsId=" + data.get("xyGoodsId");
         if (data.get("conversationId") != null) return "/messages?accountId=" + accountId + "&conversationId=" + data.get("conversationId");
         if (accountId != null) return "/accounts?accountId=" + accountId;
@@ -230,6 +252,13 @@ public class NotificationInboxService {
     }
 
     private String trim(String value) { return value == null || value.trim().isEmpty() ? null : value.trim(); }
+    private String filter(String value, Set<String> allowed, String message) {
+        String normalized=trim(value);
+        if(normalized==null)return null;
+        normalized=normalized.toUpperCase(Locale.ROOT);
+        if(!allowed.contains(normalized))throw new BusinessException(400,message);
+        return normalized;
+    }
     private String limit(String value, int max) { String normalized=trim(value); return normalized==null?null:normalized.substring(0, Math.min(max, normalized.length())); }
     private long number(Object value) { return value instanceof Number number ? number.longValue() : 0L; }
 }

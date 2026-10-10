@@ -65,6 +65,7 @@ export const MENU_GROUPS: MenuGroupDefinition[] = [
     label: '商品与获客',
     items: [
       { id: 'goods', label: '商品管理', path: '/goods', permission: 'menu:goods', icon: 'goods' },
+      { id: 'product-tasks', label: '任务中心', path: '/product-tasks', permission: 'menu:goods', icon: 'clipboard' },
       { id: 'product-publish', label: '商品发布', path: '/product-publish', permission: 'menu:goods', icon: 'plus' },
       { id: 'operations', label: '运营中心', path: '/operations', permission: 'menu:operations', icon: 'tooling' },
       { id: 'opportunities', label: '商机发掘', path: '/opportunities', permission: 'menu:operations', icon: 'search' },
@@ -99,6 +100,7 @@ export const MENU_GROUPS: MenuGroupDefinition[] = [
       { id: 'operation-log', label: '操作日志', path: '/operation-log', permission: 'menu:operation-log', icon: 'log' },
       { id: 'health', label: '通知与诊断', path: '/operations-health', permission: 'menu:health', icon: 'alert' },
       { id: 'settings', label: '系统设置', path: '/settings', permission: 'menu:settings', icon: 'shield' },
+      { id: 'pdca', label: 'PDCA进度', path: '/pdca', managerOnly: true, permission: 'menu:settings', icon: 'clipboard' },
       { id: 'admin-users', label: '团队与权限', path: '/admin/users', managerOnly: true, icon: 'users' }
     ]
   }

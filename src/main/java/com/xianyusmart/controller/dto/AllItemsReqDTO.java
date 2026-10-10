@@ -11,6 +11,8 @@ public class AllItemsReqDTO {
      * 闲鱼账号ID
      */
     private Long xianyuAccountId;
+    private String requestId;
+    private String scope = "ON_SALE";
     
     /**
      * 每页数量，默认20

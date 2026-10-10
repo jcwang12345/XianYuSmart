@@ -12,6 +12,7 @@ import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.OperationLogService;
 import com.xianyusmart.service.TokenRefreshService;
 import com.xianyusmart.service.WebSocketTokenService;
+import com.xianyusmart.service.BackgroundPlatformActivityPolicy;
 import com.xianyusmart.utils.SessionCookieJar;
 import com.xianyusmart.utils.XianyuSignUtils;
 import jakarta.annotation.PostConstruct;
@@ -51,6 +52,9 @@ import java.util.concurrent.ThreadLocalRandom;
 @Slf4j
 @Service
 public class TokenRefreshServiceImpl implements TokenRefreshService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
 
     private static final long ONE_MINUTE_MS = 60 * 1000L;
 
@@ -80,6 +84,9 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
 
     @Autowired
     private AccountBrowserProfileService accountBrowserProfileService;
+
+    @Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
 
     @Autowired(required = false)
     private com.xianyusmart.service.EmailNotifyService emailNotifyService;
@@ -120,6 +127,11 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
      */
     @Override
     public boolean refreshMh5tkToken(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> refreshMh5tkTokenAllowed(accountId));
+    }
+
+    private boolean refreshMh5tkTokenAllowed(Long accountId) {
         synchronized (credentialCoordinator.lockFor(accountId)) {
             return refreshMh5tkTokenWithRetry(accountId, 0, false);
         }
@@ -172,7 +184,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
                     if (mh5tkChanged) {
                         cookie.setCookieText(newCookieStr);
                         cookie.setMH5Tk(newMh5tk);
-                        cookieMapper.updateById(cookie);
+                        if(cookieMapper.updateById(cookie)!=1)throw new com.xianyusmart.exception.BusinessException(409,"凭据版本已变化，旧Token刷新响应已忽略");
 
                         log.info("【账号{}】✅ _m_h5_tk token刷新成功", accountId);
 
@@ -196,6 +208,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
                 return handleMh5tkRefreshFailure(accountId, retryCount, hasLoginAttempted, "响应中未包含新Token");
             }
 
+        } catch (com.xianyusmart.exception.BusinessException e) { throw e;
         } catch (Exception e) {
             log.error("【账号{}】刷新_m_h5_tk token失败", accountId, e);
             return handleMh5tkRefreshFailure(accountId, retryCount, hasLoginAttempted, "异常: " + e.getMessage());
@@ -231,28 +244,10 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
         
         // 如果已经尝试过hasLogin，不再重试，直接返回失败
         if (hasLoginAttempted) {
-            log.error("【账号{}】已尝试过hasLogin刷新但仍失败，Cookie可能已彻底过期", accountId);
-            
-            // 更新Cookie状态为过期
-            cookieMapper.update(null,
-                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XianyuCookie>()
-                            .eq(XianyuCookie::getXianyuAccountId, accountId)
-                            .set(XianyuCookie::getCookieStatus, 2)
-            );
-            
-            // 记录操作日志
-            operationLogService.log(accountId,
-                com.xianyusmart.constants.OperationConstants.Type.REFRESH,
-                com.xianyusmart.constants.OperationConstants.Module.TOKEN,
-                "_m_h5_tk Token刷新失败：hasLogin后仍无法获取",
-                com.xianyusmart.constants.OperationConstants.Status.FAIL,
-                com.xianyusmart.constants.OperationConstants.TargetType.TOKEN,
-                String.valueOf(accountId),
-                null, null, "hasLogin后仍无法获取Token", null);
-            
+            log.warn("Token刷新暂不可用；已验证登录态，原凭据状态保留: accountId={}",accountId);
             return false;
         }
-        
+
         // 参考Python: retry_count >= 2 时，调用hasLogin刷新Cookie后重试
         log.warn("【账号{}】_m_h5_tk刷新重试已达上限，尝试通过hasLogin刷新Cookie...", accountId);
         return refreshMh5tkViaHasLogin(accountId, 0);
@@ -270,13 +265,18 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
         if (hasLoginRetryCount >= 2) {
             log.error("【账号{}】hasLogin刷新重试次数已达上限，Cookie已彻底过期", accountId);
             
-            // 更新Cookie状态为过期
-            cookieMapper.update(null,
+            Long invalidVersion = cookieRefreshService.consumeConfirmedInvalidVersion(accountId);
+            if (invalidVersion == null) return false;
+            // Only the credential actually checked may be marked expired.
+            int changed = cookieMapper.update(null,
                     new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
+                            .eq(XianyuCookie::getCredentialVersion, invalidVersion)
                             .set(XianyuCookie::getCookieStatus, 2)
+                            .setSql("credential_version=credential_version+1")
             );
             
+            if (changed != 1) return false;
             // 记录操作日志
             operationLogService.log(accountId,
                 com.xianyusmart.constants.OperationConstants.Type.REFRESH,
@@ -319,10 +319,13 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
             throw e;
         } catch (com.xianyusmart.exception.CookieExpiredException e) {
             throw e;
+        } catch (com.xianyusmart.exception.BusinessException e) {
+            if(Integer.valueOf(503).equals(e.getCode())){log.warn("登录检查暂不可用，原凭据状态保留: accountId={}",accountId);return false;}
+            throw e;
         } catch (Exception e) {
-            log.error("【账号{}】hasLogin刷新过程发生异常", accountId, e);
+            log.warn("登录检查无法验证，原凭据状态保留: accountId={},failureType={}",accountId,e.getClass().getSimpleName());return false;
         }
-        
+
         // hasLogin失败，重试
         return refreshMh5tkViaHasLogin(accountId, hasLoginRetryCount + 1);
     }
@@ -332,6 +335,11 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
      */
     @Override
     public boolean refreshWebSocketToken(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> refreshWebSocketTokenAllowed(accountId));
+    }
+
+    private boolean refreshWebSocketTokenAllowed(Long accountId) {
         try {
             if (!hasUsableCookie(accountId)) {
                 log.debug("【账号{}】Cookie非有效状态，跳过WebSocket token刷新", accountId);
@@ -413,6 +421,7 @@ public class TokenRefreshServiceImpl implements TokenRefreshService {
      */
     @Scheduled(fixedDelay = ONE_MINUTE_MS, initialDelay = ONE_MINUTE_MS)
     public void scheduledCookieKeepAlive() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         if (System.currentTimeMillis() < nextCookieKeepAliveTime) {
             return;
         }

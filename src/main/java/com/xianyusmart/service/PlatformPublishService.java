@@ -12,6 +12,7 @@ import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.entity.MerchantResource;
 import com.xianyusmart.exception.RiskGuardBlockedException;
 import com.xianyusmart.exception.PlatformOutcomeUnknownException;
+import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.utils.XianyuApiCallUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -94,6 +95,11 @@ public class PlatformPublishService {
             throw new IllegalStateException("账号Cookie不可用");
         }
         Map<String, Object> data = readData(material.getDataJson());
+        requireBasicCategoryRequest(data);
+        if ("BASIC_PLATFORM_RECOMMENDED".equals(text(data.get("categoryMode")))
+                && text(data.get("confirmedPlatformCategoryId")).isBlank()) {
+            throw new BusinessException(409, "请先确认平台推荐类目并重新预检");
+        }
         String title = text(data.get("title"));
         if (title.isBlank()) {
             title = material.getName();
@@ -138,6 +144,7 @@ public class PlatformPublishService {
 
         // 本地暂存图片已全部同步为平台地址后，再参与类目识别。
         Map<String, Object> category = recommendCategory(accountId, cookieText, title, description, cdnImages);
+        confirmRecommendedCategory(data, category, true);
 
         Map<String, Object> publishData = buildPublishData(
                 title, description, material.getAmount(), material.getStock(), cdnImages, category,
@@ -414,6 +421,7 @@ public class PlatformPublishService {
     }
 
     public Map<String, Object> preflight(Map<String, Object> request, Long accountId) {
+        requireBasicCategoryRequest(request);
         String cookieText = accountService.getCookieByAccountId(accountId);
         if (cookieText == null || cookieText.isBlank()) {
             throw new IllegalStateException("账号Cookie不可用");
@@ -431,12 +439,13 @@ public class PlatformPublishService {
         try {
             stock = Integer.parseInt(text(request.get("stock")));
         } catch (Exception e) {
-            stock = 1;
+            throw new IllegalArgumentException("商品库存必须为1至9999的整数");
         }
         validatePublishInput(title, description, images, amount, stock);
         // 预检不上传文件；本地暂存图片会在真正发布时先同步，类目预检按标题和详情完成。
         Map<String, Object> category = recommendCategory(accountId, cookieText, title, description,
                 images.stream().filter(image -> !image.startsWith("/media/")).toList());
+        confirmRecommendedCategory(request, category, false);
         Map<String, Object> address = resolveAddress(accountId, cookieText, request, request);
         Map<String, Object> finalRequest = buildPublishData(title, description, amount, stock,
                 images, category, address, request);
@@ -448,6 +457,34 @@ public class PlatformPublishService {
         result.put("finalRequest", finalRequest);
         result.put("previewUsesProductionBuilder", true);
         return result;
+    }
+
+    private void requireBasicCategoryRequest(Map<String, Object> request) {
+        if (!"BASIC_PLATFORM_RECOMMENDED".equals(text(request.get("categoryMode")))) return;
+        if (!"QR_COOKIE".equals(text(request.get("publishChannel")))) {
+            throw new BusinessException(400, "平台推荐类目的基本发布仅适用于 QR_COOKIE 通道");
+        }
+        Object attributes = request.get("categoryAttributes");
+        if (!text(request.get("leafCategoryCode")).isBlank()
+                || attributes != null && !(attributes instanceof Map<?, ?> values && values.isEmpty())) {
+            throw new BusinessException(409, "基本发布不能混入指定叶子类目或类目属性，请显式清除或改用指定类目模式");
+        }
+    }
+
+    boolean confirmRecommendedCategory(Map<String, Object> request, Map<String, Object> category,
+                                       boolean confirmationRequired) {
+        requireBasicCategoryRequest(request);
+        if (!"BASIC_PLATFORM_RECOMMENDED".equals(text(request.get("categoryMode")))) return true;
+        String confirmed = text(request.get("confirmedPlatformCategoryId"));
+        if (confirmed.isBlank()) {
+            if (confirmationRequired) throw new BusinessException(409, "请先确认平台推荐类目并重新预检");
+            return false;
+        }
+        String actual = firstValue(category, "catId", "cid", "categoryId");
+        if (!confirmed.equals(actual)) {
+            throw new BusinessException(409, "平台推荐类目已变化，请确认新类目并重新预检");
+        }
+        return true;
     }
 
     public Map<String, Object> delete(Long accountId, String goodsId) {
@@ -476,41 +513,22 @@ public class PlatformPublishService {
     }
 
     public Map<String, Object> changeListingStatus(Long accountId, String goodsId, boolean onSale) {
+        if (onSale) {
+            throw new BusinessException(409,
+                    "当前网页商品页未提供可验证的卖家上架入口；请在闲鱼官方 App 上架后同步");
+        }
         String cookieText = accountService.getCookieByAccountId(accountId);
         if (cookieText == null || cookieText.isBlank()) {
             throw new IllegalStateException("账号 Cookie 不可用");
         }
         requirePermit(accountId, RiskControlService.WriteOperation.ITEM_STATUS);
-        if (!onSale) {
-            XianyuApiCallUtils.ApiCallResult result = apiCallUtils.callApiWithRetry(
-                    accountId, "mtop.taobao.idle.item.downshelf", "2.0",
-                    Map.of("itemId", goodsId), cookieText, null, null);
-            if (!result.isSuccess()) {
-                throw new IllegalStateException("平台下架失败: " + result.getErrorMessage());
-            }
-            return Map.of("success", true, "itemId", goodsId, "onSale", false);
+        XianyuApiCallUtils.ApiCallResult result = apiCallUtils.callApiWithRetry(
+                accountId, "mtop.taobao.idle.item.downshelf", "2.0",
+                Map.of("itemId", goodsId), cookieText, null, null);
+        if (!result.isSuccess()) {
+            throw new IllegalStateException("平台下架失败: " + result.getErrorMessage());
         }
-        try (BrowserContext context = playwrightManager.createContext(accountId)) {
-            addCookies(context, cookieText);
-            Page page = context.newPage();
-            page.navigate("https://www.goofish.com/item?id=" + goodsId,
-                    new Page.NavigateOptions().setWaitUntil(WaitUntilState.DOMCONTENTLOADED).setTimeout(60000));
-            page.waitForTimeout(2000);
-            ensureLoggedIn(page);
-            String selector = "button:has-text(\"上架\"),button:has-text(\"重新上架\")";
-            Locator actionButton = page.locator(selector).first();
-            if (actionButton.count() == 0) {
-                throw new IllegalStateException(onSale ? "商品页面未找到上架操作" : "商品页面未找到下架操作");
-            }
-            actionButton.click();
-            Locator confirmButton = page.locator("button:has-text(\"确定\"),button:has-text(\"确认\")").last();
-            if (confirmButton.count() > 0) {
-                confirmButton.click();
-            }
-            page.waitForTimeout(2000);
-            playwrightManager.persistStorageState(accountId, context);
-            return Map.of("success", true, "itemId", goodsId, "onSale", onSale);
-        }
+        return Map.of("success", true, "itemId", goodsId, "onSale", false);
     }
 
     /**
@@ -991,7 +1009,7 @@ public class PlatformPublishService {
         }
         Map<String, Object> platformAddress = responseParser.extractDefaultAddress(result.getResponse());
         if (platformAddress.isEmpty()) {
-            throw new IllegalStateException("平台账号未返回默认发布地址，请先在闲鱼发布页保存常用位置");
+            throw new BusinessException(400, "平台账号未返回默认发布地址，请填写省、市、区，或先在闲鱼发布页保存常用位置");
         }
         return normalizeAddress(platformAddress);
     }
@@ -1048,7 +1066,7 @@ public class PlatformPublishService {
             image.put("extraInfo", Map.of("isH", "false", "isT", "false", "raw", "false"));
             imageList.add(image);
         }
-        int quantity = Math.max(1, Math.min(stock == null ? 1 : stock, 9999));
+        int quantity = stock;
         String priceInCent = amount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).toPlainString();
         Map<String, Object> publishData = new LinkedHashMap<>();
         publishData.put("freebies", false);
@@ -1065,7 +1083,7 @@ public class PlatformPublishService {
         publishData.put("itemTextDTO", Map.of(
                 "desc", description,
                 "title", title,
-                "titleDescSeparate", false
+                "titleDescSeparate", true
         ));
         publishData.put("itemCatDTO", category);
         publishData.put("itemPriceDTO", Map.of("priceInCent", priceInCent));
@@ -1118,8 +1136,8 @@ public class PlatformPublishService {
         if (amount == null || amount.signum() <= 0) {
             throw new IllegalArgumentException("商品价格必须大于0");
         }
-        if (stock != null && stock < 1) {
-            throw new IllegalArgumentException("商品库存必须大于0");
+        if (stock == null || stock < 1 || stock > 9999) {
+            throw new IllegalArgumentException("商品库存必须为1至9999的整数");
         }
     }
 

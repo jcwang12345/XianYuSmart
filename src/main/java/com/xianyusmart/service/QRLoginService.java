@@ -12,6 +12,9 @@ public interface QRLoginService {
      * 生成二维码
      */
     QRLoginResponse generateQRCode(Long targetAccountId);
+
+    /** Internal automatic renewal; never exposed as an HTTP login entry. */
+    QRLoginResponse generateRenewalQRCode(Long targetAccountId);
     
     /**
      * 获取会话状态

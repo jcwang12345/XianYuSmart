@@ -4,6 +4,8 @@ import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.controller.dto.AutoDeliveryConfigReqDTO;
 import com.xianyusmart.controller.dto.AutoDeliveryConfigRespDTO;
 import com.xianyusmart.controller.dto.AutoDeliveryConfigQueryReqDTO;
+import com.xianyusmart.controller.dto.ReceiptFollowUpUpdateReqDTO;
+import com.xianyusmart.controller.dto.UniformCardDeliveryReqDTO;
 import com.xianyusmart.service.AutoDeliveryConfigService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +21,17 @@ public class AutoDeliveryConfigController {
 
     @Autowired
     private AutoDeliveryConfigService autoDeliveryConfigService;
+
+    @PostMapping("/uniform-card")
+    public ResultObject<AutoDeliveryConfigRespDTO> configureUniformCard(
+            @Valid @RequestBody UniformCardDeliveryReqDTO reqDTO) {
+        return autoDeliveryConfigService.configureUniformCard(reqDTO);
+    }
+
+    @PostMapping("/receipt-follow-up")
+    public ResultObject<Void> updateReceiptFollowUp(@Valid @RequestBody ReceiptFollowUpUpdateReqDTO reqDTO) {
+        return autoDeliveryConfigService.updateReceiptFollowUp(reqDTO);
+    }
 
     @PostMapping("/save")
     public ResultObject<AutoDeliveryConfigRespDTO> saveOrUpdateConfig(@Valid @RequestBody AutoDeliveryConfigReqDTO reqDTO) {

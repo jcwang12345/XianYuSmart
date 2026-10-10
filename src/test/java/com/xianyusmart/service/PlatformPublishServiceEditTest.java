@@ -3,6 +3,7 @@ package com.xianyusmart.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.config.PlaywrightManager;
 import com.xianyusmart.entity.MerchantResource;
+import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.utils.XianyuApiCallUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class PlatformPublishServiceEditTest {
@@ -43,6 +45,15 @@ class PlatformPublishServiceEditTest {
         service = new PlatformPublishService(
                 mock(PlaywrightManager.class), accountService, new ObjectMapper(), apiCallUtils,
                 riskControlService, mock(ImageUploadService.class), goodsInfoService, writePolicy);
+    }
+
+    @Test
+    void unverifiedUpshelfFailsBeforeCredentialReadOrPlatformWrite() {
+        BusinessException failure = assertThrows(BusinessException.class,
+                () -> service.changeListingStatus(9L, "12345678", true));
+        assertEquals(409, failure.getCode());
+        assertTrue(failure.getMessage().contains("官方 App 上架后同步"));
+        verifyNoInteractions(accountService, apiCallUtils, riskControlService);
     }
 
     @Test

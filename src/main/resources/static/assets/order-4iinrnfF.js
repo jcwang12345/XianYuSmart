@@ -1,0 +1,1 @@
+import{r}from"./index-sJR6VktB.js";function u(e){return r({url:"/order/requeueDelivery",method:"POST",data:e})}function o(e){return r({url:"/order/rateDetails",method:"POST",data:e})}function a(e){return r({url:"/order/detail",method:"POST",data:e})}export{a as g,o as q,u as r};

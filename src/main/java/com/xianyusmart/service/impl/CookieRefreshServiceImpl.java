@@ -42,6 +42,9 @@ import java.util.concurrent.ConcurrentHashMap;
 @Slf4j
 @Service
 public class CookieRefreshServiceImpl implements CookieRefreshService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
     private static final String HAS_LOGIN_URL = "https://passport.goofish.com/newlogin/hasLogin.do";
     private static final String GOOFISH_IM_URL = "https://www.goofish.com/im";
     private static final String GOOFISH_COOKIE_DOMAIN = ".goofish.com";
@@ -85,6 +88,11 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
     @Override
     public boolean checkLoginStatus(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> checkLoginStatusAllowed(accountId));
+    }
+
+    private boolean checkLoginStatusAllowed(Long accountId) {
         synchronized (getRefreshLock(accountId)) {
             return doCheckLoginStatus(accountId, true); // 记录操作日志
         }
@@ -92,6 +100,11 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
     @Override
     public boolean checkLoginStatusQuietly(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> checkLoginStatusQuietlyAllowed(accountId));
+    }
+
+    private boolean checkLoginStatusQuietlyAllowed(Long accountId) {
         synchronized (getRefreshLock(accountId)) {
             return doCheckLoginStatus(accountId, false); // 不记录操作日志
         }
@@ -110,7 +123,17 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
      * @param accountId 账号ID
      * @param logOperation 是否记录操作日志（true=主动保活，false=被动检查）
      */
+    private final ThreadLocal<long[]> confirmedInvalidCredential = new ThreadLocal<>();
+
+    @Override
+    public Long consumeConfirmedInvalidVersion(Long accountId) {
+        long[] proof = confirmedInvalidCredential.get();
+        confirmedInvalidCredential.remove();
+        return proof != null && accountId != null && proof[0] == accountId ? proof[1] : null;
+    }
+
     private boolean doCheckLoginStatus(Long accountId, boolean logOperation) {
+        confirmedInvalidCredential.remove();
         return doCheckLoginStatusWithRetry(accountId, 0, logOperation);
     }
 
@@ -123,9 +146,13 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
      * @param logOperation 是否记录操作日志
      */
     private boolean doCheckLoginStatusWithRetry(Long accountId, int retryCount, boolean logOperation) {
+        return doCheckLoginStatusWithRetry(accountId,retryCount,logOperation,false);
+    }
+
+    private boolean doCheckLoginStatusWithRetry(Long accountId, int retryCount, boolean logOperation, boolean confirmedInvalid) {
         if (retryCount >= 2) {
-            log.error("【账号{}】Login检查失败，重试次数过多", accountId);
-            return false;
+            if(confirmedInvalid)return false;
+            throw new com.xianyusmart.exception.BusinessException(503,"登录检查暂不可用，原凭据状态保留");
         }
 
         try {
@@ -140,8 +167,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
             );
 
             if (cookie == null || cookie.getCookieText() == null) {
-                log.warn("【账号{}】未找到Cookie", accountId);
-                return false;
+                throw new com.xianyusmart.exception.BusinessException(503,"本地凭据暂不可用，原账号状态保留");
             }
 
             String oldCookieStr = cookie.getCookieText();
@@ -186,7 +212,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     log.warn("【账号{}】检查登录状态失败: HTTP {}, 准备重试... (重试次数: {}/2)", 
                             accountId, response.code(), retryCount + 1);
                     Thread.sleep(500);
-                    return doCheckLoginStatusWithRetry(accountId, retryCount + 1, logOperation);
+                    return doCheckLoginStatusWithRetry(accountId, retryCount + 1, logOperation, false);
                 }
 
                 String responseBody = response.body().string();
@@ -204,7 +230,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     log.error("【账号{}】系统目前无法自动解决，请进入闲鱼网页版-点击消息-过滑块-复制最新的Cookie", accountId);
                     
                     // 标记为失效（风控）
-                    cookieMapper.update(null,
+                    commitCookieRefresh(accountId,cookie,
                             new LambdaUpdateWrapper<XianyuCookie>()
                                     .eq(XianyuCookie::getXianyuAccountId, accountId)
                                     .set(XianyuCookie::getCookieStatus, 3) // 3表示失效（风控）
@@ -256,7 +282,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
                         String updatedTime = java.time.LocalDateTime.now().format(
                                 java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
-                        cookieMapper.update(null,
+                        commitCookieRefresh(accountId,cookie,
                                 new LambdaUpdateWrapper<XianyuCookie>()
                                         .eq(XianyuCookie::getXianyuAccountId, accountId)
                                         .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(newCookieStr))
@@ -274,7 +300,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                         if (cookie.getCookieStatus() == null || cookie.getCookieStatus() != 1) {
                             String updatedTime = java.time.LocalDateTime.now().format(
                                     java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
-                            cookieMapper.update(null,
+                            commitCookieRefresh(accountId,cookie,
                                     new LambdaUpdateWrapper<XianyuCookie>()
                                             .eq(XianyuCookie::getXianyuAccountId, accountId)
                                             .set(XianyuCookie::getCookieStatus, 1)
@@ -299,6 +325,8 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
                     return true;
                 } else {
+                    if(content==null || !Boolean.FALSE.equals(content.get("success")))
+                        throw new com.xianyusmart.exception.BusinessException(503,"登录检查响应结构不完整，原凭据状态保留");
                     log.warn("【账号{}】⚠️ 登录状态无效，准备重试... (重试次数: {}/2)", accountId, retryCount + 1);
 
                     // 只有在主动保活时才记录操作日志
@@ -313,24 +341,30 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                                 null, null, "登录状态无效", null);
                     }
 
+                    if (retryCount == 1) {
+                        confirmedInvalidCredential.set(new long[]{accountId, cookie.getCredentialVersion() == null ? 0L : cookie.getCredentialVersion()});
+                        return false;
+                    }
                     Thread.sleep(500);
-                    return doCheckLoginStatusWithRetry(accountId, retryCount + 1, logOperation);
+                    return doCheckLoginStatusWithRetry(accountId, retryCount + 1, logOperation, true);
                 }
             }
 
+        } catch (com.xianyusmart.exception.CaptchaRequiredException | com.xianyusmart.exception.BusinessException classified) {
+            throw classified;
         } catch (Exception e) {
-            log.error("【账号{}】检查登录状态异常，准备重试... (重试次数: {}/2)", accountId, retryCount + 1, e);
+            log.error("登录检查暂不可用: accountId={}, retry={}, failureType={}", accountId, retryCount + 1, e.getClass().getSimpleName());
 
             // 只有在主动保活时才记录操作日志
             if (logOperation) {
                 operationLogService.log(accountId,
                         OperationConstants.Type.VERIFY,
                         OperationConstants.Module.COOKIE,
-                        "检查登录状态异常，准备重试: " + e.getMessage(),
+                        "检查登录状态异常，准备重试: " + e.getClass().getSimpleName(),
                         OperationConstants.Status.FAIL,
                         OperationConstants.TargetType.COOKIE,
                         String.valueOf(accountId),
-                        null, null, e.getMessage(), null);
+                        null, null, e.getClass().getSimpleName(), null);
             }
 
             try {
@@ -338,12 +372,17 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
             }
-            return doCheckLoginStatusWithRetry(accountId, retryCount + 1, logOperation);
+            return doCheckLoginStatusWithRetry(accountId, retryCount + 1, logOperation, false);
         }
     }
 
     @Override
     public boolean refreshCookie(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> refreshCookieAllowed(accountId));
+    }
+
+    private boolean refreshCookieAllowed(Long accountId) {
         synchronized (getRefreshLock(accountId)) {
             try {
                 log.info("【账号{}】开始刷新Cookie...", accountId);
@@ -393,19 +432,21 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
                 return success;
 
+            } catch (com.xianyusmart.exception.CaptchaRequiredException | com.xianyusmart.exception.BusinessException classified) {
+                throw classified;
             } catch (Exception e) {
-                log.error("【账号{}】刷新Cookie失败", accountId, e);
-                markAccountAsCookieRefreshAbnormal(accountId, "刷新Cookie异常: " + e.getMessage());
+                log.error("Cookie刷新暂不可用: accountId={}, failureType={}", accountId, e.getClass().getSimpleName());
+                log.warn("凭据刷新暂不可用，原账号状态保留: accountId={}, failureType={}",accountId,e.getClass().getSimpleName());
 
                 // 记录操作日志
                 operationLogService.log(accountId,
                         OperationConstants.Type.REFRESH,
                         OperationConstants.Module.COOKIE,
-                        "刷新Cookie异常: " + e.getMessage(),
+                        "刷新Cookie异常: " + e.getClass().getSimpleName(),
                         OperationConstants.Status.FAIL,
                         OperationConstants.TargetType.COOKIE,
                         String.valueOf(accountId),
-                        null, null, e.getMessage(), null);
+                        null, null, e.getClass().getSimpleName(), null);
 
                 return false;
             }
@@ -414,6 +455,11 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
 
     @Override
     public boolean forceBrowserRefresh(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> forceBrowserRefreshAllowed(accountId));
+    }
+
+    private boolean forceBrowserRefreshAllowed(Long accountId) {
         synchronized (getRefreshLock(accountId)) {
             log.info("【账号{}】Token接口已确认Session异常，强制启动浏览器刷新Cookie", accountId);
             boolean success = doRefreshCookieWithBrowser(accountId);
@@ -429,7 +475,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
         if (lastTime != null && (System.currentTimeMillis() - lastTime) < BROWSER_REFRESH_COOLDOWN_MS) {
             long remainingMinutes = (BROWSER_REFRESH_COOLDOWN_MS - (System.currentTimeMillis() - lastTime)) / 60000;
             log.warn("【账号{}】浏览器兜底刷新冷却中，剩余{}分钟，跳过本次", accountId, remainingMinutes);
-            return false;
+            throw new com.xianyusmart.exception.BusinessException(503,"浏览器刷新暂不可用，原凭据状态保留");
         }
 
         XianyuCookie cookie = cookieMapper.selectOne(
@@ -440,31 +486,31 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
         );
         if (cookie == null || cookie.getCookieText() == null || cookie.getCookieText().isBlank()) {
             log.warn("【账号{}】浏览器兜底刷新失败，未找到可用Cookie", accountId);
-            markAccountAsCookieRefreshAbnormal(accountId, "浏览器兜底刷新失败：未找到可用Cookie");
+
             operationLogService.log(accountId,
                     OperationConstants.Type.REFRESH,
                     OperationConstants.Module.COOKIE,
-                    "浏览器兜底刷新Cookie失败，账号已标记为异常待处理",
+                    "浏览器兜底刷新Cookie失败，原账号状态保留",
                     OperationConstants.Status.FAIL,
                     OperationConstants.TargetType.COOKIE,
                     String.valueOf(accountId),
                     null, null, "未找到可用Cookie", null);
-            return false;
+            throw new com.xianyusmart.exception.BusinessException(503,"浏览器刷新暂不可用，原凭据状态保留");
         }
 
         Map<String, String> existingCookies = XianyuSignUtils.parseCookies(cookie.getCookieText());
         if (existingCookies.isEmpty()) {
             log.warn("【账号{}】浏览器兜底刷新失败，Cookie内容为空", accountId);
-            markAccountAsCookieRefreshAbnormal(accountId, "浏览器兜底刷新失败：Cookie内容为空");
+
             operationLogService.log(accountId,
                     OperationConstants.Type.REFRESH,
                     OperationConstants.Module.COOKIE,
-                    "浏览器兜底刷新Cookie失败，账号已标记为异常待处理",
+                    "浏览器兜底刷新Cookie失败，原账号状态保留",
                     OperationConstants.Status.FAIL,
                     OperationConstants.TargetType.COOKIE,
                     String.valueOf(accountId),
                     null, null, "Cookie内容为空", null);
-            return false;
+            throw new com.xianyusmart.exception.BusinessException(503,"浏览器刷新暂不可用，原凭据状态保留");
         }
 
         operationLogService.log(accountId,
@@ -498,22 +544,22 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
             playwrightManager.persistStorageState(accountId, context);
             if (refreshedCookieText.isBlank()) {
                 log.warn("【账号{}】浏览器兜底刷新未获取到新的Cookie", accountId);
-                markAccountAsCookieRefreshAbnormal(accountId, "浏览器兜底刷新失败：浏览器未返回Cookie");
+
                 operationLogService.log(accountId,
                         OperationConstants.Type.REFRESH,
                         OperationConstants.Module.COOKIE,
-                        "浏览器兜底刷新Cookie失败，账号已标记为异常待处理",
+                        "浏览器兜底刷新Cookie失败，原账号状态保留",
                         OperationConstants.Status.FAIL,
                         OperationConstants.TargetType.COOKIE,
                         String.valueOf(accountId),
                         null, null, "浏览器未返回Cookie", null);
-                return false;
+                throw new com.xianyusmart.exception.BusinessException(503,"浏览器刷新暂不可用，原凭据状态保留");
             }
 
             Map<String, String> refreshedCookieMap = XianyuSignUtils.parseCookies(refreshedCookieText);
             String newMh5Tk = refreshedCookieMap.get("_m_h5_tk");
 
-            cookieMapper.update(null,
+            commitCookieRefresh(accountId,cookie,
                     new LambdaUpdateWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
                             .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(refreshedCookieText))
@@ -532,19 +578,27 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     String.valueOf(accountId),
                     null, null, null, null);
             return true;
+        } catch (com.xianyusmart.exception.BusinessException e) { throw e;
         } catch (Exception e) {
             log.error("【账号{}】浏览器兜底刷新Cookie失败", accountId, e);
-            markAccountAsCookieRefreshAbnormal(accountId, "浏览器兜底刷新异常: " + e.getMessage());
+
             operationLogService.log(accountId,
                     OperationConstants.Type.REFRESH,
                     OperationConstants.Module.COOKIE,
-                    "浏览器兜底刷新Cookie失败，账号已标记为异常待处理",
+                    "浏览器兜底刷新Cookie失败，原账号状态保留",
                     OperationConstants.Status.FAIL,
                     OperationConstants.TargetType.COOKIE,
                     String.valueOf(accountId),
-                    null, null, e.getMessage(), null);
-            return false;
+                    null, null, e.getClass().getSimpleName(), null);
+            throw new com.xianyusmart.exception.BusinessException(503,"浏览器刷新暂不可用，原凭据状态保留");
         }
+    }
+
+    private void commitCookieRefresh(Long accountId,XianyuCookie snapshot,LambdaUpdateWrapper<XianyuCookie> update) {
+        long version=snapshot.getCredentialVersion()==null?0:snapshot.getCredentialVersion();
+        update.eq(XianyuCookie::getId,snapshot.getId()).eq(XianyuCookie::getCredentialVersion,version)
+                .setSql("credential_version=credential_version+1");
+        if(cookieMapper.update(null,update)!=1)throw new com.xianyusmart.exception.BusinessException(409,"凭据版本已变化，旧刷新响应已忽略");
     }
 
     private void markAccountAsCookieRefreshAbnormal(Long accountId, String reason) {
@@ -593,7 +647,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     OperationConstants.Status.FAIL,
                     OperationConstants.TargetType.ACCOUNT,
                     String.valueOf(accountId),
-                    null, null, e.getMessage(), null);
+                    null, null, e.getClass().getSimpleName(), null);
         }
     }
 
@@ -622,7 +676,7 @@ public class CookieRefreshServiceImpl implements CookieRefreshService {
                     OperationConstants.Status.FAIL,
                     OperationConstants.TargetType.ACCOUNT,
                     String.valueOf(accountId),
-                    null, null, e.getMessage(), null);
+                    null, null, e.getClass().getSimpleName(), null);
         }
     }
 

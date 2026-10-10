@@ -21,7 +21,12 @@ import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.service.buyer.BuyerProfilePolicy;
 import com.xianyusmart.exception.BusinessException;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -47,6 +52,13 @@ public class BuyerProfileService {
     private final XianyuChatMessageMapper messageMapper;
     private final XianyuBuyerProfileRequestMapper requestMapper;
     private final OperationLogService operationLogService;
+    private TransactionTemplate messageProjectionTransaction;
+
+    @Autowired
+    public void setMessageProjectionTransactionManager(PlatformTransactionManager manager) {
+        messageProjectionTransaction = new TransactionTemplate(manager);
+        messageProjectionTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
 
     public BuyerProfileService(XianyuBuyerProfileMapper profileMapper,
                                XianyuAccountMapper accountMapper,
@@ -276,6 +288,24 @@ public class BuyerProfileService {
             return objectMapper.writeValueAsString(value);
         } catch (Exception e) {
             throw new IllegalStateException("买家资料审计序列化失败", e);
+        }
+    }
+
+    /** Event projection only: failed attempts roll back before the next transaction. */
+    public void touchFromMessage(Long accountId, String buyerUserId, String buyerUserName, Long messageTime) {
+        if (messageProjectionTransaction == null) {
+            throw new IllegalStateException("Message projection transaction manager is unavailable");
+        }
+        for (int attempt = 0; ; attempt++) {
+            try {
+                messageProjectionTransaction.executeWithoutResult(status ->
+                        touch(accountId, buyerUserId, buyerUserName, messageTime));
+                return;
+            } catch (PessimisticLockingFailureException conflict) {
+                if (attempt >= 2 || Thread.currentThread().isInterrupted()) throw conflict;
+                java.util.concurrent.locks.LockSupport.parkNanos((attempt + 1) * 20_000_000L);
+                if (Thread.currentThread().isInterrupted()) throw conflict;
+            }
         }
     }
 

@@ -2,12 +2,15 @@ package com.xianyusmart.service;
 
 import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.context.UserContext;
+import com.xianyusmart.context.AccountScopeContext;
 import com.xianyusmart.entity.XianyuGoodsOrder;
 import com.xianyusmart.enums.DeliveryStatus;
 import com.xianyusmart.enums.KamiStatus;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.mapper.XianyuKamiItemMapper;
+import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,11 +21,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.LinkedHashSet;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 @Slf4j
 @Component
 public class DeliveryTaskScheduler {
+    @org.springframework.beans.factory.annotation.Autowired
+    private AccountAutomationPolicy accountAutomationPolicy;
+
 
     private final DeliveryTaskService deliveryTaskService;
     private final AutoDeliveryService autoDeliveryService;
@@ -37,7 +45,13 @@ public class DeliveryTaskScheduler {
     private final String workerId = buildWorkerId();
 
     @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
+
+    @org.springframework.beans.factory.annotation.Autowired
     private com.xianyusmart.service.delivery.DeliveryLeaseService leaseService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private XianyuGoodsConfigMapper goodsConfigMapper;
 
     @Value("${app.delivery.claim-batch-size:20}")
     private int claimBatchSize;
@@ -64,35 +78,117 @@ public class DeliveryTaskScheduler {
         this.taskExecutor = taskExecutor;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private R01QaPlatformService r01Qa;
+
     @Scheduled(fixedDelayString = "${app.delivery.dispatch-delay-ms:1000}", initialDelay = 5000)
     public void dispatchDueTasks() {
-        deliveryTaskService.claimDueTasks(workerId, claimBatchSize)
-                .forEach(task -> taskExecutor.execute(() -> executeTask(task)));
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
+        DispatchContext caller = DispatchContext.capture();
+        try {
+            List<Long> tenantIds = accountMapper.selectDeliveryTaskTenantIds();
+            if (tenantIds == null) return;
+            for (Long tenantId : new LinkedHashSet<>(tenantIds)) {
+                if (tenantId == null || tenantId <= 0) continue;
+                // A scoped caller cannot turn an enumeration result into cross-tenant authority.
+                if (caller.tenantId != null && !caller.tenantId.equals(tenantId)) continue;
+                if (caller.userId != null && caller.tenantId == null) continue;
+                try {
+                    caller.restore();
+                    TenantContext.set(tenantId);
+                    List<XianyuGoodsOrder> tasks = deliveryTaskService.claimDueTasks(workerId,
+                            Math.max(1, Math.min(claimBatchSize, 100)));
+                    if (tasks == null) continue;
+                    for (XianyuGoodsOrder task : tasks) {
+                        if (task == null || !Objects.equals(tenantId, task.getTenantId())) continue;
+                        if (caller.scope != null && !caller.scope.unrestricted()
+                                && !caller.scope.accountIds().contains(task.getXianyuAccountId())) continue;
+                        try {
+                            taskExecutor.execute(() -> {
+                                DispatchContext worker = DispatchContext.capture();
+                                try {
+                                    caller.restore();
+                                    executeTask(task);
+                                } finally {
+                                    worker.restore();
+                                }
+                            });
+                        } catch (RuntimeException e) {
+                            log.warn("订单任务提交失败，保留租约恢复: taskId={}", task.getId());
+                        }
+                    }
+                } catch (RuntimeException e) {
+                    log.warn("租户发货任务领取失败: tenantId={}", tenantId);
+                } finally {
+                    caller.restore();
+                }
+            }
+        } finally {
+            caller.restore();
+        }
     }
 
-    @Scheduled(fixedDelay = 25000, initialDelay = 60000)
+    private record DispatchContext(Long tenantId, Long userId, String username, Long userTenantId,
+                                   AccountScopeContext.Scope scope) {
+        static DispatchContext capture() {
+            return new DispatchContext(TenantContext.get(), UserContext.getUserId(), UserContext.getUsername(),
+                    UserContext.getTenantId(), AccountScopeContext.get());
+        }
+
+        void restore() {
+            UserContext.clear();
+            if (userId != null || username != null || userTenantId != null) UserContext.set(userId, username, userTenantId);
+            TenantContext.clear();
+            if (tenantId != null && !Objects.equals(tenantId, userTenantId)) TenantContext.set(tenantId);
+            AccountScopeContext.clear();
+            if (scope != null) AccountScopeContext.set(scope.unrestricted(), scope.accountIds());
+        }
+    }
+
+    @Scheduled(fixedDelayString = "${app.delivery.order-discovery-delay-ms:30000}", initialDelay = 30000)
     public void discoverOrdersFromApi() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         // 仅轮询Cookie有效的正常账号；过期账号会在更新Cookie后由恢复任务重新接入。
-        List<XianyuAccount> accounts = accountMapper.selectReconnectableAccounts();
+        List<XianyuAccount> accounts = r01Qa != null && r01Qa.enabled()
+                ? r01Qa.discoveryAccounts() : accountMapper.selectReconnectableAccounts();
         if (accounts == null) {
             return;
         }
+        discoverAccounts(accounts);
+    }
+
+    /** Explicit QA action uses only guarded synthetic responses; background total gate stays closed. */
+    public void discoverQaOrders() {
+        if(r01Qa==null || !r01Qa.enabled()) throw new IllegalStateException("R01 QA 未启用");
+        discoverAccounts(r01Qa.discoveryAccounts());
+    }
+
+    private void discoverAccounts(List<XianyuAccount> accounts) {
         for (XianyuAccount account : accounts) {
-            if (webSocketService.isConnected(account.getId())) {
-                continue;
-            }
             try {
                 TenantContext.set(account.getTenantId());
-                List<Map<String, Object>> pendingOrders = orderService.queryPendingOrders(account.getId());
-                if (pendingOrders != null && !pendingOrders.isEmpty()) {
-                    pendingOrderPollService.syncOrdersToDb(account.getId(), pendingOrders);
-                }
+                if(!accountAutomationPolicy.allows(account.getId(),AccountAutomationPolicy.Action.DISCOVERY))continue;
+                accountAutomationPolicy.guarded(account.getId(),AccountAutomationPolicy.Action.DISCOVERY,
+                        () -> { discoverAccountAllowed(account);return null; });
             } catch (Exception e) {
                 log.warn("【账号{}】待发货订单发现失败: {}", account.getId(), e.getMessage());
             } finally {
                 TenantContext.clear();
             }
         }
+    }
+
+    private void discoverAccountAllowed(XianyuAccount account) {
+                // A live socket is not proof that business events are still parseable.
+                // Keep a low-frequency, idempotent API lane for accounts that actually
+                // have auto-delivery enabled.
+                if (goodsConfigMapper.countAutoDeliveryEnabledByAccountId(account.getId()) == 0) {
+                    return;
+                }
+                List<Map<String, Object>> pendingOrders = orderService.queryPendingOrders(account.getId());
+                if (pendingOrders != null && !pendingOrders.isEmpty()) {
+                    pendingOrderPollService.syncOrdersToDb(account.getId(), pendingOrders);
+                }
     }
 
     private void executeTask(XianyuGoodsOrder task) {

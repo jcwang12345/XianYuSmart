@@ -123,7 +123,7 @@ public class XianyuApiCallUtils {
             if (extraHeaders != null && !extraHeaders.isEmpty()) {
                 requestHeaders.putAll(extraHeaders);
             }
-            XianyuApiUtils.ApiCallResultWithHeaders result = XianyuApiUtils.callApiWithHeaders(
+            XianyuApiUtils.ApiCallResultWithHeaders result = callPlatformApi(
                     apiName, apiPathVersion, dataMap, cookiesStr, null, null, requestHeaders, extraQueryParams);
 
             String response = result.getBody();
@@ -176,20 +176,19 @@ public class XianyuApiCallUtils {
                 boolean refreshSuccess = cookieRefreshService.refreshCookie(accountId);
 
                 if (refreshSuccess) {
-                    log.info("【账号{}】Cookie刷新成功，准备重试API调用...", accountId);
-
-                    // 等待一小段时间
-                    Thread.sleep(RETRY_INTERVAL);
-
-                    // 获取新的Cookie
+                    // hasLogin 成功只能证明网页登录仍有效，不能证明 MTOP 令牌已更新。
+                    // 原 Cookie 重放既不会解开过期状态，也会放大写请求和风控风险。
                     String newCookieStr = accountService.getCookieByAccountId(accountId);
-                    if (newCookieStr != null && !newCookieStr.isEmpty()) {
+                    if (hasFreshCookieForRetry(cookiesStr, newCookieStr)) {
+                        log.info("【账号{}】Cookie已变化，准备重试API调用", accountId);
+                        Thread.sleep(RETRY_INTERVAL);
                         // 递归调用，重试API
                         return callApiWithRetry(accountId, apiName, apiPathVersion, dataMap, newCookieStr,
                                 extraHeaders, extraQueryParams, retryCount + 1);
-                    } else {
-                        log.error("【账号{}】获取新Cookie失败", accountId);
                     }
+                    log.warn("【账号{}】登录检查通过但Cookie未更新，停止重放过期令牌", accountId);
+                    return new ApiCallResult(false, response,
+                            "平台令牌过期且刷新后未更新；请在闲鱼账号页扫码更新登录后重试", true);
                 } else {
                     log.warn("【账号{}】Cookie自动刷新失败", accountId);
                 }
@@ -299,6 +298,25 @@ public class XianyuApiCallUtils {
                retCode.contains("FAIL_SYS_TOKEN_EXPIRED") ||
                retCode.contains("FAIL_SYS_SESSION_EXPIRED") ||
                retCode.contains("令牌过期");
+    }
+
+    static boolean hasFreshCookieForRetry(String previous, String refreshed) {
+        if (refreshed == null || refreshed.isBlank() || refreshed.equals(previous)) return false;
+        Map<String, String> oldCookies = XianyuSignUtils.parseCookies(previous == null ? "" : previous);
+        Map<String, String> newCookies = XianyuSignUtils.parseCookies(refreshed);
+        String newToken = newCookies.get("_m_h5_tk");
+        return newToken != null && !newToken.isBlank()
+                && (!newToken.equals(oldCookies.get("_m_h5_tk"))
+                    || !java.util.Objects.equals(newCookies.get("_m_h5_tk_enc"),
+                                                 oldCookies.get("_m_h5_tk_enc")));
+    }
+
+    protected XianyuApiUtils.ApiCallResultWithHeaders callPlatformApi(String apiName, String version,
+                                                                        Map<String, Object> data, String cookies,
+                                                                        String spm, String referer,
+                                                                        Map<String, String> headers,
+                                                                        Map<String, String> query) {
+        return XianyuApiUtils.callApiWithHeaders(apiName, version, data, cookies, spm, referer, headers, query);
     }
     
     private String platformRestrictionMessage(String retCode) {

@@ -16,6 +16,20 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class AutomationSafetyTest {
+    @Test void reviewRequiredDeliveryCannotBeRequeuedAfterExternalAttemptOrRefund() throws Exception {
+        String sql = String.join(" ", XianyuGoodsOrderMapper.class
+                .getMethod("requeueFailedTask", Long.class, Long.class)
+                .getAnnotation(org.apache.ibatis.annotations.Update.class).value());
+        assertTrue(sql.contains("xianyu_account_id = #{accountId}"));
+        assertTrue(sql.contains("confirm_state = 0"));
+        assertTrue(sql.contains("delivery_message_state NOT IN (3, 4, 5)"));
+        assertTrue(sql.contains("refund_status = 'NONE'"));
+        assertTrue(sql.contains("delivery_status IN ('FAILED', 'REVIEW_REQUIRED')"));
+        assertTrue(sql.contains("AND external_attempt_started = 0"));
+        assertFalse(sql.contains("'RETRY_WAIT'"));
+        assertTrue(sql.contains("order_status_code = 'PAID' AND platform_trade_status = 'PAID'"));
+        assertTrue(sql.contains("platform_status_checked_at >= DATE_SUB(NOW(3), INTERVAL 30 MINUTE)"));
+    }
     @Test void newMapperSqlRemainsCompatibleWithTenantInterceptor() {
         var interceptors = new com.xianyusmart.config.MybatisPlusConfig().mybatisPlusInterceptor().getInterceptors();
         var tenant = (com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor) interceptors.getFirst();
@@ -77,15 +91,18 @@ class AutomationSafetyTest {
         assertThrows(IllegalStateException.class,()->OrderRecipientVerifier.requireMatch("spoofed","buyer"));
         assertThrows(IllegalStateException.class,()->OrderRecipientVerifier.requireMatch("buyer",null));
     }
-    @Test void sellerAndRefundCannotReceiveAutomaticDelivery() {
-        var accounts=mock(XianyuAccountMapper.class);var accountService=mock(AccountService.class);
-        var verifier=new OrderRecipientVerifier(mock(OrderDetailFetcher.class),accountService,accounts);
+    @Test void registeredBuyerCanReceiveOnlyAPaidUnshippedVerifiedOrder() {
+        var accounts=mock(XianyuAccountMapper.class);
+        var verifier=new OrderRecipientVerifier(mock(OrderDetailFetcher.class),accounts);
         var account=new XianyuAccount();account.setId(1L);account.setStatus(1);when(accounts.selectById(1L)).thenReturn(account);
         var order=new XianyuGoodsOrder();order.setXianyuAccountId(1L);order.setBuyerUserId("buyer");
-        var detail=new OrderDetailFetcher.OrderDetailInfo();detail.buyerUserId="buyer";
-        when(accounts.countOwnBuyer("buyer")).thenReturn(1);
+        var detail=new OrderDetailFetcher.OrderDetailInfo();detail.buyerUserId="buyer";detail.tradeStatus="PAID";
+        assertEquals("buyer",verifier.verify(order,detail));
+        detail.tradeStatus="SHIPPED";
         assertThrows(IllegalStateException.class,()->verifier.verify(order,detail));
-        when(accounts.countOwnBuyer("buyer")).thenReturn(0);detail.tradeStatus="REFUNDING";
+        detail.tradeStatus="PAID";detail.consignTime="2026-10-01 08:00:00";
+        assertThrows(IllegalStateException.class,()->verifier.verify(order,detail));
+        detail.consignTime=null;detail.tradeStatus="REFUNDING";
         assertThrows(IllegalStateException.class,()->verifier.verify(order,detail));
     }
     @Test void ambiguousSkuLabelsDoNotGuessFirstVariant() {
@@ -96,7 +113,7 @@ class AutomationSafetyTest {
         assertNull(resolver.resolveSkuIdByText(1L,"g","红 XL"));
     }
     @Test void replayDoesNotCancelPendingAiReply() {
-        var service=new AutoReplyDelayServiceImpl();var records=mock(XianyuGoodsAutoReplyRecordMapper.class);
+        var service=new AutoReplyDelayServiceImpl();AccountPolicyFixture.active(service);var records=mock(XianyuGoodsAutoReplyRecordMapper.class);
         ReflectionTestUtils.setField(service,"autoReplyRecordMapper",records);
         ChatMessageData message=new ChatMessageData();message.setXianyuAccountId(1L);message.setSId("buyer@goofish");message.setPnmId("m");
         when(records.existsMessage(1L,"m")).thenReturn(1);service.submitDelayTask(message);

@@ -27,7 +27,7 @@ async function save(sku: Sku) {
 </script>
 <template>
   <details class="sku-aliases">
-    <summary>规格同步与后台别名（{{ skus.length }} 个规格）</summary>
+    <summary>规格同步与后台别名（{{ skus.length ? `已同步 ${skus.length} 个` : '平台规格待验证' }}）</summary>
     <p>别名仅用于后台识别，发货仍按平台 SKU 匹配。</p>
     <button class="btn" :disabled="busy" @click="load(true)">{{ busy ? '处理中…' : '重新同步规格' }}</button>
     <p v-if="error" role="alert">{{ error }}</p>

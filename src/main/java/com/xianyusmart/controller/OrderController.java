@@ -189,7 +189,7 @@ public class OrderController {
                 return ResultObject.failed("订单记录ID和账号ID不能为空");
             }
             if (!deliveryTaskService.requeueFailed(reqDTO.getId(), reqDTO.getXianyuAccountId())) {
-                return ResultObject.failed("订单状态已变化，请刷新后重试");
+                return ResultObject.failed("订单状态已变化，或平台发货/私聊结果尚未核清；请刷新并核对官方订单，不能直接重发");
             }
             return ResultObject.success("订单已重新进入发货队列");
         } catch (Exception e) {

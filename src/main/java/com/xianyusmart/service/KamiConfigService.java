@@ -4,6 +4,7 @@ import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.controller.dto.*;
 import com.xianyusmart.entity.XianyuKamiConfig;
 import com.xianyusmart.entity.XianyuKamiItem;
+import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,10 @@ public interface KamiConfigService {
     XianyuKamiItem acquireKami(Long kamiConfigId, String orderId);
 
     List<XianyuKamiItem> reserveKami(Long kamiConfigId, String orderId, Long accountId, int quantity);
+
+    List<XianyuKamiItem> reserveForDelivery(Long kamiConfigId, String orderId, Long accountId,
+                                            int quantity, XianyuGoodsAutoDeliveryConfig deliveryConfig,
+                                            boolean uniformRequired);
 
     void commitReservation(String orderId, Long accountId, String xyGoodsId, String buyerUserId, String buyerUserName);
 

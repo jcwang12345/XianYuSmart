@@ -120,7 +120,8 @@ function redirectToLogin(message: string) {
   clearAuthToken()
   if (!window.location.pathname.includes('/login')) {
     toast.error(message)
-    window.location.href = '/login'
+    const target = window.location.pathname + window.location.search + window.location.hash
+    window.location.href = '/login?redirect=' + encodeURIComponent(target)
   }
 }
 

@@ -6,6 +6,7 @@ import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.controller.dto.*;
 import com.xianyusmart.entity.XianyuKamiConfig;
 import com.xianyusmart.entity.XianyuKamiItem;
+import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 import com.xianyusmart.entity.XianyuKamiUsageRecord;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.enums.KamiStatus;
@@ -21,6 +22,8 @@ import com.xianyusmart.service.ExternalKamiProvisionService;
 import com.xianyusmart.service.KamiConfigService;
 import com.xianyusmart.service.NotificationCenterService;
 import com.xianyusmart.service.OperationLogService;
+import com.xianyusmart.service.UniformCardDeliveryPolicyService;
+import com.xianyusmart.service.delivery.DeliveryExecution;
 import com.xianyusmart.service.notification.WebhookSecurity;
 import com.xianyusmart.service.kami.ExternalSupplyPolicy;
 import com.xianyusmart.service.kami.KamiSecretMasker;
@@ -87,6 +90,9 @@ public class KamiConfigServiceImpl implements KamiConfigService {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private UniformCardDeliveryPolicyService uniformCardDeliveryPolicyService;
 
     private final ConcurrentHashMap<Long, Long> stockOutEmailSentTime = new ConcurrentHashMap<>();
 
@@ -470,23 +476,139 @@ public class KamiConfigServiceImpl implements KamiConfigService {
 
     @Override
     public List<XianyuKamiItem> reserveKami(Long kamiConfigId, String orderId, Long accountId, int quantity) {
-        if (kamiConfigId == null || orderId == null || orderId.isBlank() || accountId == null || quantity < 1) {
+        validateReserveArguments(kamiConfigId, orderId, accountId, quantity);
+        Long tenantId = requireReserveTenant();
+        // The LOCAL path reserves under the owned account/config/link row locks.
+        // The API path leaves this short transaction before external I/O, keeping
+        // the existing external request's uncertain-result handling intact.
+        ReservationGate gate = new TransactionTemplate(transactionManager).execute(status -> {
+            String sourceType = requireOwnedPoolForUpdate(tenantId, kamiConfigId, accountId);
+            requireCurrentDeliveryLeaseForUpdate(accountId, orderId);
+            List<XianyuKamiItem> existing = lockOrderCardsAcrossPools(tenantId,
+                    kamiConfigId, orderId, accountId, quantity);
+            if ("LOCAL".equals(sourceType)) {
+                return new ReservationGate(existing.isEmpty()
+                        ? reserveLocalKami(kamiConfigId, orderId, accountId, quantity) : existing, null);
+            }
+            if (!"API".equals(sourceType)) throw new BusinessException(409, "卡密仓库供货来源无效");
+            // The external request owns its own success/unknown-state idempotency.
+            // A same-pool RESERVED card alone is not proof that API supply succeeded.
+            XianyuKamiConfig config = kamiConfigMapper.selectById(kamiConfigId);
+            if (config == null || !tenantId.equals(config.getTenantId())
+                    || !"API".equals(config.getSourceType())) {
+                throw new BusinessException(409, "卡密仓库已变化，请重新核对");
+            }
+            return new ReservationGate(null, config);
+        });
+        if (gate == null) throw new BusinessException(409, "卡密预占失败");
+        return gate.apiConfig() == null ? gate.items()
+                : externalKamiProvisionService.reserve(gate.apiConfig(), orderId, accountId, quantity);
+    }
+
+    /**
+     * Delivery-only path: uniform consent is rechecked under the same account
+     * lock used by the configuration command. Uniform cards never use API pools.
+     */
+    @Override
+    public List<XianyuKamiItem> reserveForDelivery(Long kamiConfigId, String orderId, Long accountId,
+                                                   int quantity, XianyuGoodsAutoDeliveryConfig deliveryConfig,
+                                                   boolean uniformRequired) {
+        if (!uniformRequired) return reserveKami(kamiConfigId, orderId, accountId, quantity);
+        validateReserveArguments(kamiConfigId, orderId, accountId, quantity);
+        Long tenantId = requireReserveTenant();
+        List<XianyuKamiItem> reserved = new TransactionTemplate(transactionManager).execute(status -> {
+            String sourceType = requireOwnedPoolForUpdate(tenantId, kamiConfigId, accountId);
+            requireCurrentDeliveryLeaseForUpdate(accountId, orderId);
+            if (!"LOCAL".equals(sourceType)) {
+                throw new BusinessException(409, "商品统一卡密目前仅支持本地卡密仓库");
+            }
+            if (deliveryConfig == null || !uniformCardDeliveryPolicyService.permits(
+                    accountId, deliveryConfig.getXyGoodsId(), deliveryConfig)) {
+                throw new BusinessException(409, "商品统一卡密授权或仓库配置已变化，请重新确认");
+            }
+            List<XianyuKamiItem> existing = lockOrderCardsAcrossPools(tenantId,
+                    kamiConfigId, orderId, accountId, quantity);
+            return existing.isEmpty() ? reserveLocalKami(kamiConfigId, orderId, accountId, quantity) : existing;
+        });
+        if (reserved == null) throw new BusinessException(409, "卡密预占失败");
+        return reserved;
+    }
+
+    private record ReservationGate(List<XianyuKamiItem> items, XianyuKamiConfig apiConfig) {}
+
+    private void validateReserveArguments(Long kamiConfigId, String orderId, Long accountId, int quantity) {
+        if (kamiConfigId == null || kamiConfigId <= 0 || orderId == null || orderId.isBlank()
+                || accountId == null || accountId <= 0 || quantity < 1) {
             throw new BusinessException(400, "卡密预占参数无效");
         }
+    }
 
-        XianyuKamiConfig sourceConfig = kamiConfigMapper.selectById(kamiConfigId);
-        if (sourceConfig == null) {
-            throw new BusinessException(404, "卡密配置不存在");
+    private Long requireReserveTenant() {
+        Long tenantId = com.xianyusmart.context.TenantContext.get();
+        if (tenantId == null || tenantId <= 0) throw new BusinessException(403, "缺少租户上下文");
+        return tenantId;
+    }
+
+    /** Hold the exact claimed order row until this transaction's inventory mutation completes. */
+    private void requireCurrentDeliveryLeaseForUpdate(Long accountId, String orderId) {
+        String token = DeliveryExecution.token();
+        if (token == null) return; // Existing non-worker callers keep their established admission path.
+        Long tenantId = com.xianyusmart.context.TenantContext.get();
+        if (tenantId == null || accountId == null || orderId == null || orderId.isBlank()) {
+            throw new DeliveryExecution.LeaseLostException();
         }
-        if ("API".equalsIgnoreCase(sourceConfig.getSourceType())) {
-            return externalKamiProvisionService.reserve(sourceConfig, orderId, accountId, quantity);
+        List<Map<String, Object>> claims = jdbcTemplate.queryForList("""
+                SELECT id FROM xianyu_goods_order
+                WHERE tenant_id=? AND xianyu_account_id=? AND order_id=?
+                  AND lease_owner=? AND delivery_status='PROCESSING'
+                  AND lease_expire_time>NOW(3) FOR UPDATE
+                """, tenantId, accountId, orderId, token);
+        if (claims.size() != 1) throw new DeliveryExecution.LeaseLostException();
+    }
+
+    private String requireOwnedPoolForUpdate(Long tenantId, Long kamiConfigId, Long accountId) {
+        List<Map<String, Object>> accounts = jdbcTemplate.queryForList("""
+                SELECT id FROM xianyu_account
+                WHERE tenant_id=? AND id=? AND status=1 FOR UPDATE
+                """, tenantId, accountId);
+        if (accounts.size() != 1 || !(accounts.getFirst().get("id") instanceof Number account)
+                || account.longValue() != accountId) {
+            throw new BusinessException(403, "卡密预占账号已停用或租户不一致");
         }
-        List<XianyuKamiItem> reserved = new TransactionTemplate(transactionManager).execute(status ->
-                reserveLocalKami(kamiConfigId, orderId, accountId, quantity));
-        if (reserved == null) {
-            throw new BusinessException(409, "卡密预占失败");
+        List<Map<String, Object>> owned = jdbcTemplate.queryForList("""
+                SELECT config.id, config.source_type
+                FROM xianyu_kami_config config
+                JOIN xianyu_account account
+                  ON account.id=? AND account.tenant_id=? AND account.status=1
+                JOIN xianyu_kami_config_account link
+                  ON link.kami_config_id=config.id AND link.tenant_id=account.tenant_id
+                 AND link.xianyu_account_id=account.id
+                WHERE config.id=? AND config.tenant_id=account.tenant_id
+                FOR UPDATE
+                """, accountId, tenantId, kamiConfigId);
+        if (owned.size() != 1 || !(owned.getFirst().get("id") instanceof Number pool)
+                || pool.longValue() != kamiConfigId) {
+            throw new BusinessException(403, "卡密仓库不属于当前租户账号或账号已停用");
         }
-        return reserved;
+        Object source = owned.getFirst().get("source_type");
+        return source == null ? null : source.toString();
+    }
+
+    private List<XianyuKamiItem> lockOrderCardsAcrossPools(Long tenantId, Long kamiConfigId,
+                                                            String orderId, Long accountId, int quantity) {
+        List<XianyuKamiItem> existing = kamiItemMapper.lockFulfilledByOrderAcrossPools(tenantId, accountId, orderId);
+        if (existing == null) throw new BusinessException(409, "订单卡密占用状态不可用");
+        if (existing.isEmpty()) return existing;
+        if (existing.stream().anyMatch(item -> !kamiConfigId.equals(item.getKamiConfigId()))) {
+            throw new BusinessException(409, "订单已在其他卡密仓库预占或交付，需人工核对");
+        }
+        if (existing.stream().anyMatch(item -> !Integer.valueOf(KamiStatus.RESERVED.getCode()).equals(item.getStatus()))) {
+            throw new BusinessException(409, "订单卡密已交付或正在待核对");
+        }
+        if (existing.size() != quantity) {
+            throw new BusinessException(409, "订单卡密数量与已有预占不一致");
+        }
+        return existing;
     }
 
     private List<XianyuKamiItem> reserveLocalKami(Long kamiConfigId, String orderId,
@@ -540,9 +662,22 @@ public class KamiConfigServiceImpl implements KamiConfigService {
     @Transactional
     public void commitReservation(String orderId, Long accountId, String xyGoodsId,
                                   String buyerUserId, String buyerUserName) {
+        requireCurrentDeliveryLeaseForUpdate(accountId, orderId);
         List<XianyuKamiItem> reservedItems = kamiItemMapper.findByOrderAndStatus(
                 accountId, orderId, KamiStatus.RESERVED.getCode());
         if (reservedItems.isEmpty()) {
+            List<XianyuKamiItem> used = kamiItemMapper.findByOrderAndStatus(
+                    accountId, orderId, KamiStatus.DELIVERED.getCode());
+            if (used.isEmpty()) throw new BusinessException(409, "订单没有可提交或已交付的卡密预占");
+            Long tenantId = requireReserveTenant();
+            List<Map<String, Object>> orders = jdbcTemplate.queryForList("""
+                    SELECT expected_quantity FROM xianyu_goods_order
+                    WHERE tenant_id=? AND xianyu_account_id=? AND order_id=?
+                    """, tenantId, accountId, orderId);
+            if (orders.size() != 1 || !(orders.getFirst().get("expected_quantity") instanceof Number expected)
+                    || expected.intValue() < 1 || used.size() != expected.intValue()) {
+                throw new BusinessException(409, "订单已交付卡密数量无法核对");
+            }
             return;
         }
 
@@ -585,6 +720,7 @@ public class KamiConfigServiceImpl implements KamiConfigService {
     @Transactional
     public void releaseReservation(String orderId, Long accountId) {
         if (orderId != null && !orderId.isBlank() && accountId != null) {
+            requireCurrentDeliveryLeaseForUpdate(accountId, orderId);
             List<XianyuKamiItem> reserved = kamiItemMapper.findByOrderAndStatus(
                     accountId, orderId, KamiStatus.RESERVED.getCode());
             kamiItemMapper.releaseReservation(accountId, orderId);
@@ -598,6 +734,7 @@ public class KamiConfigServiceImpl implements KamiConfigService {
     @Transactional
     public void markReservationReviewRequired(String orderId, Long accountId) {
         if (orderId != null && !orderId.isBlank() && accountId != null) {
+            requireCurrentDeliveryLeaseForUpdate(accountId, orderId);
             List<XianyuKamiItem> reserved = kamiItemMapper.findByOrderAndStatus(
                     accountId, orderId, KamiStatus.RESERVED.getCode());
             kamiItemMapper.markReservationReviewRequired(accountId, orderId);

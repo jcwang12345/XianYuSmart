@@ -118,6 +118,15 @@ public class OrderMatrixService {
         return response;
     }
 
+    public Map<String, Object> detailByOrderId(Long accountId, String orderId) {
+        accountAccessService.requireAccess(accountId);
+        String exactOrderId = required(orderId, "订单号", 100);
+        List<Long> ids = jdbcTemplate.queryForList("SELECT id FROM xianyu_goods_order WHERE tenant_id=? AND xianyu_account_id=? AND order_id=?",
+                Long.class, tenant(), accountId, exactOrderId);
+        if (ids.isEmpty()) throw new BusinessException(404, "该店铺的订单尚未同步或无权查看，请核对通知中的账号与订单号");
+        return detail(ids.getFirst());
+    }
+
     public Map<String, Object> detail(Long orderRecordId) {
         Map<String, Object> order = requireOrder(orderRecordId);
         Long accountId = number(order.get("accountId"));
@@ -443,6 +452,57 @@ public class OrderMatrixService {
         return Map.of("idempotentReplay", false, "refundCase", requireRefund(refundCaseId));
     }
 
+    @Transactional
+    public Map<String, Object> recordRefundHandling(Long refundCaseId, RefundHandlingCommand command) {
+        Map<String, Object> refund = requireRefund(refundCaseId);
+        if (command == null) throw new BusinessException(400, "处理记录不能为空");
+        String requestId = requireRequest(command.requestId());
+        String status = required(command.status(), "本地处理状态", 24);
+        if (!Set.of("IN_PROGRESS", "RESOLVED").contains(status)) throw new BusinessException(400, "本地处理状态无效");
+        String note = required(command.note(), "处理说明", 1000);
+        if ("RESOLVED".equals(status) && !Boolean.TRUE.equals(command.platformChecked()))
+            throw new BusinessException(400, "请先在闲鱼平台核对处理结果，再标记本地已处理");
+        Long accountId = number(refund.get("accountId"));
+        jdbcTemplate.queryForList("SELECT id FROM xianyu_refund_case WHERE tenant_id=? AND id=? FOR UPDATE", tenant(), refundCaseId);
+        String payload = json(Map.of("status", status, "note", note, "platformChecked", Boolean.TRUE.equals(command.platformChecked())));
+        List<Map<String, Object>> previous = jdbcTemplate.queryForList("""
+                SELECT refund_case_id,platform_receipt_json FROM xianyu_refund_action WHERE tenant_id=? AND request_id=?
+                """, tenant(), requestId);
+        if (!previous.isEmpty()) {
+            Map<String, Object> stored = previous.getFirst();
+            if (!refundCaseId.equals(number(stored.get("refund_case_id"))) || !readJson(payload).equals(readJson(String.valueOf(stored.get("platform_receipt_json")))))
+                throw new BusinessException(409, "请求ID已用于其他处理记录，请刷新后重试");
+            return Map.of("idempotentReplay", true, "refundCase", requireRefund(refundCaseId));
+        }
+        int inserted = jdbcTemplate.update("""
+                INSERT IGNORE INTO xianyu_refund_action
+                    (tenant_id,refund_case_id,xianyu_account_id,action_type,outcome_state,reason,request_id,
+                     idempotency_key,platform_receipt_json,operator_user_id,operator_username)
+                VALUES (?,?,?,'LOCAL_HANDLING','LOCAL_SUCCESS',?,?,?,?,?,?)
+                """, tenant(), refundCaseId, accountId, note, requestId, requestId, payload,
+                UserContext.getUserId(), UserContext.getUsername());
+        if (inserted == 0) throw new BusinessException(409, "处理请求状态已变化，请刷新后重试");
+        jdbcTemplate.update("""
+                UPDATE xianyu_refund_case SET local_handling_status=?,local_handling_note=?,local_platform_checked=?,
+                    local_handled_by=?,local_handled_at=NOW(3) WHERE tenant_id=? AND id=?
+                """, status, note, Boolean.TRUE.equals(command.platformChecked()) ? 1 : 0, UserContext.getUserId(), tenant(), refundCaseId);
+        jdbcTemplate.update("""
+                UPDATE xianyu_notification_event SET handling_status=?,handling_note=?,
+                    handled_by=IF(?='RESOLVED',?,NULL),handled_time=IF(?='RESOLVED',NOW(3),NULL)
+                WHERE tenant_id=? AND xianyu_account_id=? AND event_type='REFUND_REQUESTED' AND business_object_id=?
+                """, status, note, status, UserContext.getUserId(), status, tenant(), accountId, refund.get("orderId"));
+        jdbcTemplate.update("""
+                INSERT INTO xianyu_order_event
+                    (tenant_id,xianyu_account_id,order_record_id,order_id,event_type,event_origin,outcome_state,
+                     data_source,operator_user_id,operator_username,request_id,idempotency_key,before_json,after_json)
+                VALUES (?,?,?,?,'REFUND_LOCAL_HANDLING','USER','LOCAL_SUCCESS','LOCAL',?,?,?,?,?,?)
+                """, tenant(), accountId, refund.get("orderRecordId"), refund.get("orderId"), UserContext.getUserId(),
+                UserContext.getUsername(), requestId, requestId, json(refund), payload);
+        audit(accountId, "REFUND_LOCAL_HANDLING", "记录退款本地处理状态（不提交平台退款）", requestId,
+                "LOCAL_SUCCESS", Map.of("command", command, "before", refund), Map.of("refundCaseId", refundCaseId, "localHandlingStatus", status, "after", readJson(payload)));
+        return Map.of("idempotentReplay", false, "refundCase", requireRefund(refundCaseId));
+    }
+
     private List<Map<String, Object>> refunds(Long orderRecordId) {
         List<Map<String, Object>> cases = jdbcTemplate.query("""
                 SELECT refunds.*, orders.buyer_user_name
@@ -741,6 +801,10 @@ public class OrderMatrixService {
         row.put("coverageStatus", rs.getString("coverage_status"));
         row.put("syncedAt", instant(rs, "synced_at"));
         row.put("rawSnapshotHash", rs.getString("raw_snapshot_hash"));
+        row.put("localHandlingStatus", rs.getString("local_handling_status"));
+        row.put("localHandlingNote", rs.getString("local_handling_note"));
+        row.put("localPlatformChecked", rs.getBoolean("local_platform_checked"));
+        row.put("localHandledAt", instant(rs, "local_handled_at"));
         return row;
     }
 
@@ -979,6 +1043,8 @@ public class OrderMatrixService {
     public record OrderNoteCommand(String requestId, String flag, String note) {}
 
     public record RefundActionCommand(String requestId, String action, String reason, String confirmationText) {}
+
+    public record RefundHandlingCommand(String requestId, String status, String note, Boolean platformChecked) {}
 
     public record ReturnShipmentCommand(String requestId, String direction, String logisticsCompanyCode,
                                         String logisticsCompanyName, String trackingNumber, String shipmentStatus,

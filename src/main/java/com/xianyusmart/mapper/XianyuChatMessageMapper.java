@@ -10,6 +10,20 @@ import java.util.List;
  */
 @Mapper
 public interface XianyuChatMessageMapper {
+
+    /** Identity evidence only: never read buyer message bodies when resolving a fulfillment conversation. */
+    @Select("SELECT DISTINCT message.s_id FROM xianyu_chat_message message " +
+            "JOIN xianyu_account account ON account.id=message.xianyu_account_id " +
+            "AND account.tenant_id=message.tenant_id " +
+            "WHERE message.tenant_id=#{tenantId} AND account.tenant_id=#{tenantId} " +
+            "AND account.id=#{accountId} AND account.status=1 " +
+            "AND message.xianyu_account_id=#{accountId} AND message.xy_goods_id=#{goodsId} " +
+            "AND message.sender_user_id=#{buyerUserId} AND message.content_type=1 " +
+            "AND message.s_id REGEXP '^[0-9]+@goofish$' LIMIT 2")
+    List<String> findVerifiedBuyerInboundSessions(@Param("tenantId") Long tenantId,
+                                                 @Param("accountId") Long accountId,
+                                                 @Param("goodsId") String goodsId,
+                                                 @Param("buyerUserId") String buyerUserId);
     
     /**
      * 插入聊天消息

@@ -5,18 +5,22 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.xianyusmart.common.ResultObject;
+import com.xianyusmart.controller.dto.TriggerAutoDeliveryReqDTO;
 import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 import com.xianyusmart.entity.XianyuGoodsOrder;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.service.AccountService;
+import com.xianyusmart.service.AutoDeliveryService;
 import com.xianyusmart.service.BuyerMessageService;
 import com.xianyusmart.service.DeliveryTaskService;
 import com.xianyusmart.service.KamiConfigService;
@@ -24,9 +28,11 @@ import com.xianyusmart.service.OrderService;
 import com.xianyusmart.service.RiskControlService;
 import com.xianyusmart.service.delivery.DeliveryContext;
 import com.xianyusmart.service.delivery.DeliveryStrategyResolver;
+import com.xianyusmart.service.delivery.OrderDetailFetcher;
 import com.xianyusmart.utils.XianyuApiCallUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.net.http.HttpClient;
@@ -70,6 +76,10 @@ public class OrderServiceImpl implements OrderService {
     private DeliveryTaskService deliveryTaskService;
 
     @Autowired
+    @Lazy
+    private AutoDeliveryService autoDeliveryService;
+
+    @Autowired
     private RiskControlService riskControlService;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -78,6 +88,9 @@ public class OrderServiceImpl implements OrderService {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
     
+    @Autowired
+    private com.xianyusmart.service.R01QaPlatformService r01Qa;
+
     @Override
     public String confirmShipment(Long accountId, String orderId) {
         return confirmShipmentToXianyu(accountId, orderId);
@@ -139,6 +152,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public String consignDummyDelivery(Long accountId, String orderId, String tradeText, List<String> imageUrls) {
+        if (r01Qa != null && r01Qa.handles(accountId, orderId)) return r01Qa.consign(accountId, orderId);
         try {
             log.info("【账号{}】开始调用闲鱼新发货API(虚拟发货): orderId={}", accountId, orderId);
 
@@ -312,6 +326,7 @@ public class OrderServiceImpl implements OrderService {
     
     @Override
     public String confirmShipmentToXianyu(Long accountId, String orderId) {
+        if (r01Qa != null && r01Qa.handles(accountId, orderId)) return r01Qa.confirm(accountId, orderId);
         try {
             log.info("【账号{}】开始调用闲鱼API确认发货: orderId={}", accountId, orderId);
             
@@ -436,12 +451,14 @@ public class OrderServiceImpl implements OrderService {
                 Object userNick = buyer.get("userNick");
                 if (userNick instanceof String) buyerUserName = (String) userNick;
                 Object userId = buyer.get("userId");
+                if (userId == null) userId = buyer.get("buyerId");
                 if (userId != null) buyerUserId = String.valueOf(userId);
             }
 
             String orderCreateTime = null;
             String paySuccessTime = null;
             String consignTime = null;
+            String orderStatus = null;
             Object merchantCommonData = module.get("merchantCommonData");
             if (merchantCommonData instanceof Map) {
                 Map<String, Object> commonData = (Map<String, Object>) merchantCommonData;
@@ -451,6 +468,18 @@ public class OrderServiceImpl implements OrderService {
                 if (pt instanceof String) paySuccessTime = (String) pt;
                 Object ct2 = commonData.get("consignTime");
                 if (ct2 instanceof String) consignTime = (String) ct2;
+                Object rawStatus = commonData.get("orderStatus");
+                if (rawStatus instanceof String) orderStatus = OrderDetailFetcher.tradeStatus((String) rawStatus);
+                Object returnedOrderId = commonData.get("orderId");
+                if (returnedOrderId != null && !orderId.equals(String.valueOf(returnedOrderId))) {
+                    log.warn("【账号{}】官方订单号与本地订单不一致，拒绝更新: orderId={}", accountId, orderId);
+                    return;
+                }
+                Object returnedCommonGoodsId = commonData.get("itemId");
+                if (returnedCommonGoodsId != null && !order.getXyGoodsId().equals(String.valueOf(returnedCommonGoodsId))) {
+                    log.warn("【账号{}】官方订单公共商品身份与本地商品不一致，拒绝更新: orderId={}", accountId, orderId);
+                    return;
+                }
             }
 
             String goodsTitle = null;
@@ -459,6 +488,16 @@ public class OrderServiceImpl implements OrderService {
                 Map<String, Object> merchantItem = (Map<String, Object>) merchantItemVO;
                 Object title = merchantItem.get("title");
                 if (title instanceof String) goodsTitle = (String) title;
+                Object returnedGoodsId = merchantItem.get("itemId");
+                if (returnedGoodsId != null && !order.getXyGoodsId().equals(String.valueOf(returnedGoodsId))) {
+                    log.warn("【账号{}】官方订单商品与本地商品不一致，拒绝更新: orderId={}", accountId, orderId);
+                    return;
+                }
+            }
+            if (buyerUserId != null && order.getBuyerUserId() != null
+                    && !order.getBuyerUserId().isBlank() && !order.getBuyerUserId().equals(buyerUserId)) {
+                log.warn("【账号{}】官方订单买家与本地买家不一致，拒绝更新: orderId={}", accountId, orderId);
+                return;
             }
 
             String totalPrice = null;
@@ -478,10 +517,21 @@ public class OrderServiceImpl implements OrderService {
 
             orderMapper.updateOrderDetail(order.getId(), buyerUserId, buyerUserName, orderCreateTime,
                     paySuccessTime, consignTime, null, null, goodsTitle, totalPrice, buyNum);
+            BigDecimal amount = verifiedAmount(totalPrice);
+            if (orderStatus != null) {
+                orderMapper.updateVerifiedOrderSnapshot(order.getId(), accountId, orderId,
+                        order.getXyGoodsId(), orderStatus, amount);
+            }
             log.info("【账号{}】从API更新订单详情成功: orderId={}", accountId, orderId);
         } catch (Exception e) {
             log.warn("【账号{}】更新订单详情失败: orderId={}", accountId, orderId, e);
         }
+    }
+
+    static BigDecimal verifiedAmount(String raw) {
+        if (raw == null || !raw.matches("[0-9]{1,10}(\\.[0-9]{1,2})?")) return null;
+        BigDecimal amount = new BigDecimal(raw);
+        return amount.precision() <= 12 ? amount : null;
     }
 
     @Override
@@ -518,6 +568,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @SuppressWarnings("unchecked")
     public List<Map<String, Object>> queryPendingOrders(Long accountId) {
+        if (r01Qa != null && r01Qa.handles(accountId)) return r01Qa.pending(accountId);
         try {
             String cookieStr = accountService.getCookieByAccountId(accountId);
             if (cookieStr == null || cookieStr.isEmpty()) {
@@ -690,6 +741,7 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     public Map<String, Object> getOrderDetailMap(Long accountId, String orderId) {
+        if (r01Qa != null && r01Qa.handles(accountId, orderId)) return r01Qa.detailMap(accountId, orderId);
         try {
             String cookieStr = accountService.getCookieByAccountId(accountId);
             if (cookieStr == null || cookieStr.isEmpty()) {
@@ -738,6 +790,26 @@ public class OrderServiceImpl implements OrderService {
         }
 
         int deliveryMode = deliveryConfig.getDeliveryMode() != null ? deliveryConfig.getDeliveryMode() : 1;
+        if (deliveryMode == 2) {
+            // Legacy callers must enter the same leased, strictly verified card flow as normal triggers.
+            TriggerAutoDeliveryReqDTO request = new TriggerAutoDeliveryReqDTO();
+            request.setXianyuAccountId(accountId);
+            request.setXyGoodsId(xyGoodsId);
+            request.setOrderId(orderId);
+            request.setNeedHumanLikeDelay(false);
+            ResultObject<String> result;
+            try {
+                result = autoDeliveryService.triggerAutoDelivery(request);
+            } catch (RuntimeException ex) {
+                throw new BusinessException(409, "卡密受保护履约流程未成功，请核对官方订单和履约任务", ex);
+            }
+            if (result != null && Integer.valueOf(200).equals(result.getCode())) {
+                return result.getData();
+            }
+            String reason = result != null && result.getMsg() != null && !result.getMsg().isBlank()
+                    ? result.getMsg() : "请刷新并核对官方订单和履约任务";
+            throw new BusinessException(409, "卡密发货未通过受保护履约流程：" + reason);
+        }
         boolean cardDelivery = deliveryMode == 2;
         boolean voucherDeliveryEnabled = !Integer.valueOf(0).equals(deliveryConfig.getVoucherDeliveryEnabled());
         boolean chatDeliveryEnabled = !Integer.valueOf(0).equals(deliveryConfig.getChatDeliveryEnabled());

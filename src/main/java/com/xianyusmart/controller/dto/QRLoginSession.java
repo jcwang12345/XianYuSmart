@@ -27,6 +27,10 @@ public class QRLoginSession {
     private Long tenantId;
     private Long accountId;
     private Long targetAccountId;
+    @JsonIgnore private Long operatorUserId;
+    @JsonIgnore private boolean originalScopeUnrestricted;
+    @JsonIgnore private java.util.Set<Long> originalAccountIds = java.util.Set.of();
+    @JsonIgnore private boolean trustedRenewal;
     @JsonIgnore
     private String errorMessage;
     

@@ -124,7 +124,7 @@ public class PublishCapabilityService {
             case "QR_COOKIE" -> true;
             case "QA_LOCAL" -> publishQaMockService.enabled()
                     && "MOCK_ONLY".equals(discovered.get("publishing"));
-            default -> "SUPPORTED".equals(discovered.get("publishing"));
+            default -> false;
         };
         boolean available = "CONNECTED".equals(connection) && authOkay && adapterAvailable;
         boolean executionAvailable = available
@@ -141,7 +141,9 @@ public class PublishCapabilityService {
         channel.put("source", rs.getString("source"));
         channel.put("coverageStatus", rs.getString("coverage_status"));
         channel.put("lastCheckedTime", instant(rs, "last_checked_time"));
-        channel.put("reason", available ? null : reason(connection, authorization, rs.getString("last_error_message")));
+        channel.put("reason", available ? null : !adapterAvailable && !"QA_LOCAL".equals(code)
+                ? "当前通道尚无独立真实发布适配器，请使用可用扫码通道"
+                : reason(connection, authorization, rs.getString("last_error_message")));
         channel.put("executionReason", executionAvailable ? null : available
                 ? "当前运行环境关闭真实平台写入，只允许平台预检"
                 : channel.get("reason"));

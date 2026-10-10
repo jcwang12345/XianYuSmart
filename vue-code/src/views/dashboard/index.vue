@@ -9,7 +9,7 @@ const router = useRouter()
 const activeView = computed<'overview' | 'realtime'>(() => route.query.view === 'realtime' ? 'realtime' : 'overview')
 const {
   loading, error, periodMode, accountId, groupId, customStart, customEnd, accounts,
-  analytics, accountSummary, groups, operations, operationsReady, queryDates, scopeError, scopeLoading,
+  analytics, accountSummary, groups, operations, operationsReady, operationsError, queryDates, scopeError, scopeLoading,
   selectAccount, selectGroup, loadStatistics, loadScopes
 } = useDashboard()
 
@@ -63,6 +63,16 @@ const metrics = computed(() => [
   { key: 'connection', label: '连接正常', kind: 'number' as const, help: `${accountSummary.value?.attentionAccountCount ?? '—'} 个店铺需关注`, localValue: accountSummary.value ? `${accountSummary.value.connectedCount}/${accountSummary.value.accountCount}` : '—' }
 ])
 const metricValue = (source: unknown, key: string) => source && typeof source === 'object' ? (source as Record<string, unknown>)[key] : null
+const fanMetrics = computed(() => !loading.value && !error.value && accountId.value !== undefined
+  && String(analytics.value?.scope.accountId) === String(accountId.value) && !groupId.value
+  ? analytics.value?.fanMetrics : undefined)
+const fanNotice = computed(() => loading.value ? '粉丝指标读取中，当前不展示旧店数据。'
+  : error.value ? '当前店铺粉丝指标读取失败，请重试。'
+  : fanMetrics.value?.notice || '当前接入通道尚未同步粉丝日明细，不以0代替。')
+const fanValue = (key: 'newFollowers' | 'lostFollowers' | 'netFollowers' | 'followerGmv') => {
+  const value = fanMetrics.value?.[key]
+  return typeof value === 'number' && Number.isFinite(value) ? valueText(value, key === 'followerGmv' ? 'money' : 'number') : '—'
+}
 const selectPeriod = (value: '1'|'7'|'30'|'custom') => {
   periodMode.value = value
   if (value !== 'custom') void loadStatistics()
@@ -245,6 +255,16 @@ onUnmounted(() => timer && clearInterval(timer))
       </article>
     </section>
 
+    <section v-if="accountId !== undefined && !groupId" class="workbench__card" aria-label="所选店铺粉丝指标">
+      <div class="dashboard__section-head"><div><h2>所选店铺粉丝指标</h2><p>{{ fanNotice }}</p></div></div>
+      <div class="dashboard__metrics">
+        <article class="dashboard__metric"><span>新增粉丝</span><strong>{{ fanValue('newFollowers') }}</strong></article>
+        <article class="dashboard__metric"><span>流失粉丝</span><strong>{{ fanValue('lostFollowers') }}</strong></article>
+        <article class="dashboard__metric"><span>净增粉丝</span><strong>{{ fanValue('netFollowers') }}</strong></article>
+        <article class="dashboard__metric"><span>粉丝成交贡献</span><strong>{{ fanValue('followerGmv') }}</strong></article>
+      </div>
+    </section>
+
     <section class="dashboard__columns">
       <article class="workbench__card dashboard__trend">
         <div class="dashboard__section-head"><div><h2>{{ trendLabel }}趋势</h2><p>{{ queryDates.start }} 至 {{ queryDates.end }}；缺失日期保持空值</p></div><select v-model="trendMetric" class="workbench__select" aria-label="趋势指标"><option value="paidOrderCount">支付订单</option><option value="gmv">成交金额</option><option value="inquiryCount">咨询买家</option><option value="exposureCount">平台曝光</option></select></div>
@@ -260,7 +280,11 @@ onUnmounted(() => timer && clearInterval(timer))
     </section>
 
     <section class="dashboard__columns dashboard__columns--secondary">
-      <article class="workbench__card dashboard__attention"><div class="dashboard__section-head"><div><h2>履约与连接待办</h2><p>{{ todoCount === null ? '本地待办读取中' : `${todoCount} 项本地待办` }}</p></div><button class="dashboard__link" @click="router.push('/operations-health')">进入诊断</button></div><button @click="router.push('/orders?deliveryStatus=REVIEW_REQUIRED')"><span class="dot red"></span><span>履约需人工核对</span><strong>{{ operationValue(operations.reviewRequiredCount) }}</strong></button><button @click="router.push('/orders?deliveryStatus=FAILED')"><span class="dot orange"></span><span>履约失败</span><strong>{{ operationValue(operations.failedTaskCount) }}</strong></button><button @click="router.push('/kami-config?lowStock=1')"><span class="dot yellow"></span><span>卡密库存预警</span><strong>{{ operationValue(operations.lowStockConfigCount) }}</strong></button><button @click="router.push('/accounts')"><span class="dot blue"></span><span>店铺连接或风险</span><strong>{{ accountSummary?.attentionAccountCount ?? '—' }}</strong></button></article>
+      <article class="workbench__card dashboard__attention">
+        <div class="dashboard__section-head"><div><h2>履约与连接待办</h2><p>{{ todoCount === null ? (loading ? '本地待办读取中' : '本地待办数量未知') : `${todoCount} 项本地待办` }}</p></div><button class="dashboard__link" @click="router.push('/operations-health')">进入诊断</button></div>
+        <div v-if="operationsError" class="dashboard__notice dashboard__notice--error" role="alert"><span>{{ operationsError }}</span><button class="dashboard__link" :disabled="loading" @click="loadStatistics">重试履约待办</button></div>
+        <button @click="router.push('/orders?deliveryStatus=REVIEW_REQUIRED')"><span class="dot red"></span><span>履约需人工核对</span><strong>{{ operationValue(operations.reviewRequiredCount) }}</strong></button><button @click="router.push('/orders?deliveryStatus=FAILED')"><span class="dot orange"></span><span>履约失败</span><strong>{{ operationValue(operations.failedTaskCount) }}</strong></button><button @click="router.push('/kami-config?lowStock=1')"><span class="dot yellow"></span><span>卡密库存预警</span><strong>{{ operationValue(operations.lowStockConfigCount) }}</strong></button><button @click="router.push('/accounts')"><span class="dot blue"></span><span>店铺连接或风险</span><strong>{{ accountSummary?.attentionAccountCount ?? '—' }}</strong></button>
+      </article>
 
       <article class="workbench__card dashboard__anomalies"><div class="dashboard__section-head"><div><h2>经营异常</h2><p>只根据已同步证据生成，不把缺失数据当成 0。</p></div><span>{{ analytics ? `${anomalies.length} 项` : '—' }}</span></div><div v-if="anomalies.length" class="dashboard__anomaly-list"><article v-for="(item,index) in anomalies.slice(0,8)" :key="`${item.domain}-${item.accountId}-${item.goodsId||item.metricDate}-${index}`"><div><span :class="['status',item.severity==='HIGH'?'bad':'warn']">{{ item.severity==='HIGH'?'重点':'提醒' }}</span><small>{{ accountName(item.accountId) }} · {{ item.domain==='PRODUCT'?'商品':'店铺' }}</small></div><strong>{{ item.title || item.anomalyType }}</strong><p>{{ anomalyEvidence(item) }}</p><em>{{ item.recommendation }}</em><button class="dashboard__link" @click="navigateSafe(item.targetRoute)">查看并处理</button></article></div><div v-else-if="analytics" class="dashboard__empty">当前同步范围内没有命中经营异常；这不代表未同步数据没有风险。</div><div v-else class="dashboard__empty">经营异常仍在读取，尚未形成可信结论。</div></article>
     </section>

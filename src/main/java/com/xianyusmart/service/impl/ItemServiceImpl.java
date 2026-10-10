@@ -16,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.*;
 
 /**
@@ -68,11 +70,21 @@ public class ItemServiceImpl implements ItemService {
 
     @Autowired
     private com.xianyusmart.service.ProductSyncStateService productSyncStateService;
+    @Autowired private com.xianyusmart.service.CookieRefreshService cookieRefreshService;
 
     /**
      * 获取指定页的商品信息（内部方法）
      */
-    private ResultObject<ItemListRespDTO> getItemList(ItemListReqDTO reqDTO) {
+    public ResultObject<ItemListRespDTO> fetchOnSalePage(ItemListReqDTO reqDTO) {
+        var result=getItemList(reqDTO, false);
+        if(result.getData()!=null && "CREDENTIAL_EXPIRED".equals(result.getData().getErrorCode())) {
+            Long accountId=getAccountIdFromCookieId(reqDTO.getCookieId());
+            if(accountId!=null && cookieRefreshService.refreshCookie(accountId)) return getItemList(reqDTO,false);
+        }
+        return result;
+    }
+    private ResultObject<ItemListRespDTO> getItemList(ItemListReqDTO reqDTO) { return getItemList(reqDTO, true); }
+    private ResultObject<ItemListRespDTO> getItemList(ItemListReqDTO reqDTO, boolean saveSnapshot) {
         try {
             log.info("开始获取商品列表: {}", reqDTO);
 
@@ -80,7 +92,7 @@ public class ItemServiceImpl implements ItemService {
             String cookiesStr = getCookieFromDb(reqDTO.getCookieId());
             if (cookiesStr == null || cookiesStr.isEmpty()) {
                 log.error("未找到账号Cookie: cookieId={}", reqDTO.getCookieId());
-                return ResultObject.failed("未找到账号Cookie");
+                return listFailure(reqDTO,"CREDENTIAL_MISSING");
             }
             log.info("Cookie获取成功，长度: {}", cookiesStr.length());
             Long accountId = getAccountIdFromCookieId(reqDTO.getCookieId());
@@ -89,7 +101,7 @@ public class ItemServiceImpl implements ItemService {
             Map<String, String> cookies = XianyuSignUtils.parseCookies(cookiesStr);
             if (!cookies.containsKey("_m_h5_tk") || cookies.get("_m_h5_tk").isEmpty()) {
                 log.error("Cookie中缺少_m_h5_tk字段！请重新登录");
-                return ResultObject.failed("Cookie中缺少_m_h5_tk，请重新登录");
+                return listFailure(reqDTO,"CREDENTIAL_MISSING");
             }
             
             // 构建请求数据
@@ -105,18 +117,11 @@ public class ItemServiceImpl implements ItemService {
             log.info("调用商品列表API: pageNumber={}, pageSize={}", reqDTO.getPageNumber(), reqDTO.getPageSize());
             
             // 使用工具类调用API
-            String response = XianyuApiUtils.callApi(
-                "mtop.idle.web.xyh.item.list",
-                dataMap,
-                cookiesStr,
-                "a21ybx.im.0.0",
-                "a21ybx.collection.menu.1.272b5141NafCNK",
-                accountBrowserProfileService.headersForAccount(accountId)
-            );
-            
-            if (response == null) {
+            String response = callOnSaleListApi(dataMap,cookiesStr,accountId);
+
+            if (response == null || response.isBlank()) {
                 log.error("API调用失败：响应为空");
-                return ResultObject.failed("请求闲鱼API失败");
+                return listFailure(reqDTO, "EMPTY_RESPONSE");
             }
             
             log.info("API调用成功，响应长度: {}", response.length());
@@ -125,7 +130,7 @@ public class ItemServiceImpl implements ItemService {
             log.info("开始解析响应JSON...");
             @SuppressWarnings("unchecked")
             Map<String, Object> responseMap = objectMapper.readValue(response, Map.class);
-            log.info("JSON解析成功，响应字段: {}", responseMap.keySet());
+            log.info("JSON解析成功，响应字段数量: {}", responseMap.size());
             
             ItemListRespDTO respDTO = parseItemListResponse(responseMap, reqDTO.getPageNumber(), reqDTO.getPageSize());
             log.info("响应解析完成，success={}, 商品数量={}", respDTO.getSuccess(), respDTO.getCurrentCount());
@@ -135,7 +140,7 @@ public class ItemServiceImpl implements ItemService {
                         reqDTO.getCookieId(), respDTO.getCurrentCount());
                 
                 // 保存商品信息到数据库
-                if (respDTO.getItems() != null && !respDTO.getItems().isEmpty()) {
+                if (saveSnapshot && respDTO.getItems() != null && !respDTO.getItems().isEmpty()) {
                     try {
                         int savedCount = goodsInfoService.batchSaveOrUpdateGoodsInfo(respDTO.getItems(), accountId);
                         log.info("商品信息已保存到数据库: 成功数量={}, accountId={}", savedCount, accountId);
@@ -147,31 +152,61 @@ public class ItemServiceImpl implements ItemService {
                 
                 return ResultObject.success(respDTO);
             } else {
-                log.error("获取商品列表失败: success=false");
-                return ResultObject.failed("获取商品列表失败");
+                OnSaleDiagnostic diagnostic = onSaleDiagnostic(responseMap);
+                log.warn("官方在售列表拒绝: accountRef={}, page={}, errorCode={}, platformRetCode={}, rejectionClass={}, retSha256={}",
+                        accountId, reqDTO.getPageNumber(), respDTO.getErrorCode(),
+                        diagnostic.code(), diagnostic.category(), diagnostic.sha256());
+                return new ResultObject<>(502,"官方在售列表暂不可用",respDTO);
             }
         } catch (com.xianyusmart.exception.BusinessException e) {
-            log.error("业务异常: cookieId={}, message={}", reqDTO.getCookieId(), e.getMessage());
-            
-            // 如果是令牌过期异常，更新cookie状态
-            if (e.getMessage().contains("令牌已过期")) {
-                try {
-                    Long accountId = getAccountIdFromCookieId(reqDTO.getCookieId());
-                    if (accountId != null) {
-                        accountService.updateCookieStatus(accountId, 2); // 2表示过期
-                        log.info("已更新Cookie状态为过期: accountId={}", accountId);
-                    }
-                } catch (Exception ex) {
-                    log.error("更新Cookie状态失败: cookieId={}", reqDTO.getCookieId(), ex);
-                }
-            }
-            
-            // 重新抛出业务异常，让全局异常处理器处理
+            // A list response cannot replace the credential service's versioned invalidation proof.
+            log.warn("商品列表业务拒绝: accountRef={}, code={}", reqDTO.getCookieId(), e.getCode());
             throw e;
         } catch (Exception e) {
-            log.error("获取商品列表异常: cookieId={}", reqDTO.getCookieId(), e);
-            return ResultObject.failed("获取商品列表异常: " + e.getMessage());
+            log.warn("商品列表读取失败: accountRef={}, failureType={}", reqDTO.getCookieId(), e.getClass().getSimpleName());
+            return listFailure(reqDTO,"UPSTREAM_UNAVAILABLE");
         }
+    }
+
+    private record OnSaleDiagnostic(String code, String category, String sha256) {}
+
+    private OnSaleDiagnostic onSaleDiagnostic(Map<String, Object> responseMap) {
+        Object rawRet = responseMap.get("ret");
+        if (!(rawRet instanceof List<?> ret) || ret.isEmpty() || !(ret.getFirst() instanceof String value)) {
+            return new OnSaleDiagnostic("UNKNOWN", "INVALID_RESPONSE", "NOT_AVAILABLE");
+        }
+        int separator = value.indexOf("::");
+        String token = separator < 0 ? value : value.substring(0, separator);
+        // Even a syntactically valid unknown token may contain private text; only known codes leave this method.
+        String category = token.matches("[A-Z][A-Z0-9_]{0,63}") ? switch (token) {
+            case "FAIL_SYS_TOKEN_EXOIRED", "FAIL_SYS_TOKEN_EXPIRED" -> "CREDENTIAL_EXPIRED";
+            case "FAIL_SYS_USER_VALIDATE" -> "VERIFICATION_REQUIRED";
+            case "FAIL_SYS_NO_PERMISSION", "FAIL_SYS_ACCESS_DENIED" -> "PERMISSION_DENIED";
+            case "FAIL_SYS_TRAFFIC_LIMIT" -> "RATE_LIMITED";
+            case "FAIL_SYS_API_NOT_FOUNDED", "FAIL_SYS_API_NOT_FOUND" -> "API_NOT_AVAILABLE";
+            case "FAIL_BIZ_FORBIDDEN" -> "BUSINESS_REJECTION";
+            case "SUCCESS" -> "INVALID_LIST_RESPONSE";
+            default -> "UNKNOWN";
+        } : "UNKNOWN";
+        String safeCode = "UNKNOWN".equals(category) ? "UNKNOWN" : token;
+        try {
+            String sha256 = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+            return new OnSaleDiagnostic(safeCode, category, sha256);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            return new OnSaleDiagnostic(safeCode, category, "NOT_AVAILABLE");
+        }
+    }
+
+    private ResultObject<ItemListRespDTO> listFailure(ItemListReqDTO request, String code) {
+        var data=new ItemListRespDTO();data.setSuccess(false);data.setPageNumber(request.getPageNumber());
+        data.setPageSize(request.getPageSize());data.setErrorCode(code);
+        return new ResultObject<>(502,"官方在售列表暂不可用",data);
+    }
+
+    protected String callOnSaleListApi(Map<String,Object> data, String cookie, Long accountId) {
+        return XianyuApiUtils.callApi("mtop.idle.web.xyh.item.list",data,cookie,"a21ybx.im.0.0",
+                "a21ybx.collection.menu.1.272b5141NafCNK",accountBrowserProfileService.headersForAccount(accountId));
     }
 
     @Override
@@ -186,6 +221,10 @@ public class ItemServiceImpl implements ItemService {
                 return ResultObject.failed("账号ID不能为空");
             }
             
+            if (reqDTO.getPageSize() == null || reqDTO.getPageSize() < 1 || reqDTO.getPageSize() > 100
+                    || (reqDTO.getMaxPages() != null && (reqDTO.getMaxPages() < 1 || reqDTO.getMaxPages() > 100))) {
+                return ResultObject.failed("分页范围必须为1至100");
+            }
             // 根据账号ID获取Cookie
             String cookieStr = accountService.getCookieByAccountId(reqDTO.getXianyuAccountId());
             if (cookieStr == null || cookieStr.isEmpty()) {
@@ -200,13 +239,14 @@ public class ItemServiceImpl implements ItemService {
             respDTO.setUpdatedItemIds(new ArrayList<>());
             
             List<ItemDTO> allItems = new ArrayList<>();
+            java.util.Set<String> discoveredIds = new java.util.HashSet<>();
             int pageNumber = 1;
             boolean fullRemoteCoverage = true;
 
             // 自动分页获取所有商品
             while (true) {
                 // 检查是否达到最大页数（maxPages为null或0表示不限制）
-                if (reqDTO.getMaxPages() != null && reqDTO.getMaxPages() > 0 && pageNumber > reqDTO.getMaxPages()) {
+                if (pageNumber > (reqDTO.getMaxPages() == null ? 100 : reqDTO.getMaxPages())) {
                     log.info("达到最大页数限制: {}", reqDTO.getMaxPages());
                     fullRemoteCoverage = false;
                     break;
@@ -239,15 +279,10 @@ public class ItemServiceImpl implements ItemService {
                     break;
                 }
 
-                allItems.addAll(pageData.getItems());
+                boolean added = false;
+                for (ItemDTO item : pageData.getItems()) if (discoveredIds.add(item.getId())) { allItems.add(item); added = true; }
+                if (!added) { fullRemoteCoverage = false; break; }
                 log.info("第{}页获取到{}个商品", pageNumber, pageData.getItems().size());
-
-                // 如果当前页商品数量少于页面大小，说明已经是最后一页
-                if (pageData.getItems().size() < reqDTO.getPageSize()) {
-                    log.info("第{}页商品数量({})少于页面大小({})，刷新完成", 
-                            pageNumber, pageData.getItems().size(), reqDTO.getPageSize());
-                    break;
-                }
 
                 pageNumber++;
                 
@@ -259,17 +294,8 @@ public class ItemServiceImpl implements ItemService {
             // 批量保存到数据库
             respDTO.setTotalCount(allItems.size());
 
-            java.util.Set<String> remoteItemIds = new java.util.HashSet<>();
-            for (ItemDTO item : allItems) {
-                if (item.getDetailParams() != null && item.getDetailParams().getItemId() != null) {
-                    remoteItemIds.add(item.getDetailParams().getItemId());
-                }
-            }
-            // 只有完整遍历远程列表才能将“远端未出现”解释为下架；分页截断或中途失败绝不做此推断。
-            if (fullRemoteCoverage) {
-                goodsInfoService.markOfflineIfNotInRemote(reqDTO.getXianyuAccountId(), remoteItemIds);
-            }
-            
+            // ON_SALE absence is not evidence of OFF_SHELF/SOLD and never changes saved
+            // platform state, automation configuration, conversation or order execution.
             if (!allItems.isEmpty()) {
                 // 使用账号ID保存商品
                 Long accountId = reqDTO.getXianyuAccountId();
@@ -289,8 +315,9 @@ public class ItemServiceImpl implements ItemService {
                 }
                 
                 respDTO.setSuccessCount(respDTO.getUpdatedItemIds().size());
-                respDTO.setSuccess(true);
-                respDTO.setMessage("刷新成功");
+                if (respDTO.getSuccessCount() != allItems.size()) fullRemoteCoverage = false;
+                respDTO.setSuccess(fullRemoteCoverage);
+                respDTO.setMessage(fullRemoteCoverage ? "在售列表完整，详情正在单独同步" : "在售列表仅部分完成，请查看同步任务");
                 
                 String syncId = itemDetailSyncService.startSync(reqDTO.getXianyuAccountId(), allItems);
                 respDTO.setSyncId(syncId);
@@ -303,7 +330,7 @@ public class ItemServiceImpl implements ItemService {
                 log.warn("刷新商品数据完成，但没有获取到任何商品");
             }
 
-            productSyncStateService.completed(reqDTO.getXianyuAccountId(), requestId, fullRemoteCoverage);
+            productSyncStateService.completed(reqDTO.getXianyuAccountId(), requestId, fullRemoteCoverage, respDTO.getUpdatedItemIds());
 
             return ResultObject.success(respDTO);
         } catch (Exception e) {
@@ -629,57 +656,57 @@ public class ItemServiceImpl implements ItemService {
         respDTO.setPageSize(pageSize);
         respDTO.setItems(new ArrayList<>());
 
+        respDTO.setSuccess(false);
+        respDTO.setSavedCount(0);
+        respDTO.setCurrentCount(0);
         try {
-            log.info("开始解析响应，responseMap keys: {}", responseMap.keySet());
-            
-            List<String> ret = (List<String>) responseMap.get("ret");
-            log.info("ret字段: {}", ret);
-            
-            // 检查令牌是否过期
-            if (ret != null && !ret.isEmpty()) {
-                String retValue = ret.get(0);
-                if (retValue.contains("FAIL_SYS_TOKEN_EXOIRED") || retValue.contains("令牌过期")) {
-                    log.warn("API调用失败，ret: {}", ret);
-                    throw new com.xianyusmart.exception.BusinessException("令牌已过期，请重新登录");
-                }
+            Object rawRet = responseMap == null ? null : responseMap.get("ret");
+            if (!(rawRet instanceof List<?> ret) || ret.isEmpty() || !(ret.getFirst() instanceof String code)) {
+                respDTO.setErrorCode("INVALID_RESPONSE");
+                return respDTO;
             }
-            
-            if (ret != null && !ret.isEmpty() && ret.get(0).contains("SUCCESS")) {
-                log.info("API调用成功，开始解析数据");
-                respDTO.setSuccess(true);
-
-                Map<String, Object> data = (Map<String, Object>) responseMap.get("data");
-                log.info("data字段存在: {}, keys: {}", data != null, data != null ? data.keySet() : "null");
-                
-                if (data != null) {
-                    List<Map<String, Object>> cardList = (List<Map<String, Object>>) data.get("cardList");
-                    log.info("cardList存在: {}, size: {}", cardList != null, cardList != null ? cardList.size() : 0);
-                    
-                    if (cardList != null) {
-                        for (Map<String, Object> card : cardList) {
-                            Map<String, Object> cardData = (Map<String, Object>) card.get("cardData");
-                            if (cardData != null) {
-                                log.info("商品cardData: {}", cardData);
-                                ItemDTO itemDTO = objectMapper.convertValue(cardData, ItemDTO.class);
-                                respDTO.getItems().add(itemDTO);
-                            }
-                        }
-                    }
-                }
-
-                respDTO.setCurrentCount(respDTO.getItems().size());
-                respDTO.setSavedCount(respDTO.getItems().size());
-                log.info("解析完成，商品数量: {}", respDTO.getItems().size());
-            } else {
-                log.warn("API调用失败，ret: {}", ret);
-                respDTO.setSuccess(false);
+            if (code.startsWith("FAIL_SYS_TOKEN_EXOIRED") || code.startsWith("FAIL_SYS_TOKEN_EXPIRED")) { respDTO.setErrorCode("CREDENTIAL_EXPIRED"); return respDTO; }
+            if (code.startsWith("FAIL_SYS_USER_VALIDATE")) { respDTO.setErrorCode("VERIFICATION_REQUIRED"); return respDTO; }
+            if (code.startsWith("FAIL_SYS_NO_PERMISSION") || code.startsWith("FAIL_SYS_ACCESS_DENIED")) { respDTO.setErrorCode("PLATFORM_PERMISSION_DENIED"); return respDTO; }
+            if (code.startsWith("FAIL_SYS_TRAFFIC_LIMIT")) { respDTO.setErrorCode("RATE_LIMITED"); return respDTO; }
+            if (!code.startsWith("SUCCESS")) { respDTO.setErrorCode("PLATFORM_UNAVAILABLE"); return respDTO; }
+            if (!(responseMap.get("data") instanceof Map<?, ?> data) || !(data.get("cardList") instanceof List<?> cards)) {
+                respDTO.setErrorCode("INVALID_LIST_STRUCTURE");
+                return respDTO;
             }
+            if (cards.size() > 100) { respDTO.setErrorCode("LIST_PAGE_LIMIT_EXCEEDED"); return respDTO; }
+            Object hasMore=data.get("hasMore"),total=data.get("total");
+            if (data.containsKey("hasMore") && !(hasMore instanceof Boolean)) { respDTO.setErrorCode("INVALID_PAGINATION"); return respDTO; }
+            if (data.containsKey("total")) {
+                if (!(total instanceof Number count) || count.longValue()<0 || count.doubleValue()!=count.longValue()) { respDTO.setErrorCode("INVALID_PAGINATION"); return respDTO; }
+                respDTO.setReportedTotal(((Number)total).longValue());
+            }
+            if (cards.isEmpty() && (Boolean.TRUE.equals(hasMore) || pageNumber==1 && respDTO.getReportedTotal()!=null && respDTO.getReportedTotal()>0)
+                    || !cards.isEmpty() && Long.valueOf(0).equals(respDTO.getReportedTotal())) { respDTO.setErrorCode("PAGINATION_CONFLICT"); return respDTO; }
+            List<ItemDTO> items = new ArrayList<>();
+            for (Object rawCard : cards) {
+                if (!(rawCard instanceof Map<?, ?> card) || !(card.get("cardData") instanceof Map<?, ?> cardData)) {
+                    respDTO.setErrorCode("INVALID_ITEM_STRUCTURE"); return respDTO;
+                }
+                ItemDTO item = objectMapper.convertValue(cardData, ItemDTO.class);
+                if (item.getDetailParams() == null || item.getDetailParams().getItemId() == null || item.getDetailParams().getItemId().isBlank()) { respDTO.setErrorCode("INVALID_ITEM_ID"); return respDTO; }
+                item.setId(item.getDetailParams().getItemId());
+                items.add(item);
+            }
+            respDTO.setItems(items);
+            respDTO.setCurrentCount(items.size());
+            respDTO.setStructureValidated(true);
+            // Empty/short pages alone do not prove complete enumeration.
+            boolean explicitEnd=Boolean.FALSE.equals(hasMore);
+            boolean verifiedZero=cards.isEmpty() && Long.valueOf(0).equals(respDTO.getReportedTotal());
+            respDTO.setTerminalPage(explicitEnd || verifiedZero);
+            respDTO.setTerminationEvidence(explicitEnd?"HAS_MORE_FALSE":verifiedZero?"TOTAL_ZERO":"NOT_PROVIDED");
+            respDTO.setSuccess(true);
         } catch (com.xianyusmart.exception.BusinessException e) {
-            // 重新抛出业务异常
             throw e;
         } catch (Exception e) {
-            log.error("解析商品列表响应失败", e);
-            respDTO.setSuccess(false);
+            log.warn("商品列表结构无法验证: failureType={}", e.getClass().getSimpleName());
+            respDTO.setErrorCode("INVALID_LIST_STRUCTURE");
         }
 
         return respDTO;
@@ -780,11 +807,18 @@ public class ItemServiceImpl implements ItemService {
                     reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId(), reqDTO.getXianyuAutoDeliveryOn());
             
             if (Integer.valueOf(1).equals(reqDTO.getXianyuAutoDeliveryOn())) {
-                var readiness = goodsSkuReadinessService.requireComplete(
+                var readiness = goodsSkuReadinessService.inspect(
                         reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId());
                 var deliveryConfigs = autoDeliveryConfigMapper.findByAccountIdAndGoodsId(
                         reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId());
-                if (readiness.hasSkuChildren()) {
+                boolean uniformCard = deliveryConfigs.stream().anyMatch(config ->
+                        goodsSkuReadinessService.permitsUniformCard(reqDTO.getXianyuAccountId(), reqDTO.getXyGoodsId(), config));
+                if (!uniformCard && !readiness.complete() && deliveryConfigs.stream().noneMatch(config ->
+                        goodsSkuReadinessService.permitsLimitedFixedTemplate(reqDTO.getXianyuAccountId(),
+                                reqDTO.getXyGoodsId(), readiness, config))) {
+                    throw new IllegalStateException(readiness.message() + "；请先绑定通用固定模板，或明确配置所有规格同一权益的商品统一卡密");
+                }
+                if (!uniformCard && readiness.hasSkuChildren()) {
                     long configuredSkuCount = deliveryConfigs.stream()
                             .map(com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig::getSkuId)
                             .filter(id -> id != null && !id.isBlank())
@@ -794,7 +828,7 @@ public class ItemServiceImpl implements ItemService {
                         throw new IllegalStateException("SKU 配置仅完成 " + configuredSkuCount + "/"
                                 + readiness.verifiedCount() + "；请配置全部规格后再开启自动发货");
                     }
-                } else if (deliveryConfigs.stream().noneMatch(config -> config.getSkuId() == null)) {
+                } else if (!uniformCard && deliveryConfigs.stream().noneMatch(config -> config.getSkuId() == null)) {
                     throw new IllegalStateException("请先保存当前商品的发货配置，再开启自动发货");
                 }
             }

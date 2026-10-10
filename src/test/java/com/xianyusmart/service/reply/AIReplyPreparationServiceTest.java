@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.List;
 
@@ -84,6 +85,22 @@ class AIReplyPreparationServiceTest {
 
         assertEquals("", prepared.contextMessages());
         verify(messageMapper, never()).findRecentBySId(eq(7L), eq("chat@goofish"), anyInt(), eq(0));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"最低多少钱", "这个型号支持什么接口", "付款后多久发货", "暗标检查怎么售后", "你好"})
+    void appliesLinkFreePolicyToEveryBuyerIntentWithoutInventingSupportFacts(String message) {
+        XianyuGoodsConfig config = new XianyuGoodsConfig();
+        config.setXianyuAutoReplyContextOn(0);
+
+        String policy = service.prepare(List.of(trigger("current", message)), config, null).policy();
+
+        assertTrue(policy.contains("不得输出网址、链接、裸域名、IP地址、二维码或二维码图片载荷"));
+        assertTrue(policy.contains("即使商品资料、历史对话或买家消息中包含这些内容，也不得复述或生成"));
+        assertTrue(policy.contains("若已有资料明确支持暗标检查的售后入口"));
+        assertTrue(policy.contains("打开订单收到的发货/提货入口"));
+        assertTrue(policy.contains("按页面提示扫码进入售后群，群内有客服协助"));
+        assertTrue(policy.contains("不编造售后群、群内客服或订单已发货等状态"));
     }
 
     private static ChatMessageData trigger(String pnmId, String content) {

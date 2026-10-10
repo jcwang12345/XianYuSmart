@@ -33,6 +33,9 @@ import java.util.List;
 @Slf4j
 @Service
 public class AutoReplyServiceImpl implements AutoReplyService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
     
     @Autowired
     private XianyuGoodsConfigMapper goodsConfigMapper;
@@ -97,6 +100,13 @@ public class AutoReplyServiceImpl implements AutoReplyService {
 
     @Override
     public void executeAutoReply(List<ChatMessageData> messageList, Long existingRecordId) {
+        if(messageList==null || messageList.isEmpty())return;
+        accountAutomationPolicy.guarded(messageList.getLast().getXianyuAccountId(),
+                com.xianyusmart.service.AccountAutomationPolicy.Action.REPLY,
+                () -> { executeAutoReplyAllowed(messageList,existingRecordId); return null; });
+    }
+
+    private void executeAutoReplyAllowed(List<ChatMessageData> messageList, Long existingRecordId) {
         if (messageList == null || messageList.isEmpty()) {
             log.warn("消息列表为空，无法执行自动回复");
             return;
@@ -118,8 +128,8 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                 .reduce((a, b) -> a + "\n" + b)
                 .orElse("");
         
-        log.info("【账号{}】开始执行自动回复: xyGoodsId={}, sId={}, 触发消息数={}, buyerMessage={}", 
-                accountId, xyGoodsId, sId, messageList.size(), buyerMessage);
+        log.info("【账号{}】开始执行自动回复: xyGoodsId={}, sId={}, 触发消息数={}",
+                accountId, xyGoodsId, sId, messageList.size());
         
         try {
             if (existingRecordId != null) {
@@ -432,6 +442,10 @@ public class AutoReplyServiceImpl implements AutoReplyService {
                              long decisionStartedAt) {
         try {
             ChatMessageData last = messages.getLast();
+            if (escalationPolicy.isMessageOnlyRefundFallback(messages, reasonCode)) {
+                reasonDetail = "本条退款咨询需人工核对，后续普通咨询继续自动回复。原原因：" + reasonDetail;
+                reasonCode = "REFUND_QUESTION";
+            }
             Long resolvedRecordId = recordId;
             if (resolvedRecordId == null) {
                 XianyuGoodsAutoReplyRecord record = new XianyuGoodsAutoReplyRecord();

@@ -167,6 +167,21 @@ public class HumanTakeoverManager {
         }
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.R01QaPlatformService r01Qa;
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.jdbc.core.JdbcTemplate qaJdbc;
+
+    /** Restricted clock advancement; preserves records and never changes reply/handoff outcomes. */
+    public void expireForQa(Long accountId,String goodsId,String sessionId) {
+        r01Qa.require(accountId,goodsId);
+        r01Qa.require(accountId,sessionId.replace("@goofish",""));
+        qaJdbc.update("UPDATE xianyu_human_intervention_record SET end_time=DATE_SUB(NOW(3),INTERVAL 1 SECOND) "
+                +"WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=? AND s_id=?",
+                com.xianyusmart.context.TenantContext.get(),accountId,goodsId,sessionId);
+        takeoverMap.remove(buildKey(accountId,sessionId));
+    }
+
     private String buildKey(Long accountId, String sId) {
         return accountId + "_" + sId;
     }

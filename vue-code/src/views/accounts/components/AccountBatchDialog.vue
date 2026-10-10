@@ -24,7 +24,7 @@ const errorPanel=ref<HTMLElement|null>(null)
 const loading=ref(false),creating=ref(false),confirmed=ref(false)
 const requestId=ref('')
 let pollTimer:number|undefined
-const labels:Record<AccountBatchOperation,string>={ENABLE:'批量启用',DISABLE:'批量停用',SYNC:'同步运行状态',RENEW:'批量准备续期'}
+const labels:Record<AccountBatchOperation,string>={ENABLE:'批量启用',DISABLE:'批量停用',SYNC:'同步运行状态',PROFILE_SYNC:'同步店铺画像',RENEW:'批量准备续期'}
 const terminal=new Set(['SUCCEEDED','FAILED','PARTIAL_SUCCESS','CANCELLED'])
 const canCreate=computed(()=>!!preview.value&&preview.value.executableCount>0&&confirmed.value&&!creating.value&&!batch.value)
 const statusText=(status:number)=>({0:'排队中',1:'执行中',2:'成功',3:'已取消',4:'结果未知','-1':'失败'}[String(status)]||'未知')
@@ -48,7 +48,7 @@ onBeforeUnmount(()=>{if(pollTimer)window.clearTimeout(pollTimer)})
     <section class="account-batch-dialog" role="dialog" aria-modal="true" aria-labelledby="account-batch-title">
       <header><div><p>多账号批量运营</p><h2 id="account-batch-title">{{ labels[operation] }}</h2><small>先预检真实范围，再按账号串行执行并保留逐项结果。</small></div><button aria-label="关闭" @click="close">×</button></header>
       <div class="account-batch-dialog__body">
-        <section class="account-batch-options"><label>执行动作<select v-model="operation" :disabled="creating||!!batch"><option value="SYNC">同步运行状态</option><option value="ENABLE">启用账号</option><option value="DISABLE">停用账号</option><option value="RENEW">准备扫码续期</option></select></label><div><span>选择范围</span><strong>{{ selectionMode==='FILTER_SNAPSHOT'?'当前筛选快照':'手动勾选账号' }}</strong><small>{{ selectionMode==='FILTER_SNAPSHOT'?`排除 ${excludedAccountIds.length} 个账号`:`已勾选 ${accountIds.length} 个账号` }}</small></div></section>
+        <section class="account-batch-options"><label>执行动作<select v-model="operation" :disabled="creating||!!batch"><option value="SYNC">同步运行状态</option><option value="PROFILE_SYNC">同步店铺画像（只读）</option><option value="ENABLE">启用账号</option><option value="DISABLE">停用账号</option><option value="RENEW">准备扫码续期</option></select></label><div><span>选择范围</span><strong>{{ selectionMode==='FILTER_SNAPSHOT'?'当前筛选快照':'手动勾选账号' }}</strong><small>{{ selectionMode==='FILTER_SNAPSHOT'?`排除 ${excludedAccountIds.length} 个账号`:`已勾选 ${accountIds.length} 个账号` }}</small></div></section>
         <div v-if="loading" class="account-batch-state">正在预检账号状态与权限…</div>
         <section v-else-if="errorMessage" ref="errorPanel" class="account-batch-error" role="alert" tabindex="-1"><strong>{{ errorStage==='POLL'?'任务状态读取失败':'预检未通过' }}</strong><p>{{ errorMessage }}</p><small>当前选择范围和动作已保留。可重试；如混合了隔离 QA 与真实账号，请返回列表取消勾选后再操作。</small><div><button class="workbench__btn" @click="close">返回调整选择</button><button class="workbench__btn workbench__btn--primary" @click="retryError">{{ errorStage==='POLL'?'重新读取任务':'重试预检' }}</button></div></section>
         <template v-else-if="preview">
@@ -56,7 +56,7 @@ onBeforeUnmount(()=>{if(pollTimer)window.clearTimeout(pollTimer)})
           <p class="account-batch-confirmation">{{ preview.confirmationSummary }}</p>
           <p v-if="preview.executionNotice" class="account-batch-notice">{{ preview.executionNotice }}</p>
           <div class="account-batch-items"><article v-for="item in preview.items" :key="item.accountId" :class="{conflict:!item.executable}"><div><strong>{{ item.accountName }}</strong><small>ID {{ item.accountId }} · 连接 {{ item.connectionStatus||'未知' }} · 授权 {{ item.authorizationStatus||'未知' }}</small></div><span>{{ item.executable?'可执行':item.conflictMessage }}</span></article></div>
-          <label v-if="!batch" class="account-batch-consent"><input v-model="confirmed" type="checkbox"><span>我已核对账号范围和动作。停用会暂停该账号的消息监听、自动回复与自动发货；续期仍需对应账号扫码。</span></label>
+          <label v-if="!batch" class="account-batch-consent"><input v-model="confirmed" type="checkbox"><span>我已核对账号范围和动作。画像同步只读取平台资料；停用会暂停消息监听、自动回复与自动发货；续期仍需对应账号扫码。</span></label>
         </template>
         <section v-if="batch" class="account-batch-result"><header><div><span>批次 {{ batch.batchId }}</span><strong>{{ batch.status }}</strong></div><small>成功 {{ batch.succeededCount }} · 失败 {{ batch.failedCount }} · 排队/执行 {{ batch.queuedCount+batch.runningCount }}</small></header><div><article v-for="item in batch.items" :key="item.id"><span>账号 {{ item.xianyuAccountId }}</span><strong>{{ statusText(item.status) }}</strong><small>{{ item.errorMessage||'' }}</small></article></div></section>
       </div>

@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.when;
@@ -122,6 +123,17 @@ class AiHandoffServiceTest {
                 .thenReturn(1L);
 
         assertTrue(service.hasPending(9L, "session-1"));
+        verify(jdbcTemplate).queryForObject(contains("blocks_auto_reply=1"), eq(Long.class), any(Object[].class));
+    }
+
+    @Test
+    void refundQuestionCreatesAMessageTaskWithoutPausingTheConversation() {
+        when(jdbcTemplate.queryForMap(contains("FROM xianyu_ai_handoff_task"), any(Object[].class)))
+                .thenReturn(new LinkedHashMap<>(Map.of("id", 31L, "accountId", 9L, "sessionId", "session-1",
+                        "status", "OPEN", "reasonCode", "REFUND_QUESTION", "openAttemptToken", "attempt-token")));
+        service.open(command("REFUND_QUESTION", null));
+        verify(jdbcTemplate, never()).update(contains("auto_reply_state='HUMAN_REQUIRED'"), any(Object[].class));
+        verify(operationLogService).log(any(XianyuOperationLog.class));
     }
 
     private AiHandoffService.OpenCommand command(String reasonCode, Double confidence) {

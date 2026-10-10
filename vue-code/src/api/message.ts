@@ -248,6 +248,7 @@ export function resolveMessageResolution(sendRequestId: string, data: MessageRes
 
 export interface AiHandoffTask {
   id: number
+  blockingScope?: 'SESSION' | 'MESSAGE'
   accountId: number
   accountName?: string
   sessionId: string

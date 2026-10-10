@@ -28,6 +28,31 @@ class AccessControlInterceptorTest {
     }
 
     @Test
+    void r03RoutesRequireGoodsMenuAndSystemWriteWithoutChangingOtherQaRoutes() throws Exception {
+        SysUser actor=user("OPERATOR");
+        when(permissionService.getPermissionCodeSet(actor)).thenReturn(Set.of(PermissionCatalog.MENU_GOODS));
+        assertTrue(interceptor.preHandle(request("GET","/api/qa/r03/evidence/QA-R03-safe",actor),new MockHttpServletResponse(),new Object()));
+        for(String route:java.util.List.of("fixtures","faults")) {
+            var denied=new MockHttpServletResponse();
+            assertFalse(interceptor.preHandle(request("POST","/api/qa/r03/"+route,actor),denied,new Object()));assertEquals(403,denied.getStatus());
+        }
+        when(permissionService.getPermissionCodeSet(actor)).thenReturn(Set.of(PermissionCatalog.MENU_GOODS,PermissionCatalog.ACTION_SYSTEM_WRITE));
+        assertTrue(interceptor.preHandle(request("POST","/api/qa/r03/fixtures",actor),new MockHttpServletResponse(),new Object()));
+        // Role and current tenant/scope are checked again by the QA service, even if route actions pass.
+        assertFalse(interceptor.preHandle(request("GET","/api/qa/r01/evidence/QA-R01-safe",actor),new MockHttpServletResponse(),new Object()));
+    }
+
+    @Test
+    void pdcaReadsRequireExistingSettingsMenuWithoutAnActionGrant() throws Exception {
+        SysUser actor=user("OPERATOR");
+        when(permissionService.getPermissionCodeSet(actor)).thenReturn(Set.of(PermissionCatalog.MENU_ACCOUNTS));
+        assertFalse(interceptor.preHandle(request("GET","/api/pdca/overview",actor),new MockHttpServletResponse(),new Object()));
+        when(permissionService.getPermissionCodeSet(actor)).thenReturn(Set.of(PermissionCatalog.MENU_SETTINGS));
+        assertTrue(interceptor.preHandle(request("GET","/api/pdca/items",actor),new MockHttpServletResponse(),new Object()));
+        // The new service independently rejects non-management and cross-tenant actors.
+    }
+
+    @Test
     void accountMatrixReadOnlyEndpointDoesNotRequireWritePermission() throws Exception {
         SysUser user = user("OPERATOR");
         when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_ACCOUNTS));
@@ -60,6 +85,24 @@ class AccessControlInterceptorTest {
 
         assertFalse(interceptor.preHandle(request, response, new Object()));
         assertEquals(403, response.getStatus());
+    }
+
+    @Test
+    void profileSnapshotAdapterEndpointRequiresSystemWritePermission() throws Exception {
+        SysUser user = user("OPERATOR");
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_ACCOUNTS, PermissionCatalog.ACTION_ACCOUNT_WRITE));
+        MockHttpServletResponse denied = new MockHttpServletResponse();
+
+        assertFalse(interceptor.preHandle(request("POST",
+                "/api/account-matrix/accounts/202/profile-snapshots", user), denied, new Object()));
+        assertEquals(403, denied.getStatus());
+
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(
+                PermissionCatalog.MENU_ACCOUNTS, PermissionCatalog.ACTION_SYSTEM_WRITE));
+        assertTrue(interceptor.preHandle(request("POST",
+                "/api/account-matrix/accounts/202/profile-snapshots", user),
+                new MockHttpServletResponse(), new Object()));
     }
 
     @Test
@@ -136,6 +179,17 @@ class AccessControlInterceptorTest {
                 PermissionCatalog.MENU_GOODS, PermissionCatalog.ACTION_GOODS_WRITE));
         assertTrue(interceptor.preHandle(request("POST", "/api/publishing/execute", user),
                 new MockHttpServletResponse(), new Object()));
+    }
+
+    @Test
+    void orderMatrixReadsMustNotFallThroughLegacyOrderWritePrefix() throws Exception {
+        SysUser user = user("OPERATOR");
+        when(permissionService.getPermissionCodeSet(user)).thenReturn(Set.of(PermissionCatalog.MENU_ORDERS));
+        assertTrue(interceptor.preHandle(request("GET", "/api/order-matrix/accounts/1/order-detail", user), new MockHttpServletResponse(), new Object()));
+        assertTrue(interceptor.preHandle(request("GET", "/api/order-matrix/orders/1", user), new MockHttpServletResponse(), new Object()));
+        assertTrue(interceptor.preHandle(request("POST", "/api/order-matrix/orders/query", user), new MockHttpServletResponse(), new Object()));
+        assertFalse(interceptor.preHandle(request("POST", "/api/order-matrix/refunds/1/handling", user), new MockHttpServletResponse(), new Object()));
+        assertFalse(interceptor.preHandle(request("POST", "/api/order/execute", user), new MockHttpServletResponse(), new Object()));
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 import com.xianyusmart.entity.XianyuGoodsOrder;
 import com.xianyusmart.event.DeliveryMessageSentEvent;
+import com.xianyusmart.mapper.XianyuChatMessageMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * 买家履约消息服务
@@ -23,6 +25,9 @@ import java.util.List;
 public class BuyerMessageService {
     @org.springframework.beans.factory.annotation.Autowired
     private com.xianyusmart.service.delivery.OrderRecipientVerifier recipientVerifier;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private XianyuChatMessageMapper chatMessages;
 
     public static final String DEFAULT_DELIVERY_MESSAGE_TEMPLATE = "{deliveryContent}";
     public static final int DEFAULT_RECEIPT_FOLLOW_UP_INTERVAL_SECONDS = 5;
@@ -142,6 +147,9 @@ public class BuyerMessageService {
         if (order == null || order.getId() == null) {
             return false;
         }
+        if (deliveryMessageProtected(orderMapper.selectById(order.getId()))) {
+            return false;
+        }
         if (orderMapper.prepareDeliveryMessage(order.getId(), message) != 1) {
             throw new IllegalStateException("发货私聊入队失败");
         }
@@ -166,6 +174,9 @@ public class BuyerMessageService {
         if (order == null || order.getId() == null || message == null || message.isBlank()) {
             return false;
         }
+        if (deliveryMessageProtected(orderMapper.selectById(order.getId()))) {
+            return false;
+        }
         if (orderMapper.holdDeliveryMessage(order.getId(), message, holdState) != 1) {
             return false;
         }
@@ -177,6 +188,7 @@ public class BuyerMessageService {
 
     public boolean activateAndSendDeliveryMessage(XianyuGoodsOrder order) {
         if (order == null || order.getId() == null
+                || deliveryMessageProtected(orderMapper.selectById(order.getId()))
                 || orderMapper.activateDeliveryMessage(order.getId()) != 1) {
             return false;
         }
@@ -200,6 +212,9 @@ public class BuyerMessageService {
         for (XianyuGoodsOrder order : orderMapper.selectCommittedHeldDeliveryMessages(100)) {
             try {
                 TenantContext.set(order.getTenantId());
+                if (deliveryMessageProtected(orderMapper.selectById(order.getId()))) {
+                    continue;
+                }
                 if (orderMapper.activateDeliveryMessage(order.getId()) == 1) {
                     order.setDeliveryMessageState(0);
                 }
@@ -221,10 +236,16 @@ public class BuyerMessageService {
         }
     }
 
+    /** Validate receipt before the caller claims its follow-up attempt; this method never sends. */
+    public void verifyReceiptFollowUp(XianyuGoodsOrder order) {
+        recipientVerifier.verifyReceiptFollowUp(order);
+    }
+
     public boolean sendReceiptFollowUp(XianyuGoodsOrder order, String messageTemplate) {
+        String recipientId = recipientVerifier.verifyReceiptFollowUp(order);
         String message = renderVariables(messageTemplate, order.getBuyerUserName(), order.getOrderId(),
                 order.getContent());
-        return sendMessage(order, message);
+        return sendVerifiedMessage(order, message, recipientId);
     }
 
     public boolean resendDeliveryMessage(Long accountId, String orderId) {
@@ -241,11 +262,15 @@ public class BuyerMessageService {
         if (!webSocketService.isConnected(accountId) && !webSocketService.ensureConnected(accountId)) {
             return false;
         }
-        return sendMessage(order, message);
+        return sendDeliveryMessage(order, message);
     }
 
     private boolean sendPreparedDeliveryMessage(XianyuGoodsOrder order) {
-        String message = order.getDeliveryMessageContent();
+        XianyuGoodsOrder persisted = orderMapper.selectById(order.getId());
+        if (deliveryMessageProtected(persisted)) {
+            return false;
+        }
+        String message = persisted.getDeliveryMessageContent();
         if (message == null || message.isBlank()) {
             return false;
         }
@@ -255,7 +280,7 @@ public class BuyerMessageService {
         }
         boolean success;
         try {
-            success = sendMessage(order, message);
+            success = sendDeliveryMessage(order, message);
         } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
             orderMapper.markMessageUncertain(order.getId(), "私聊回执未知，请核对聊天后处理");
             throw e;
@@ -277,10 +302,21 @@ public class BuyerMessageService {
 
     private boolean sendMessage(XianyuGoodsOrder order, String message) {
         String recipientId = recipientVerifier.verify(order);
+        return sendVerifiedMessage(order, message, recipientId);
+    }
+
+    private boolean sendDeliveryMessage(XianyuGoodsOrder order, String message) {
+        String recipientId = recipientVerifier.verifyDeliveryMessage(order, message);
+        return sendVerifiedMessage(order, message, recipientId);
+    }
+
+    private boolean sendVerifiedMessage(XianyuGoodsOrder order, String message, String recipientId) {
         if (recipientId == null) {
             return false;
         }
         Long accountId = order.getXianyuAccountId();
+        String conversationId = resolveVerifiedConversationId(order, recipientId);
+        if (conversationId == null) return false;
         // 私聊发送前主动恢复实时连接，避免凭证成功后消息长期停留在重试队列。
         if (!webSocketService.isConnected(accountId)
                 && (!webSocketService.ensureConnected(accountId) || !webSocketService.isConnected(accountId))) {
@@ -288,29 +324,48 @@ public class BuyerMessageService {
         }
         com.xianyusmart.service.delivery.DeliveryExecution.beforeExternal();
         boolean success = webSocketService.sendMessageWithResult(
-                accountId, recipientId, recipientId, message);
+                accountId, conversationId, recipientId, message);
         if (success) {
             sentMessageSaveService.saveAiAssistantReply(
-                    order.getXianyuAccountId(), recipientId, recipientId, message, order.getXyGoodsId());
+                    order.getXianyuAccountId(), conversationId, recipientId, message, order.getXyGoodsId());
         }
         return success;
+    }
+
+    private String resolveVerifiedConversationId(XianyuGoodsOrder requested, String verifiedBuyer) {
+        if (requested == null || requested.getId() == null || !hasText(verifiedBuyer)) return null;
+        XianyuGoodsOrder persisted = orderMapper.selectById(requested.getId());
+        Long currentTenant = TenantContext.get();
+        if (deliveryMessageProtected(persisted) || persisted.getTenantId() == null
+                || currentTenant == null || !currentTenant.equals(persisted.getTenantId())
+                || !Objects.equals(requested.getXianyuAccountId(), persisted.getXianyuAccountId())
+                || !Objects.equals(requested.getOrderId(), persisted.getOrderId())
+                || !Objects.equals(requested.getXyGoodsId(), persisted.getXyGoodsId())
+                || !verifiedBuyer.equals(persisted.getBuyerUserId())
+                || requested.getTenantId() != null && !Objects.equals(requested.getTenantId(), persisted.getTenantId())) {
+            return null;
+        }
+        List<String> sessions = chatMessages.findVerifiedBuyerInboundSessions(persisted.getTenantId(),
+                persisted.getXianyuAccountId(), persisted.getXyGoodsId(), verifiedBuyer);
+        // Neither an API-generated sid nor a buyer user ID proves membership of a conversation.
+        if (sessions == null || sessions.size() != 1) return null;
+        String session = sessions.get(0);
+        if (session == null || !session.matches("^[0-9]+@goofish$")) return null;
+        String conversationId = session.substring(0, session.length() - "@goofish".length());
+        return conversationId.equals(verifiedBuyer) ? null : conversationId;
+    }
+
+    private boolean deliveryMessageProtected(XianyuGoodsOrder order) {
+        return order == null || order.getDeliveryStatus() == null
+                || order.getRefundStatus() != null && !"NONE".equals(order.getRefundStatus())
+                || "REVIEW_REQUIRED".equals(order.getDeliveryStatus())
+                || "SKIPPED".equals(order.getDeliveryStatus()) || "UNKNOWN".equals(order.getDeliveryStatus());
     }
 
     private void deferDeliveryMessage(XianyuGoodsOrder order) {
         int attempts = order.getDeliveryMessageAttemptCount() == null ? 0 : order.getDeliveryMessageAttemptCount();
         long retrySeconds = Math.min(300L, 15L << Math.min(attempts, 4));
         orderMapper.deferDeliveryMessage(order.getId(), LocalDateTime.now().plusSeconds(retrySeconds));
-    }
-
-    private String resolveRecipientId(XianyuGoodsOrder order) {
-        String recipientId = order.getSid();
-        if (recipientId == null || recipientId.isBlank()) {
-            recipientId = order.getBuyerUserId();
-        }
-        if (recipientId == null || recipientId.isBlank()) {
-            return null;
-        }
-        return recipientId.replace("@goofish", "");
     }
 
     private String safeValue(String value) {

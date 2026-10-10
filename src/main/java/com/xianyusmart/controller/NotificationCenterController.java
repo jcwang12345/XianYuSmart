@@ -81,8 +81,13 @@ public class NotificationCenterController {
             @RequestParam(required = false) Long accountId,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Integer page,
-            @RequestParam(required = false) Integer pageSize) {
-        return ResultObject.success(notificationInboxService.list(view, accountId, search, page, pageSize));
+            @RequestParam(required = false) Integer pageSize,
+            @RequestParam(required = false) String severity,
+            @RequestParam(required = false) String eventType,
+            @RequestParam(required = false) String handlingStatus,
+            @RequestParam(required = false) String deliveryStatus) {
+        return ResultObject.success(notificationInboxService.list(view, accountId, search, page, pageSize,
+                severity,eventType,handlingStatus,deliveryStatus));
     }
 
     @PostMapping("/inbox/{id}/read")

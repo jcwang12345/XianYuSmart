@@ -12,6 +12,8 @@ public class GrowthWorkflowScheduler {
 
     @Value("${app.growth-workflow.dispatch-enabled:true}")
     private boolean dispatchEnabled;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
 
     public GrowthWorkflowScheduler(GrowthWorkflowService workflowService) {
         this.workflowService = workflowService;
@@ -20,6 +22,6 @@ public class GrowthWorkflowScheduler {
     @Scheduled(fixedDelayString = "${app.growth-workflow.dispatch-delay-ms:1500}",
             initialDelayString = "${app.growth-workflow.initial-delay-ms:20000}")
     public void dispatch() {
-        if (dispatchEnabled) workflowService.processPendingRuns(20);
+        if (backgroundPlatformActivityPolicy.enabled() && dispatchEnabled) workflowService.processPendingRuns(20);
     }
 }

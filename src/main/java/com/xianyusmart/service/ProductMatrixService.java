@@ -8,6 +8,8 @@ import com.xianyusmart.context.UserContext;
 import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
+import com.xianyusmart.mapper.SysUserMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -111,6 +113,7 @@ public class ProductMatrixService {
             Map.entry("SYSTEM", "系统任务"),
             Map.entry("QA_MOCK", "隔离测试"),
             Map.entry("QA_FIXTURE", "隔离测试数据"),
+            Map.entry("QA_WEBHOOK", "隔离 QA 商品观察"),
             Map.entry("MULTIPLE", "多个数据源"),
             Map.entry("UNSYNCED", "尚未同步"));
     private static final Map<String, String> PRODUCT_ORIGIN_LABELS = Map.ofEntries(
@@ -128,6 +131,14 @@ public class ProductMatrixService {
     private final ObjectMapper objectMapper;
     private final ProductBatchQaMockService productBatchQaMockService;
     private final PlatformWritePolicy platformWritePolicy;
+    private ProductEventSafety eventSafety;
+    private SysUserMapper snapshotUsers;
+    private PlatformPermissionService snapshotPermissions;
+
+    @Autowired
+    public void configureSnapshotSecurity(ProductEventSafety safety,SysUserMapper users,PlatformPermissionService permissions) {
+        this.eventSafety=safety;this.snapshotUsers=users;this.snapshotPermissions=permissions;
+    }
 
     public ProductMatrixService(JdbcTemplate jdbcTemplate,
                                 NamedParameterJdbcTemplate namedJdbc,
@@ -143,6 +154,7 @@ public class ProductMatrixService {
         this.objectMapper = objectMapper;
         this.productBatchQaMockService = productBatchQaMockService;
         this.platformWritePolicy = platformWritePolicy;
+        this.eventSafety = new ProductEventSafety(objectMapper);
     }
 
     public Map<String, Object> list(ProductFilter filter) {
@@ -348,15 +360,27 @@ public class ProductMatrixService {
 
     public Map<String, Object> rawSnapshotMetadata(Long accountId, String goodsId, Long eventId) {
         requireProductAccess(accountId, goodsId);
+        ProductEventService.requireManager(snapshotUsers,snapshotPermissions,accountAccessService,accountId,PermissionCatalog.ACTION_AUDIT_EXPORT);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT id,raw_snapshot_hash,data_source,created_time FROM xianyu_goods_event
+                SELECT id,raw_snapshot_hash,data_source,created_time,before_json,after_json,field_diff_json FROM xianyu_goods_event
                  WHERE tenant_id=? AND xianyu_account_id=? AND xy_goods_id=? AND id=?
                 """, requireTenant(), accountId, goodsId, eventId);
         if (rows.isEmpty()) throw new BusinessException(404, "事件不存在");
         Map<String, Object> result = new LinkedHashMap<>(rows.getFirst());
-        result.put("storageStatus", "HASH_ONLY");
+        result.put("data_source",eventSafety.safeText(string(result.get("data_source"))));
+        if(result.get("raw_snapshot_hash")!=null&&!String.valueOf(result.get("raw_snapshot_hash")).matches("[0-9a-fA-F]{64}"))result.put("raw_snapshot_hash",null);
+        String beforeJson=string(result.remove("before_json")),afterJson=string(result.remove("after_json")),diffJson=string(result.remove("field_diff_json"));
+        var content=eventSafety.safeContent(readJson(beforeJson),readJson(afterJson),readJson(diffJson));
+        boolean hasContent=eventSafety.hasContent(content),qa="QA_WEBHOOK".equals(result.get("data_source"));
+        boolean recordedContent=!beforeJson.isBlank()||!afterJson.isBlank()||!diffJson.isBlank();
+        result.put("safeContent",content);
+        result.put("storageStatus",hasContent?"SANITIZED_STRUCTURED":!recordedContent&&result.get("raw_snapshot_hash")!=null?"HASH_ONLY":"CONTENT_OMITTED");
+        result.put("source",result.get("data_source"));
+        result.put("snapshotHashBasis",qa?"SANITIZED_CONTENT":"LEGACY_UNSPECIFIED");
+        result.put("safeContentHash",hasContent?eventSafety.hash(content):null);
+        if(qa)result.put("platformVerified",false);
         result.put("redacted", true);
-        result.put("message", "系统只保留脱敏摘要，不保存 Cookie、令牌或完整敏感快照");
+        result.put("message",hasContent?"仅返回允许字段的安全内容，不保存完整敏感快照":"没有可返回的安全内容；哈希元数据不能代替正文");
         return result;
     }
 
@@ -1394,28 +1418,31 @@ public class ProductMatrixService {
         event.put("outcomeState", rs.getString("outcome_state"));
         event.put("dataSource", rs.getString("data_source"));
         event.put("operatorUserId", nullableLong(rs, "operator_user_id"));
-        event.put("operatorUsername", rs.getString("operator_username"));
-        event.put("requestId", rs.getString("request_id"));
-        event.put("idempotencyKey", rs.getString("idempotency_key"));
+        event.put("operatorUsername", eventSafety.safeText(rs.getString("operator_username")));
+        event.put("requestId", eventSafety.safeText(rs.getString("request_id")));
+        event.put("idempotencyKey", eventSafety.safeText(rs.getString("idempotency_key")));
         event.put("jobId", nullableLong(rs, "batch_job_id"));
         event.put("taskItemId", nullableLong(rs, "batch_item_id"));
-        event.put("platformRequestId", rs.getString("platform_request_id"));
-        event.put("before", readJson(rs.getString("before_json")));
-        event.put("after", readJson(rs.getString("after_json")));
-        event.put("fieldDiff", readJson(rs.getString("field_diff_json")));
+        event.put("platformRequestId", eventSafety.safeText(rs.getString("platform_request_id")));
+        var content=eventSafety.safeContent(readJson(rs.getString("before_json")),readJson(rs.getString("after_json")),readJson(rs.getString("field_diff_json")));
+        // Ordinary timeline readers get the safe business diff. Full safe content uses the managed snapshot route.
+        event.put("fieldDiff",content.get("fieldDiff"));
+        boolean recordedContent=rs.getString("before_json")!=null||rs.getString("after_json")!=null||rs.getString("field_diff_json")!=null;
+        event.put("snapshotStorageStatus",eventSafety.hasContent(content)?"SANITIZED_STRUCTURED":!recordedContent&&rs.getString("raw_snapshot_hash")!=null?"HASH_ONLY":"CONTENT_OMITTED");
+        if("QA_WEBHOOK".equals(rs.getString("data_source")))event.put("platformVerified",false);
         event.put("rawSnapshotHash", rs.getString("raw_snapshot_hash"));
         event.put("platformResponseCode", rs.getString("platform_response_code"));
-        event.put("errorMessage", rs.getString("error_message"));
+        event.put("errorMessage", eventSafety.safeText(rs.getString("error_message")));
         event.put("createdTime", instant(rs, "created_time"));
         event.put("presentation", eventPresentation(
                 rs.getString("event_type"), rs.getString("outcome_state"), rs.getString("data_source"),
-                rs.getString("event_origin"), rs.getString("error_message")));
+                rs.getString("event_origin"), eventSafety.safeText(rs.getString("error_message"))));
         return event;
     }
 
     static Map<String, Object> eventPresentation(String eventType, String outcomeState, String dataSource,
                                                  String eventOrigin, String errorMessage) {
-        String title = PRODUCT_EVENT_LABELS.getOrDefault(eventType, "其他商品事件");
+        String title = "QA_PRODUCT_OBSERVED".equals(eventType)?"隔离 QA 商品观察":PRODUCT_EVENT_LABELS.getOrDefault(eventType, "其他商品事件");
         String outcomeLabel = PRODUCT_OUTCOME_LABELS.getOrDefault(outcomeState, "状态待核对");
         String sourceLabel = PRODUCT_SOURCE_LABELS.getOrDefault(dataSource, "其他来源");
         String originLabel = PRODUCT_ORIGIN_LABELS.getOrDefault(eventOrigin, "来源待核对");
@@ -1807,6 +1834,7 @@ public class ProductMatrixService {
         if (!"SYNC".equals(operation) && !"SUCCEEDED".equals(syncStatus)) return "商品数据不是最新平台真值，请先同步";
         if ("LOCAL_DRAFT".equals(source) && !"SYNC".equals(operation)) return "本地草稿尚无平台商品，不能执行平台操作";
         if ("ON_SALE".equals(operation) && Integer.valueOf(0).equals(status)) return "商品已经在售";
+        if ("ON_SALE".equals(operation)) return "当前网页商品页未提供可验证的卖家上架入口；请在闲鱼官方 App 上架后同步，系统不会创建必失败任务";
         if ("OFF_SHELF".equals(operation) && status != null && Set.of(1, -1, -98).contains(status)) return "商品已经下架或删除";
         if ("DELETE".equals(operation) && Integer.valueOf(-1).equals(status)) return "商品已经删除";
         if ("CHANGE_PRICE".equals(operation)) {

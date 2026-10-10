@@ -131,8 +131,20 @@ public interface XianyuGoodsAutoReplyRecordMapper {
             "WHERE xianyu_account_id = #{accountId} AND s_id = #{sId} AND state = 0")
     int cancelPendingBySession(@Param("accountId") Long accountId, @Param("sId") String sId);
 
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state = -2, lease_owner = NULL, lease_expire_time = NULL " +
+            "WHERE xianyu_account_id = #{accountId} AND s_id = #{sId} AND state = 0 AND id <> #{keepId}")
+    int cancelPendingBySessionExcept(@Param("accountId") Long accountId, @Param("sId") String sId,
+                                    @Param("keepId") Long keepId);
+
     @Update("UPDATE xianyu_goods_auto_reply_record SET state = -2, lease_owner = NULL, lease_expire_time = NULL WHERE id = #{id} AND state IN (0, 2)")
     int cancelById(@Param("id") Long id);
+
+    @Update("UPDATE xianyu_goods_auto_reply_record SET state=-2,decision_state='HUMAN_REQUIRED'," +
+            "handoff_reason_code='ACTIVE_HANDOFF',last_error_code='ACTIVE_HANDOFF'," +
+            "last_error_message='该会话有未处理的转人工任务，自动回复已暂停'," +
+            "lease_owner=NULL,lease_expire_time=NULL,next_retry_time=NULL " +
+            "WHERE id=#{id} AND state IN (0,2) AND external_attempt_started=0")
+    int pauseForActiveHandoff(@Param("id") Long id);
 
     @Select("SELECT COUNT(*) FROM xianyu_goods_auto_reply_record WHERE state IN (0, 2)")
     int countPending();

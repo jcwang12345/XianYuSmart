@@ -101,7 +101,12 @@ public class WebSocketInitializer {
     public WebSocketSyncCursor sendSyncStatusMessage(XianyuWebSocketClient client, String accountId,
                                                      WebSocketSyncCursor cursor) {
         try {
-            WebSocketSyncCursor effectiveCursor = cursor == null ? WebSocketSyncCursor.initial() : cursor;
+            long nowMillis = System.currentTimeMillis();
+            WebSocketSyncCursor effectiveCursor = WebSocketSyncCursor.forRealtime(cursor, nowMillis);
+            if (cursor != null && effectiveCursor != cursor) {
+                log.warn("{}持久化同步游标已过期或异常（ageHours={}），从当前时间恢复实时订阅；历史缺口未视为已补齐",
+                        logPrefix(accountId), (nowMillis - cursor.timestamp()) / 3_600_000);
+            }
             
             Map<String, Object> message = new HashMap<>();
             message.put("lwp", "/r/SyncStatus/ackDiff");

@@ -12,7 +12,6 @@ import com.xianyusmart.controller.dto.MsgListRespDTO;
 import com.xianyusmart.service.ChatMessageService;
 import com.xianyusmart.service.PlatformHistoryMessageParser;
 import com.xianyusmart.service.ConversationAssignmentService;
-import com.xianyusmart.service.ConversationAssignmentService;
 import com.xianyusmart.service.WebSocketService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -192,24 +191,58 @@ public class ChatMessageServiceImpl implements ChatMessageService {
         int maxMessages = reqDTO.getMaxMessages() == null ? 500
                 : Math.max(20, Math.min(reqDTO.getMaxMessages(), 500));
         try {
-            List<java.util.Map<String, Object>> history = webSocketService.listConversationHistory(
+            WebSocketService.HistoryResult result = webSocketService.listConversationHistoryResult(
                     reqDTO.getXianyuAccountId(), reqDTO.getSid(), maxMessages);
+            List<java.util.Map<String,Object>> history=result.messages();
             List<XianyuChatMessage> messages = new PlatformHistoryMessageParser(objectMapper).parse(
                     reqDTO.getXianyuAccountId(), reqDTO.getSid(), history);
             int saved = 0;
-            for (XianyuChatMessage message : messages) {
+            boolean complete=result.complete();
+            for (int index=0;index<messages.size();index++) {
+                XianyuChatMessage message=messages.get(index);
+                Long eventTime=historyEventTime(history.get(index));
+                message.setMessageTime(eventTime);
+                if(eventTime==null&&!hasOriginalHistoryId(history.get(index))) {
+                    String canonical=objectMapper.writer().with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS).writeValueAsString(history.get(index));
+                    String stable=reqDTO.getXianyuAccountId()+"|"+message.getSId()+"|"+canonical;
+                    message.setPnmId("history-"+java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(stable.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+                }
+                if(eventTime==null||message.getSenderUserId()==null||message.getSenderUserId().isBlank())complete=false;
                 chatMessageMapper.insert(message);
                 saved++;
             }
             conversationAssignmentService.markHistorySync(
-                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), history.size(), maxMessages, null);
+                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), history.size(), maxMessages, complete, null);
             return ResultObject.success(java.util.Map.of(
                     "received", history.size(), "saved", saved,
-                    "coverageStatus", history.size() < maxMessages ? "FULL" : "PARTIAL"));
+                    "coverageStatus", complete ? "FULL" : "PARTIAL",
+                    "stopReason",result.complete()&&!complete?"INVALID_MESSAGE":result.stopReason()));
         } catch (Exception e) {
             conversationAssignmentService.markHistorySync(
-                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), 0, maxMessages, e.getMessage());
-            throw new IllegalStateException("平台历史消息同步失败: " + e.getMessage(), e);
+                    reqDTO.getXianyuAccountId(), reqDTO.getSid(), 0, maxMessages, false, "HISTORY_SYNC_FAILED");
+            throw new IllegalStateException("平台历史消息同步失败", e);
         }
+    }
+
+    /** Validate original event time; the legacy parser's import-time fallback is not a measurement. */
+    private boolean hasOriginalHistoryId(java.util.Map<String,Object> model) {
+        java.util.Map<?,?> message=model.get("message") instanceof java.util.Map<?,?> nested&&!nested.isEmpty()?nested:model;
+        for(java.util.Map<?,?> candidate:List.of(message,model))for(String key:List.of("messageId","id","mid","uuid")) {
+            Object value=candidate.get(key);if(value!=null&&!String.valueOf(value).isBlank())return true;
+        }
+        return false;
+    }
+
+    private Long historyEventTime(java.util.Map<String,Object> model) {
+        java.util.Map<?,?> message=model.get("message") instanceof java.util.Map<?,?> nested&&!nested.isEmpty()?nested:model;
+        for(String key:List.of("createdAt","createTime","sendTime","messageTime","timestamp")) {
+            for(java.util.Map<?,?> candidate:List.of(message,model)) {
+                Object raw=candidate.get(key);if(raw==null)continue;
+                try {long value=Long.parseLong(String.valueOf(raw));if(value>0&&value<100000000000L)value=Math.multiplyExact(value,1000);
+                    if(value>=946684800000L&&value<=System.currentTimeMillis()+60000)return value;
+                } catch(RuntimeException invalid) { /* Try another original timestamp field. */ }
+            }
+        }
+        return null;
     }
 }

@@ -12,6 +12,13 @@ public class ItemListRespDTO {
      * 是否成功
      */
     private Boolean success;
+    /** Validated ON_SALE response structure, independent of list/detail completion. */
+    private Boolean structureValidated = false;
+    private String scope = "ON_SALE";
+    private Boolean terminalPage = false;
+    private String terminationEvidence = "NOT_PROVIDED";
+    private Long reportedTotal;
+    private String errorCode;
     
     /**
      * 页码

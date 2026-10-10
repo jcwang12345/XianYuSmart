@@ -1,6 +1,6 @@
 import { ref, reactive } from 'vue'
-import { getAccountList, deleteAccount as deleteAccountApi } from '@/api/account'
-import { showSuccess, showError } from '@/utils'
+import { getAccountList } from '@/api/account'
+import { showError } from '@/utils'
 import type { Account } from '@/types'
 
 export function useAccountManager() {
@@ -67,27 +67,6 @@ export function useAccountManager() {
     dialogs.deleteConfirm = true;
   };
 
-  // 确认删除账号
-  const confirmDelete = async () => {
-    if (!deleteAccountId.value) return;
-    
-    try {
-      const response = await deleteAccountApi({ id: deleteAccountId.value });
-      if (response.code === 0 || response.code === 200) {
-        showSuccess('账号删除成功');
-        dialogs.deleteConfirm = false;
-        await loadAccounts();
-      } else {
-        throw new Error(response.msg || '删除失败');
-      }
-    } catch (error: any) {
-      // 只有在错误消息未显示过时才弹出提示（避免重复显示）
-      if (!error.messageShown) {
-        showError('删除失败: ' + error.message);
-      }
-    }
-  };
-
   return {
     loading,
     accounts,
@@ -99,7 +78,6 @@ export function useAccountManager() {
     showManualAddDialog,
     showQRLoginDialog,
     editAccount,
-    deleteAccount,
-    confirmDelete
+    deleteAccount
   }
 }

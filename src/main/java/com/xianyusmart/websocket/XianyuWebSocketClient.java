@@ -681,6 +681,10 @@ public class XianyuWebSocketClient extends WebSocketClient {
      * 按XianYuApis协议分页读取指定会话历史消息
      */
     public java.util.List<Map<String, Object>> listConversationHistory(String cid, int maxMessages) {
+        return listConversationHistoryResult(cid,maxMessages).messages();
+    }
+
+    public com.xianyusmart.service.WebSocketService.HistoryResult listConversationHistoryResult(String cid, int maxMessages) {
         if (!isConnected()) {
             throw new IllegalStateException("账号实时连接未建立，请先恢复连接");
         }
@@ -691,34 +695,36 @@ public class XianyuWebSocketClient extends WebSocketClient {
         int safeMaximum = Math.max(20, Math.min(maxMessages, 500));
         long cursor = 9007199254740991L;
         java.util.List<Map<String, Object>> messages = new java.util.ArrayList<>();
-        boolean hasMore = true;
-        while (hasMore && messages.size() < safeMaximum) {
+        java.util.Set<Long> cursors=new java.util.HashSet<>();
+        cursors.add(cursor);
+        for(int page=0;page<25;page++) {
             Map<String, Object> response = requestConversationHistoryPage(cleanCid, cursor);
             Map<String, Object> body = map(response.get("body"));
             Object modelsValue = body.get("userMessageModels");
-            if (modelsValue instanceof java.util.List<?> models) {
-                for (Object model : models) {
-                    if (model instanceof Map<?, ?> source) {
-                        Map<String, Object> normalized = new HashMap<>();
-                        source.forEach((key, value) -> normalized.put(String.valueOf(key), value));
-                        messages.add(normalized);
-                        if (messages.size() >= safeMaximum) {
-                            break;
-                        }
-                    }
-                }
+            if(!(modelsValue instanceof java.util.List<?> models))return historyResult(messages,false,"INVALID_PAGE");
+            boolean malformed=false;
+            for(Object model:models) {
+                if(!(model instanceof Map<?,?> source)||source.isEmpty()){malformed=true;continue;}
+                Map<String,Object> normalized=new HashMap<>();
+                source.forEach((key,value)->normalized.put(String.valueOf(key),value));
+                messages.add(normalized);
+                if(messages.size()>=safeMaximum)return historyResult(messages,false,"MESSAGE_LIMIT");
             }
+            if(malformed)return historyResult(messages,false,"INVALID_PAGE");
             Object hasMoreValue = body.get("hasMore");
-            hasMore = Boolean.TRUE.equals(hasMoreValue)
-                    || "1".equals(String.valueOf(hasMoreValue))
-                    || "true".equalsIgnoreCase(String.valueOf(hasMoreValue));
+            boolean hasMore=Boolean.TRUE.equals(hasMoreValue)||"1".equals(String.valueOf(hasMoreValue))||"true".equalsIgnoreCase(String.valueOf(hasMoreValue));
+            boolean terminal=Boolean.FALSE.equals(hasMoreValue)||"0".equals(String.valueOf(hasMoreValue))||"false".equalsIgnoreCase(String.valueOf(hasMoreValue));
+            if(terminal)return historyResult(messages,true,"TERMINAL");
+            if(!hasMore)return historyResult(messages,false,"UNKNOWN_TERMINAL");
             Long nextCursor = longValue(body.get("nextCursor"));
-            if (!hasMore || nextCursor == null || nextCursor == cursor) {
-                break;
-            }
+            if(nextCursor==null||nextCursor<=0||!cursors.add(nextCursor))return historyResult(messages,false,"INVALID_CURSOR");
             cursor = nextCursor;
         }
-        return messages;
+        return historyResult(messages,false,"PAGE_LIMIT");
+    }
+
+    private com.xianyusmart.service.WebSocketService.HistoryResult historyResult(java.util.List<Map<String,Object>> messages,boolean complete,String reason){
+        return new com.xianyusmart.service.WebSocketService.HistoryResult(messages,complete,reason);
     }
 
     private Map<String, Object> requestConversationHistoryPage(String cid, long cursor) {

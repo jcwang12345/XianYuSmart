@@ -33,6 +33,29 @@ public class GoodsSkuReadinessService {
     @Autowired
     private GoodsSkuService goodsSkuService;
 
+    @Autowired
+    private com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper deliveryConfigMapper;
+    @Autowired
+    private FixedDeliveryTemplateService fixedDeliveryTemplateService;
+
+    @Autowired
+    private UniformCardDeliveryPolicyService uniformCardDeliveryPolicyService;
+
+    public boolean permitsUniformCard(Long accountId, String goodsId,
+            com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig config) {
+        return uniformCardDeliveryPolicyService != null
+                && uniformCardDeliveryPolicyService.permits(accountId, goodsId, config);
+    }
+
+    public boolean permitsLimitedFixedTemplate(Long accountId, String goodsId, Readiness readiness,
+            com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig config) {
+        return Integer.valueOf(0).equals(readiness.declaredCount()) && readiness.verifiedCount() == 0
+                && config != null && (config.getSkuId() == null || config.getSkuId().isBlank())
+                && Integer.valueOf(1).equals(config.getDeliveryMode()) && config.getFixedTemplateId() != null
+                && deliveryConfigMapper.countSkuSpecificByAccountAndGoodsId(accountId, goodsId) == 0
+                && fixedDeliveryTemplateService.findOwnedTemplate(accountId, config.getFixedTemplateId()) != null;
+    }
+
     public Readiness inspect(Long accountId, String goodsId) {
         LambdaQueryWrapper<XianyuGoodsInfo> query = new LambdaQueryWrapper<>();
         query.eq(XianyuGoodsInfo::getXianyuAccountId, accountId)
@@ -46,22 +69,24 @@ public class GoodsSkuReadinessService {
         int verified = goodsSkuService.countByXyGoodsId(goodsId, accountId);
         if (declared == null) {
             return new Readiness(null, verified, Status.UNSYNCED,
-                    "商品主档没有 SKU 数量证据，请重新同步商品详情");
+                    "商品规格/版本/套餐信息未确认；可先保存配置，开启前需完成商品详情验证");
         }
         if (declared > 0 && declared == verified) {
             return new Readiness(declared, verified, Status.FULL,
-                    "主档声明数量与已同步 SKU 子项一致");
+                    "商品规格数量与已同步版本/套餐一致");
         }
         if (declared == 0 && verified == 0 && "FULL".equalsIgnoreCase(goods.getCoverageStatus())) {
             return new Readiness(0, 0, Status.EMPTY_VERIFIED,
-                    "平台完整快照确认商品没有可拆分 SKU");
+                    "完整可信快照确认这是无规格商品");
         }
         if (declared > 0 && verified == 0) {
             return new Readiness(declared, 0, Status.UNSYNCED,
-                    "主档声明 " + declared + " 个 SKU，但子项尚未同步");
+                    "商品声明 " + declared + " 个规格，已验证 0 个；可先保存配置，开启前需完成验证");
         }
         return new Readiness(declared, verified, Status.PARTIAL,
-                "主档声明 " + declared + " 个 SKU，已验证 " + verified + " 个");
+                declared == 0 && verified == 0
+                        ? "商品规格/版本/套餐信息未确认；0/0不代表无规格，可先保存配置，开启前需完成验证"
+                        : "商品声明 " + declared + " 个规格，已验证 " + verified + " 个；开启前需完成验证");
     }
 
     public Readiness requireComplete(Long accountId, String goodsId) {
@@ -87,6 +112,16 @@ public class GoodsSkuReadinessService {
         if (sku == null) {
             throw new IllegalArgumentException("商品规格不存在、已过期或不属于当前账号商品");
         }
+        return sku;
+    }
+
+    /** Validate a draft mapping without treating incomplete data as execution readiness. */
+    public XianyuGoodsSku requireConfigSelection(Long accountId, String goodsId, String skuId) {
+        Readiness readiness = inspect(accountId, goodsId);
+        if (readiness.complete()) return requireValidSelection(accountId, goodsId, skuId);
+        if (skuId == null || skuId.isBlank()) return null;
+        XianyuGoodsSku sku = goodsSkuService.findByXyGoodsIdAndSkuId(goodsId, accountId, skuId.trim());
+        if (sku == null) throw new IllegalArgumentException("商品规格不存在、已过期或不属于当前账号商品");
         return sku;
     }
 }

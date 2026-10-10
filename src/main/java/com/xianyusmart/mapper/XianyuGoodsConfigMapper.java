@@ -17,6 +17,10 @@ public interface XianyuGoodsConfigMapper {
 
     @Select("SELECT * FROM xianyu_goods_config WHERE xianyu_account_id = #{accountId}")
     java.util.List<XianyuGoodsConfig> selectByAccountId(@Param("accountId") Long accountId);
+
+    @Select("SELECT COUNT(*) FROM xianyu_goods_config " +
+            "WHERE xianyu_account_id = #{accountId} AND xianyu_auto_delivery_on = 1")
+    int countAutoDeliveryEnabledByAccountId(@Param("accountId") Long accountId);
     
     /**
      * 插入配置

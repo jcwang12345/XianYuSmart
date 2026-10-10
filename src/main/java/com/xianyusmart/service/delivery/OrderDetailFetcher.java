@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,7 +58,11 @@ public class OrderDetailFetcher {
      * @param orderId   订单ID
      * @return 订单详情，null表示获取失败
      */
+    @Autowired
+    private com.xianyusmart.service.R01QaPlatformService r01Qa;
+
     public OrderDetailInfo fetch(Long accountId, String xyGoodsId, String orderId) {
+        if (r01Qa != null && r01Qa.handles(accountId, orderId)) return r01Qa.detail(accountId, orderId);
         if (orderId == null || orderId.isEmpty()) {
             return null;
         }
@@ -128,6 +133,8 @@ public class OrderDetailFetcher {
         if (merchantCommonData instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> commonData = (Map<String, Object>) merchantCommonData;
+            // Ordinary sellers return the official product identity here, not necessarily in merchantItemVO.
+            info.goodsId = stringValue(commonData.get("itemId"));
             Object createTime = commonData.get("createTime");
             if (createTime instanceof String) info.orderCreateTime = (String) createTime;
             Object paySuccessTime = commonData.get("paySuccessTime");
@@ -142,7 +149,11 @@ public class OrderDetailFetcher {
         if (merchantItemVO instanceof Map) {
             @SuppressWarnings("unchecked")
             Map<String, Object> merchantItem = (Map<String, Object>) merchantItemVO;
-            info.goodsId = stringValue(merchantItem.get("itemId"));
+            String itemGoodsId = stringValue(merchantItem.get("itemId"));
+            if (info.goodsId != null && itemGoodsId != null && !info.goodsId.equals(itemGoodsId)) {
+                throw new IllegalStateException("平台订单详情的商品身份冲突，停止核验");
+            }
+            if (info.goodsId == null) info.goodsId = itemGoodsId;
             info.skuId = stringValue(merchantItem.get("skuId"));
             info.skuName = stringValue(merchantItem.get("skuText"));
             Object title = merchantItem.get("title");
@@ -157,16 +168,26 @@ public class OrderDetailFetcher {
             Map<String, Object> priceVO = (Map<String, Object>) merchantPriceVO;
             Object totalPrice = priceVO.get("totalPrice");
             if (totalPrice instanceof String) info.totalPrice = (String) totalPrice;
-            Object buyNum = priceVO.get("buyNum");
-            if (buyNum instanceof String) {
-                try {
-                    info.buyNum = Integer.parseInt((String) buyNum);
-                } catch (NumberFormatException e) {
-                    info.buyNum = 1;
-                }
-            } else if (buyNum instanceof Number) {
-                info.buyNum = ((Number) buyNum).intValue();
+            info.buyNum = parsePositiveQuantity(priceVO.get("buyNum"));
+        }
+    }
+
+    static Integer parsePositiveQuantity(Object value) {
+        try {
+            int quantity;
+            if (value instanceof String text) {
+                // Do not reinterpret a decimal, exponent, sign, or whitespace as a purchase count.
+                if (!text.matches("[0-9]+")) return null;
+                quantity = Integer.parseInt(text);
+            } else if (value instanceof Number number) {
+                // intValue() silently truncates fractions and overflowing platform values.
+                quantity = new BigDecimal(number.toString()).intValueExact();
+            } else {
+                return null;
             }
+            return quantity > 0 ? quantity : null;
+        } catch (ArithmeticException | NumberFormatException ex) {
+            return null;
         }
     }
 
@@ -239,7 +260,7 @@ public class OrderDetailFetcher {
         return switch (text) {
             case "待付款", "WAIT_BUYER_PAY" -> "UNPAID";
             case "待发货", "WAIT_SELLER_SEND_GOODS" -> "PAID";
-            case "待收货", "卖家已发货", "WAIT_BUYER_CONFIRM_GOODS" -> "SHIPPED";
+            case "待收货", "已发货", "卖家已发货", "WAIT_BUYER_CONFIRM_GOODS" -> "SHIPPED";
             case "交易成功", "已完成", "已收货", "TRADE_FINISHED" -> "COMPLETED";
             case "退款中", "退款申请中" -> "REFUNDING";
             case "退款成功", "已退款" -> "REFUNDED";

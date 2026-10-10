@@ -38,6 +38,11 @@ public class XianyuGoodsAutoDeliveryConfig {
      */
     private Integer deliveryMode;
 
+    /** Captured execution requirement, never persisted or presented as a platform SKU. */
+    @TableField(exist = false)
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private boolean uniformCardDeliveryRequired;
+
     private Long fixedTemplateId;
 
     private String skuId;

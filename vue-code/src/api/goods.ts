@@ -1,4 +1,5 @@
 import { request } from '@/utils/request';
+import { newRequestId } from '@/api/matrix';
 import type { ApiResponse } from '@/types';
 
 // 商品信息
@@ -104,13 +105,26 @@ export function getGoodsList(data: {
   });
 }
 
-// 刷新商品数据
-export function refreshGoods(xianyuAccountId: number) {
-  return request<RefreshItemsResponse>({
-    url: '/items/refresh',
-    method: 'POST',
-    data: { xianyuAccountId }
-  });
+export interface ProductSyncTask {
+  taskId: number | string; accountId: number | string; requestId: string; replayed: boolean
+  scope: 'ON_SALE'; unsupportedScopes: string[]; platformCapability: 'DEGRADED_PLATFORM'
+  status: 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'INTERRUPTED'; stage: string; coverage: string
+  pages_requested: number; pages_completed: number; discovered_count: number; saved_count: number
+  save_failed_count: number; detail_success_count: number; detail_failed_count: number
+  last_error_code?: string; last_error_message?: string; recovery_hint?: string
+  started_time?: string; updated_time?: string; completed_time?: string
+}
+export function refreshGoods(xianyuAccountId: number, requestId = newRequestId('store-sync')) {
+  return request<ProductSyncTask>({ url: '/items/refresh', method: 'POST', data: { xianyuAccountId, requestId, scope: 'ON_SALE', pageSize: 20, maxPages: 100 } })
+}
+export function getProductSyncTasks(accountId: number) {
+  return request<ProductSyncTask[]>({ url: '/items/sync-tasks', method: 'GET', params: { accountId } })
+}
+export function getProductSyncTask(taskId: number | string) {
+  return request<ProductSyncTask>({ url: `/items/sync-tasks/${taskId}`, method: 'GET' })
+}
+export function interruptProductSyncTask(taskId: number | string) {
+  return request<ProductSyncTask>({ url: `/items/sync-tasks/${taskId}/interrupt`, method: 'POST', data: {} })
 }
 
 // 获取商品详情
@@ -305,4 +319,20 @@ export function checkSyncing(accountId: number) {
     url: `/items/syncing/${accountId}`,
     method: 'GET'
   });
+}
+
+// No platform request: inspect only a previously captured, current-owner entry.
+export interface ItemVerificationEntry {
+  available: boolean;
+  entryHandle: string | null;
+  expiresAt: number | null;
+  officialHost: string | null;
+  safeStaticPath: string | null;
+  reason: string | null;
+}
+export function getItemVerificationEntry(data: { xianyuAccountId: number; xyGoodsId: string }) {
+  return request<ItemVerificationEntry>({ url: '/items/verification-entry', method: 'POST', data, silent: true });
+}
+export function consumeItemVerificationEntry(data: { xianyuAccountId: number; xyGoodsId: string; entryHandle: string }) {
+  return request<{ url: string }>({ url: '/items/verification-entry/consume', method: 'POST', data, silent: true });
 }

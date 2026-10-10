@@ -15,6 +15,8 @@ public class MerchantOperationsScheduler {
 
     private final MerchantOperationsService operationsService;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
 
     public MerchantOperationsScheduler(MerchantOperationsService operationsService) {
         this.operationsService = operationsService;
@@ -22,6 +24,7 @@ public class MerchantOperationsScheduler {
 
     @Scheduled(fixedDelayString = "${app.operations.dispatch-delay-ms:60000}", initialDelayString = "${app.automation.initial-delay-ms:60000}")
     public void dispatch() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         if (!running.compareAndSet(false, true)) {
             return;
         }

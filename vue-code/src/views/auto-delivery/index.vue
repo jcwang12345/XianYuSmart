@@ -28,6 +28,10 @@ const goodsPanelCollapsed = ref(true)
 const isDesktopCollapsed = computed(() => !isMobile.value && goodsPanelCollapsed.value)
 
 const {
+  verificationEntry,
+  verificationOpening,
+  verificationMessage,
+  openOfficialVerification,
   saving,
   accounts,
   selectedAccountId,
@@ -36,6 +40,7 @@ const {
   currentConfig,
   configForm,
   skuList,
+  savedReadinessMessage,
   selectedSkuId,
   skuConfigs,
   skuLoading,
@@ -381,6 +386,16 @@ onMounted(() => {
             </div>
           </div>
 
+          <div v-if="verificationEntry || verificationMessage" class="ad__sku-state" role="status" aria-live="polite">
+            <span>平台可能要求本次详情请求验证，未证明整个账号登录失效。详情验证尚未完成，入口仅供当前租户账号拥有者手工使用。</span>
+            <span v-if="skuConfigurationComplete">通用固定模板的有限资格仍有效，仅已核实付款且订单无规格证据时适用；当前订单未核实前保持发货关闭。卡密及其他规格配置仍需验证。</span>
+            <span v-else>当前配置尚未满足开启资格，请保持发货关闭，完成验证或绑定合法通用固定模板后再核对。</span>
+            <button v-if="verificationEntry?.available" type="button" :disabled="verificationOpening" @click="openOfficialVerification">
+              {{ verificationOpening ? '正在获取官方入口…' : '打开官方验证（手工完成）' }}
+            </button>
+            <span>{{ verificationMessage || verificationEntry?.reason }}</span>
+          </div>
+
           <!-- SKU Selector -->
           <SkuAliases v-if="selectedAccountId && selectedGoods" :account-id="selectedAccountId" :goods-id="selectedGoods.item.xyGoodId" @updated="retrySkuLoad" />
           <div class="ad__config-section ad__config-section--no-pad-bottom">
@@ -395,15 +410,16 @@ onMounted(() => {
               <span>{{ skuLoadError || configLoadError }}</span>
               <button type="button" @click="retrySkuLoad">重新加载</button>
             </div>
-            <div v-else-if="skuCoverageIncomplete" class="ad__sku-state ad__sku-state--error" role="alert">
-              <span>{{ skuCoverageMessage }}。为避免错发，配置保存和自动发货已停用。</span>
+            <div v-else-if="skuCoverageIncomplete" class="ad__sku-state" :class="{ 'ad__sku-state--error': !skuConfigurationComplete }" :role="skuConfigurationComplete ? undefined : 'alert'">
+              <span v-if="skuConfigurationComplete">规格信息仍为部分同步；通用固定模板可手工开启，仅订单无规格证据时执行，卡密不适用。开启后修改配置请先关闭。</span>
+              <span v-else>{{ skuCoverageMessage }}。可保留本地配置，自动发货尚未就绪；如商品已开启，请先关闭再修改。</span>
               <button type="button" @click="syncCurrentGoodsSku">重新同步规格</button>
             </div>
             <div v-else-if="!hasSku" class="ad__sku-state">
-              <span>未检测到商品规格；多规格商品需要先同步，单规格商品可直接配置。</span>
+              <span>完整可信快照确认这是无规格商品，可保存商品级配置。</span>
               <button type="button" @click="syncCurrentGoodsSku">立即同步规格</button>
             </div>
-            <div v-else class="ad__sku-tabs">
+            <div v-if="hasSku && !skuLoading && !skuLoadError" class="ad__sku-tabs">
               <button
                 v-for="sku in skuList"
                 :key="sku.skuId || sku.id"
@@ -592,13 +608,14 @@ onMounted(() => {
             </label>
 
             <div class="ad__save-row">
-              <button class="btn btn--primary" :class="{ 'btn--loading': saving }" :disabled="saving || skuLoading || configLoading || !!skuLoadError || !!configLoadError || skuCoverageIncomplete || (hasSku && !selectedSkuId)" @click="saveConfig">
+              <button class="btn btn--primary" :class="{ 'btn--loading': saving }" :disabled="saving || skuLoading || configLoading || !!skuLoadError || !!configLoadError || (skuCoverageIncomplete && selectedGoods?.xianyuAutoDeliveryOn === 1) || (hasSku && !selectedSkuId)" @click="saveConfig">
                 <IconCheck />
                 {{ saving ? '保存中' : '保存全部配置' }}
               </button>
               <span v-if="hasUnsavedChanges" class="ad__save-pending">有未保存修改</span>
               <span v-if="currentConfig" class="ad__save-time">更新于 {{ formatTime(currentConfig.updateTime) }}</span>
             </div>
+            <p role="status">{{ savedReadinessMessage }}</p>
           </div>
         </div>
       </div>

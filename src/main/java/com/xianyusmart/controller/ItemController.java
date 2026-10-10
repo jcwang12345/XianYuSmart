@@ -26,6 +26,8 @@ public class ItemController {
 
     @Autowired
     private ItemService itemService;
+    @Autowired private com.xianyusmart.service.ProductSyncTaskService productSyncTasks;
+    @Autowired private com.xianyusmart.service.ItemVerificationEntryService verificationEntries;
     
     @Autowired
     private ItemDetailSyncService itemDetailSyncService;
@@ -47,14 +49,20 @@ public class ItemController {
      * @return 更新成功的商品ID列表
      */
     @PostMapping("/refresh")
-    public ResultObject<RefreshItemsRespDTO> refreshItems(@RequestBody AllItemsReqDTO reqDTO) {
-        try {
-            log.info("刷新商品数据请求: xianyuAccountId={}", reqDTO.getXianyuAccountId());
-            return itemService.refreshItems(reqDTO);
-        } catch (Exception e) {
-            log.error("刷新商品数据失败", e);
-            return ResultObject.failed("刷新商品数据失败: " + e.getMessage());
-        }
+    public ResultObject<Map<String,Object>> refreshItems(@RequestBody AllItemsReqDTO reqDTO) {
+        return ResultObject.success(productSyncTasks.start(reqDTO));
+    }
+    @GetMapping("/sync-tasks")
+    public ResultObject<List<Map<String,Object>>> syncTasks(@RequestParam Long accountId) {
+        return ResultObject.success(productSyncTasks.list(accountId));
+    }
+    @GetMapping("/sync-tasks/{taskId}")
+    public ResultObject<Map<String,Object>> syncTask(@PathVariable long taskId) {
+        return ResultObject.success(productSyncTasks.read(taskId));
+    }
+    @PostMapping("/sync-tasks/{taskId}/interrupt")
+    public ResultObject<Map<String,Object>> interruptSyncTask(@PathVariable long taskId) {
+        return ResultObject.success(productSyncTasks.interrupt(taskId));
     }
 
     /**
@@ -209,6 +217,23 @@ public class ItemController {
             log.error("同步单个商品失败: errorType={}", e.getClass().getSimpleName());
             return ResultObject.failed("同步失败，请稍后重试");
         }
+    }
+
+    @PostMapping("/verification-entry")
+    public ResultObject<ItemVerificationEntryDTO.Metadata> verificationEntry(
+            @RequestBody ItemVerificationEntryDTO.Target target, jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Pragma", "no-cache");
+        return ResultObject.success(verificationEntries.metadata(target.xianyuAccountId(), target.xyGoodsId()));
+    }
+
+    @PostMapping("/verification-entry/consume")
+    public ResultObject<ItemVerificationEntryDTO.Consumed> consumeVerificationEntry(
+            @RequestBody ItemVerificationEntryDTO.Target target, jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("Pragma", "no-cache");
+        return ResultObject.success(verificationEntries.consume(
+                target.xianyuAccountId(), target.xyGoodsId(), target.entryHandle()));
     }
 
     @PostMapping("/changeListingStatus")

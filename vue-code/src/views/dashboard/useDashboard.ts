@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { getDashboardStats, type DashboardStats } from '@/api/dashboard'
 import type { Account } from '@/types'
 import { getBusinessAnalytics, getBusinessAnalyticsScopes, type AccountGroup, type AccountMatrixSummary, type BusinessAnalyticsOverview, type BusinessAnalyticsScopes } from '@/api/matrix'
@@ -16,6 +16,7 @@ export function useDashboard() {
   const scopeLoading = ref(false)
   const scopeError = ref('')
   const operationsReady = ref(false)
+  const operationsError = ref('')
   const periodMode = ref<'1'|'7'|'30'|'custom'>('7')
   const accountId = ref<number | undefined>()
   const groupId = ref<number | undefined>()
@@ -40,6 +41,17 @@ export function useDashboard() {
     start.setDate(start.getDate() - Number(periodMode.value) + 1)
     return { start: localDate(start), end: localDate(end) }
   })
+  let statisticsGeneration = 0
+  let disposed = false
+  watch([accountId, groupId, queryDates], () => {
+    statisticsGeneration++
+    analytics.value = null
+    loading.value = false
+    error.value = ''
+    operationsReady.value = false
+    operationsError.value = ''
+  }, { flush: 'sync' })
+  onScopeDispose(() => { disposed = true; statisticsGeneration++ })
 
   const selectAccount = () => { if (accountId.value !== undefined) groupId.value = undefined }
   const selectGroup = () => { if (groupId.value !== undefined) accountId.value = undefined }
@@ -68,8 +80,9 @@ export function useDashboard() {
   }
 
   const loadStatistics = async () => {
-    if (loading.value) return
-    loading.value = true; error.value = ''
+    if (disposed) return
+    const mine = ++statisticsGeneration
+    loading.value = true; error.value = ''; operationsError.value = ''; operationsReady.value = false
     if (!queryDates.value.start || !queryDates.value.end || queryDates.value.start > queryDates.value.end) {
       error.value = '自定义开始日期不能晚于结束日期。'
       loading.value = false
@@ -79,18 +92,21 @@ export function useDashboard() {
     const [analyticsResult, scopeResult, operationResult] = await Promise.allSettled([
       getBusinessAnalytics(params), getBusinessAnalyticsScopes(), getDashboardStats()
     ])
+    if (disposed || mine !== statisticsGeneration) return
     if (analyticsResult.status === 'fulfilled') analytics.value = analyticsResult.value.data || null
-    else error.value = '经营数据暂时无法读取，未同步指标不会按 0 展示。'
+    else { analytics.value = null; error.value = '经营数据暂时无法读取，未同步指标不会按 0 展示。' }
     if (scopeResult.status === 'fulfilled' && scopeResult.value.data) {
       applyScopes(scopeResult.value.data)
       scopeError.value = ''
     } else scopeError.value = '店铺与分组范围暂时无法读取；当前筛选未自动扩大，请重试。'
-    if (operationResult.status === 'fulfilled' && operationResult.value.data) {
-      operations.value = operationResult.value.data
+    const operationData = operationResult.status === 'fulfilled' ? operationResult.value.data : undefined
+    const counts = ['pendingTaskCount', 'reviewRequiredCount', 'failedTaskCount', 'lowStockConfigCount'] as const
+    if (operationData && counts.every(key => typeof operationData[key] === 'number' && Number.isFinite(operationData[key]) && operationData[key] >= 0)) {
+      operations.value = operationData
       operationsReady.value = true
-    }
+    } else operationsError.value = '履约待办暂时无法读取，当前数量未知，请重试。'
     loading.value = false
   }
   return { loading, error, scopeLoading, scopeError, periodMode, accountId, groupId, customStart, customEnd, accounts,
-    analytics, accountSummary, groups, operations, operationsReady, queryDates, selectAccount, selectGroup, loadStatistics, loadScopes }
+    analytics, accountSummary, groups, operations, operationsReady, operationsError, queryDates, selectAccount, selectGroup, loadStatistics, loadScopes }
 }

@@ -161,18 +161,9 @@ export function useGoodsManager() {
     try {
       const response = await refreshGoods(selectedAccountId.value)
       if (response.code === 0 || response.code === 200) {
-        if (response.data && response.data.success) {
-          showSuccess('商品数据刷新成功')
-          if (response.data.syncId) {
-            startSyncPolling(response.data.syncId)
-          } else {
-            await loadGoods()
-            refreshing.value = false
-          }
-        } else {
-          showError(response.data?.message || '刷新商品数据失败')
-          refreshing.value = false
-        }
+        showInfo('在售同步任务已创建，请在商品矩阵查看任务阶段；详情和其他状态范围分别核对。')
+        refreshing.value = false
+
       }
     } catch (error: any) {
       console.error('刷新商品数据失败:', error)

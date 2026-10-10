@@ -8,6 +8,10 @@ const error = ref('')
 const stats = ref<DataPanelStats | null>(null)
 const trend = ref<DataPanelTrend | null>(null)
 const revenue = ref<number | null>(null)
+const localToday = () => {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
 
 const hasData = computed(() => stats.value?.hasData === true)
 const maxTrend = computed(() => Math.max(1, ...(trend.value?.deliverySuccess || []), ...(trend.value?.deliveryFail || []), ...(trend.value?.aiReplies || [])))
@@ -26,7 +30,7 @@ const load = async () => {
   error.value = ''
   try {
     const [statsResult, trendResult, revenueResult] = await Promise.all([
-      getDataPanelStats(new Date().toISOString().slice(0, 10)),
+      getDataPanelStats(localToday()),
       getDataPanelTrend(),
       getRealtimeRevenue()
     ])
@@ -58,7 +62,7 @@ onMounted(load)
     <div v-else class="realtime__notice" role="note"><strong>{{ hasData ? '本地事件已接入' : loaded ? '暂无可信样本' : '正在核对数据源' }}</strong><span>来源：本地订单、发货与消息事件</span><time>{{ loaded ? '最近读取：刚刚' : '尚未完成读取' }}</time></div>
 
     <div class="workbench__grid">
-      <article class="workbench__card workbench__metric"><span>实时成交额</span><strong>{{ metric(revenue, true) }}</strong><small>无订单样本时显示 —</small></article>
+      <article class="workbench__card workbench__metric"><span>今日订单已确认交付金额</span><strong>{{ metric(revenue, true) }}</strong><small>按本地订单创建日统计；无可核实金额时显示 —</small></article>
       <article class="workbench__card workbench__metric"><span>今日订单</span><strong>{{ metric(stats?.orderCount) }}</strong><small>本地已同步订单</small></article>
       <article class="workbench__card workbench__metric"><span>交付成功</span><strong>{{ metric(stats?.deliverySuccessCount) }}</strong><small>本地成功事件</small></article>
       <article class="workbench__card workbench__metric"><span>AI 回复</span><strong>{{ metric(stats?.aiReplyCount) }}</strong><small>本地回复事件</small></article>

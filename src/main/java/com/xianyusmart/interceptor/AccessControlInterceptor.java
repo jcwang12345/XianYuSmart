@@ -99,9 +99,11 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveMenuPermission(String uri) {
+        if (uri.startsWith("/api/pdca/")) return PermissionCatalog.MENU_SETTINGS;
+        if (uri.startsWith("/api/qa/r03/")) return PermissionCatalog.MENU_GOODS;
         if (uri.startsWith("/api/qa/backup")) return PermissionCatalog.MENU_SETTINGS;
         if (uri.startsWith("/api/qa/notification-trace")) return PermissionCatalog.MENU_HEALTH;
-        if (uri.startsWith("/api/qa/message-workspace")) return PermissionCatalog.MENU_MESSAGES;
+        if (uri.startsWith("/api/qa/message-workspace") || uri.startsWith("/api/qa/r01")) return PermissionCatalog.MENU_MESSAGES;
         if (uri.startsWith("/api/qa/business-analytics")) return PermissionCatalog.MENU_DASHBOARD;
         if (uri.startsWith("/api/qa/fulfillment")) return PermissionCatalog.MENU_KAMI;
         if (uri.startsWith("/api/qa/growth-workspace")) return PermissionCatalog.MENU_OPERATIONS;
@@ -185,6 +187,9 @@ public class AccessControlInterceptor implements HandlerInterceptor {
     }
 
     private String resolveActionPermission(String method, String uri) {
+        if (uri.startsWith("/api/qa/r03/") && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
+        }
         if (uri.startsWith("/api/qa/growth-workspace") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
@@ -209,7 +214,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         if (uri.startsWith("/api/qa/notification-trace") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
-        if (uri.startsWith("/api/qa/message-workspace") && !"GET".equalsIgnoreCase(method)) {
+        if ((uri.startsWith("/api/qa/message-workspace") || uri.startsWith("/api/qa/r01")) && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
         if (uri.startsWith("/api/qa/business-analytics") && !"GET".equalsIgnoreCase(method)) {
@@ -251,7 +256,8 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             return PermissionCatalog.ACTION_GOODS_BATCH_PRICE;
         }
         if (uri.startsWith("/api/product-matrix/batches/")
-                && (uri.endsWith("/create") || uri.endsWith("/retry") || uri.endsWith("/cancel"))) {
+                && (uri.endsWith("/create") || uri.endsWith("/retry") || uri.endsWith("/cancel")
+                    || uri.endsWith("/execute-now"))) {
             return PermissionCatalog.ACTION_GOODS_WRITE;
         }
         if (uri.contains("/api/product-matrix/accounts/") && uri.endsWith("/raw-snapshot")) {
@@ -275,6 +281,10 @@ public class AccessControlInterceptor implements HandlerInterceptor {
         }
         if (uri.startsWith("/api/account-matrix/risks/") && uri.endsWith("/handling")) {
             return PermissionCatalog.ACTION_RISK_HANDLE;
+        }
+        if (uri.startsWith("/api/account-matrix/accounts/") && uri.endsWith("/profile-snapshots")
+                && !"GET".equalsIgnoreCase(method)) {
+            return PermissionCatalog.ACTION_SYSTEM_WRITE;
         }
         if (uri.startsWith("/api/account-matrix/") && !"GET".equalsIgnoreCase(method)) {
             return PermissionCatalog.ACTION_ACCOUNT_WRITE;
@@ -302,6 +312,8 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             if (uri.contains("/skus")) return PermissionCatalog.ACTION_GOODS_WRITE;
             return PermissionCatalog.ACTION_ORDER_WRITE;
         }
+        if ("GET".equalsIgnoreCase(method) && (uri.equals("/api/account/lifecycle") || uri.equals("/api/account/delete-preflight"))) return null;
+        if (uri.equals("/api/account/add") || uri.equals("/api/account/manualAdd")) return PermissionCatalog.ACTION_CREDENTIAL_WRITE;
         if (uri.startsWith("/api/account/")
                 && !uri.equals("/api/account/list") && !uri.equals("/api/account/detail")) {
             return PermissionCatalog.ACTION_ACCOUNT_WRITE;
@@ -323,7 +335,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
             return PermissionCatalog.ACTION_CONNECTION_WRITE;
         }
         if ((uri.startsWith("/api/items") && !ITEM_READ_PATHS.contains(uri)
-                && !uri.startsWith("/api/items/syncprogress/") && !uri.startsWith("/api/items/syncing/"))
+                && !uri.startsWith("/api/items/syncprogress/") && !uri.startsWith("/api/items/syncing/") && !("GET".equalsIgnoreCase(method) && (uri.startsWith("/api/items/sync-tasks/") || uri.equals("/api/items/sync-tasks"))))
                 || uri.startsWith("/api/image")) {
             return PermissionCatalog.ACTION_GOODS_WRITE;
         }
@@ -347,7 +359,7 @@ public class AccessControlInterceptor implements HandlerInterceptor {
                 || uri.startsWith("/api/autodelivery")) {
             return PermissionCatalog.ACTION_DELIVERY_WRITE;
         }
-        if (uri.startsWith("/api/order") && !ORDER_READ_PATHS.contains(uri)) {
+        if ((uri.equals("/api/order") || uri.startsWith("/api/order/")) && !ORDER_READ_PATHS.contains(uri)) {
             return PermissionCatalog.ACTION_ORDER_WRITE;
         }
         if ((uri.startsWith("/api/keyword-reply") && !uri.endsWith("/rules"))

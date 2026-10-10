@@ -6,6 +6,7 @@ import com.xianyusmart.controller.dto.QRStatusResponse;
 import com.xianyusmart.service.QRLoginService;
 import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.event.AccountAuthenticatedEvent;
 import com.xianyusmart.utils.CookieUtils;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -20,6 +21,7 @@ import okhttp3.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -48,8 +50,16 @@ public class QRLoginServiceImpl implements QRLoginService {
     private com.xianyusmart.service.AccountService accountService;
 
     @Autowired
+    private ApplicationEventPublisher eventPublisher;
+
+    @Autowired
     @Qualifier("qrLoginExecutor")
     private Executor taskExecutor;
+    @Autowired private com.xianyusmart.service.AccountAutomationPolicy automation;
+    @Autowired private com.xianyusmart.service.AccountAccessService accountAccessService;
+    @Autowired private com.xianyusmart.mapper.SysUserMapper authorityUsers;
+    @Autowired private com.xianyusmart.service.PlatformPermissionService authorityPermissions;
+    @Autowired private org.springframework.jdbc.core.JdbcTemplate authorityJdbc;
     
     private static final String HOST = "https://passport.goofish.com";
     private static final String API_MINI_LOGIN = HOST + "/mini_login.htm";
@@ -281,20 +291,53 @@ public class QRLoginServiceImpl implements QRLoginService {
     
     @Override
     public QRLoginResponse generateQRCode(Long targetAccountId) {
+        return generateQRCodeGuarded(targetAccountId, false);
+    }
+
+    @Override
+    public QRLoginResponse generateRenewalQRCode(Long targetAccountId) {
+        if (targetAccountId == null || TenantContext.get() == null
+                || com.xianyusmart.context.UserContext.getUserId() != null)
+            throw new com.xianyusmart.exception.BusinessException(403, "自动续期必须来自受信后台目标账号");
+        var previous = com.xianyusmart.context.AccountScopeContext.get();
         try {
-            // 创建新会话
-            String sessionId = UUID.randomUUID().toString();
-            QRLoginSession session = new QRLoginSession(sessionId);
-            Long tenantId = TenantContext.get();
-            if (tenantId == null) {
-                throw new IllegalStateException("未识别当前登录用户");
-            }
-            session.setTenantId(tenantId);
-            if (targetAccountId != null && accountService.getXianyuUserId(targetAccountId) == null) {
+            com.xianyusmart.context.AccountScopeContext.set(false, java.util.Set.of(targetAccountId));
+            return generateQRCodeGuarded(targetAccountId, true);
+        } finally {
+            com.xianyusmart.context.AccountScopeContext.clear();
+            if (previous != null) com.xianyusmart.context.AccountScopeContext.set(previous.unrestricted(), previous.accountIds());
+        }
+    }
+
+    private QRLoginResponse generateQRCodeGuarded(Long targetAccountId, boolean trusted) {
+        QRLoginSession session = createSession(targetAccountId, trusted);
+        if (targetAccountId == null) return generateQRCodeAllowed(session);
+        return automation.guarded(targetAccountId, com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> generateQRCodeAllowed(session));
+    }
+
+    private QRLoginSession createSession(Long targetAccountId, boolean trusted) {
+        QRLoginSession session = new QRLoginSession(UUID.randomUUID().toString());
+        Long tenant = TenantContext.get();
+        if (tenant == null) throw new com.xianyusmart.exception.BusinessException(403, "二维码会话经营主体缺失");
+        session.setTenantId(tenant);
+        session.setTargetAccountId(targetAccountId);
+        session.setTrustedRenewal(trusted);
+        session.setOperatorUserId(com.xianyusmart.context.UserContext.getUserId());
+        var original = com.xianyusmart.context.AccountScopeContext.get();
+        session.setOriginalScopeUnrestricted(original != null && original.unrestricted());
+        session.setOriginalAccountIds(original == null ? java.util.Set.of() : java.util.Set.copyOf(original.accountIds()));
+        requireSessionAuthority(session, targetAccountId);
+        return session;
+    }
+
+    private QRLoginResponse generateQRCodeAllowed(QRLoginSession session) {
+        Long targetAccountId = session.getTargetAccountId();
+        try {
+            String sessionId = session.getSessionId();
+            if (targetAccountId != null && accountService.getXianyuUserId(targetAccountId) == null)
                 throw new IllegalArgumentException("目标账号不存在或不属于当前用户");
-            }
-            session.setTargetAccountId(targetAccountId);
-            
+
             // 1. 获取m_h5_tk
             getMh5tk(session);
             
@@ -341,7 +384,7 @@ public class QRLoginServiceImpl implements QRLoginService {
                         sessions.put(sessionId, session);
                         
                         // 启动状态监控
-                        taskExecutor.execute(() -> monitorQRStatus(sessionId));
+                        taskExecutor.execute(monitorTask(session, () -> monitorQRStatus(sessionId)));
                         
                         log.info("二维码生成成功");
                         return new QRLoginResponse(true, sessionId, qrDataUrl, null,
@@ -355,8 +398,13 @@ public class QRLoginServiceImpl implements QRLoginService {
             return new QRLoginResponse(false, "生成二维码失败");
             
         } catch (Exception e) {
-            log.error("二维码生成过程中发生异常", e);
-            return new QRLoginResponse(false, "生成二维码失败: " + e.getMessage());
+            session.setStatus("error");
+            sessions.remove(session.getSessionId(), session);
+            clearSensitiveSessionData(session);
+            log.error("二维码生成失败: failureType={}", e.getClass().getSimpleName());
+            return new QRLoginResponse(false, "生成二维码失败，请稍后重试");
+        } finally {
+            if (!sessions.containsKey(session.getSessionId())) clearSensitiveSessionData(session);
         }
     }
     
@@ -385,6 +433,24 @@ public class QRLoginServiceImpl implements QRLoginService {
     /**
      * 生成二维码图片（Base64格式）
      */
+    private Runnable monitorTask(QRLoginSession session, Runnable work) {
+        var scope = com.xianyusmart.context.AccountScopeContext.get();
+        Long operator = com.xianyusmart.context.UserContext.getUserId();
+        String operatorName = com.xianyusmart.context.UserContext.getUsername();
+        return () -> {
+            try {
+                TenantContext.set(session.getTenantId());
+                if (scope != null) com.xianyusmart.context.AccountScopeContext.set(scope.unrestricted(), scope.accountIds());
+                if (operator != null) com.xianyusmart.context.UserContext.set(operator, operatorName, session.getTenantId());
+                work.run();
+            } finally {
+                com.xianyusmart.context.AccountScopeContext.clear();
+                com.xianyusmart.context.UserContext.clear();
+                TenantContext.clear();
+            }
+        };
+    }
+
     private String generateQRCodeImage(String content) throws WriterException, IOException {
         QRCodeWriter qrCodeWriter = new QRCodeWriter();
         Map<EncodeHintType, Object> hints = new HashMap<>();
@@ -451,6 +517,8 @@ public class QRLoginServiceImpl implements QRLoginService {
                     
                     Thread.sleep(800); // 每0.8秒检查一次
                     
+                } catch (com.xianyusmart.exception.BusinessException e) {
+                    session.setStatus("cancelled");session.setErrorMessage("账号续期已停止，请核对本地状态与访问权限");clearSensitiveSessionData(session);break;
                 } catch (Exception e) {
                     log.error("监控二维码状态异常", e);
                     Thread.sleep(2000);
@@ -476,6 +544,48 @@ public class QRLoginServiceImpl implements QRLoginService {
      * 轮询二维码状态
      */
     private String pollQRCodeStatus(QRLoginSession session) throws IOException {
+        requireSessionAuthority(session, session.getTargetAccountId());
+        if(session.getTargetAccountId()==null)return pollQRCodeStatusAllowed(session);
+        try {return automation.guarded(session.getTargetAccountId(),com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,()->{try{return pollQRCodeStatusAllowed(session);}catch(IOException e){throw new java.io.UncheckedIOException(e);}});}
+        catch(java.io.UncheckedIOException e){throw e.getCause();}
+    }
+    private void requireSessionAuthority(QRLoginSession session, Long accountId) {
+        try {
+            if (session.getTenantId() == null || !Objects.equals(TenantContext.get(), session.getTenantId()))
+                throw new com.xianyusmart.exception.BusinessException(403, "二维码会话经营主体不匹配");
+            if (session.isTrustedRenewal()) {
+                if (session.getOperatorUserId() != null || session.getTargetAccountId() == null
+                        || !Objects.equals(accountId, session.getTargetAccountId()))
+                    throw new com.xianyusmart.exception.BusinessException(403, "续期会话来源无效");
+                Integer owned = authorityJdbc.queryForObject("SELECT COUNT(*) FROM xianyu_account WHERE tenant_id=? AND id=?", Integer.class, session.getTenantId(), accountId);
+                if (!Integer.valueOf(1).equals(owned))
+                    throw new com.xianyusmart.exception.BusinessException(403, "自动续期目标账号归属已变化");
+                com.xianyusmart.context.AccountScopeContext.set(false, java.util.Set.of(accountId));
+            } else {
+                Long operator = session.getOperatorUserId();
+                var user = operator == null ? null : authorityUsers.selectById(operator);
+                if (user == null || !Integer.valueOf(1).equals(user.getStatus())
+                        || (!com.xianyusmart.entity.SysUser.ROLE_ADMIN.equals(user.getRole())
+                            && !Objects.equals(session.getTenantId(), user.getTenantId()))
+                        || !authorityPermissions.hasPermission(user, com.xianyusmart.service.PermissionCatalog.ACTION_CREDENTIAL_WRITE))
+                    throw new com.xianyusmart.exception.BusinessException(403, "扫码操作者权限已撤销");
+                var current = accountAccessService.loadScope(user);
+                var originalIds = session.getOriginalAccountIds();
+                boolean unrestricted = session.isOriginalScopeUnrestricted() && current.unrestricted();
+                java.util.Set<Long> intersection = new java.util.HashSet<>(session.isOriginalScopeUnrestricted()
+                        ? current.accountIds() : originalIds);
+                if (!current.unrestricted() && !session.isOriginalScopeUnrestricted()) intersection.retainAll(current.accountIds());
+                com.xianyusmart.context.AccountScopeContext.set(unrestricted, java.util.Set.copyOf(intersection));
+            }
+            if (accountId != null) accountAccessService.requireAccess(accountId);
+        } catch (com.xianyusmart.exception.BusinessException revoked) {
+            session.setStatus("cancelled");
+            session.setErrorMessage("扫码已停止，请核对操作者权限、账号范围与本地状态");
+            clearSensitiveSessionData(session);
+            throw revoked;
+        }
+    }
+    private String pollQRCodeStatusAllowed(QRLoginSession session) throws IOException {
         FormBody.Builder formBuilder = new FormBody.Builder();
         session.getParams().forEach(formBuilder::add);
         
@@ -560,7 +670,7 @@ public class QRLoginServiceImpl implements QRLoginService {
             return response;
         }
         
-        if (session.isExpired() && !"success".equals(session.getStatus())) {
+        if (session.isExpired() && Arrays.asList("waiting", "scanned").contains(session.getStatus())) {
             session.setStatus("expired");
         }
         
@@ -658,6 +768,11 @@ public class QRLoginServiceImpl implements QRLoginService {
      * 保存Cookie到数据库
      */
     private void saveCookieToDatabase(QRLoginSession session) {
+        requireSessionAuthority(session, session.getTargetAccountId());
+        if(session.getTargetAccountId()==null){saveCookieToDatabaseAllowed(session);return;}
+        automation.guarded(session.getTargetAccountId(),com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,()->{saveCookieToDatabaseAllowed(session);return null;});
+    }
+    private void saveCookieToDatabaseAllowed(QRLoginSession session) {
         try {
             String unb = session.getUnb();
             if (unb == null || unb.isEmpty()) {
@@ -692,13 +807,16 @@ public class QRLoginServiceImpl implements QRLoginService {
                     session.setStatus("error");
                     session.setErrorMessage("扫码账号与待刷新账号不一致，未更新任何凭证");
                     log.warn("二维码刷新账号校验失败: accountId={}", session.getTargetAccountId());
+                    clearSensitiveSessionData(session);
                     return;
                 }
                 boolean updated = accountService.updateAccountCookie(
                         session.getTargetAccountId(), unb, cookieText);
                 accountId = updated ? session.getTargetAccountId() : null;
             } else {
-                // 新增入口按扫码得到的UNB新增或更新同一账号。
+                // A new-login entry may match an existing UNB; recheck its actual account scope.
+                var existingIds = authorityJdbc.queryForList("SELECT id FROM xianyu_account WHERE tenant_id=? AND unb=?", Long.class, session.getTenantId(), unb);
+                if (!existingIds.isEmpty()) requireSessionAuthority(session, existingIds.getFirst());
                 accountId = accountService.saveAccountAndCookie(accountNote, unb, cookieText, mH5Tk);
             }
             
@@ -711,14 +829,17 @@ public class QRLoginServiceImpl implements QRLoginService {
                 log.info("   - m_h5_tk: {}", mH5Tk != null ? "已保存" : "未提供");
                 log.info("   - 账号备注: {}", accountNote);
                 clearSensitiveSessionData(session);
+                eventPublisher.publishEvent(new AccountAuthenticatedEvent(accountId, "QR_LOGIN"));
             } else {
                 log.error("❌ 保存Cookie失败：accountId为空");
                 session.setStatus("error");
                 session.setErrorMessage("账号凭证保存失败，请重试");
             }
             
+        } catch (com.xianyusmart.exception.BusinessException classified) {
+            throw classified;
         } catch (Exception e) {
-            log.error("❌ 保存Cookie到数据库失败", e);
+            log.error("保存扫码凭据失败: failureType={}", e.getClass().getSimpleName());
             session.setStatus("error");
         }
     }
@@ -731,6 +852,7 @@ public class QRLoginServiceImpl implements QRLoginService {
         session.getParams().clear();
         session.setUnb(null);
         session.setQrContent(null);
+        session.setQrCodeUrl(null);
         session.setVerificationUrl(null);
     }
     

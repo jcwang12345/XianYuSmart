@@ -19,6 +19,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -109,6 +110,44 @@ class AIReplyStrategyTest {
         assertFalse(result.isSuccess());
         assertEquals("AI_NO_SAFE_ANSWER", result.getHandoffReasonCode());
         assertEquals("qa-model", result.getModelName());
+    }
+
+    @Test
+    void substitutesOrderInformationGuidanceForModelLinks() {
+        XianyuGoodsConfig config = new XianyuGoodsConfig();
+        config.setXianyuAutoReplyContextOn(0);
+        when(configMapper.selectByAccountAndGoodsId(1L, "g1")).thenReturn(config);
+        RAGReplyResult aiResult = new RAGReplyResult();
+        aiResult.setReplyContent("请查看https://example.com/help");
+        when(aiService.chatByRAGWithFixedMaterial(any(), any(), any(), any(), any())).thenReturn(aiResult);
+
+        ReplyStrategy.ReplyResult result = strategy.execute(List.of(message("你好")));
+
+        assertTrue(result.isSuccess());
+        assertEquals("使用说明请查看订单发货信息，如需帮助请通过闲鱼联系卖家。",
+                result.getItems().getFirst().getTextContent());
+        assertEquals(2, result.getItems().getFirst().getReplyType());
+        assertNull(result.getItems().getFirst().getImageUrl());
+    }
+
+    @Test
+    void preservesLinkFreeAfterSalesGuidanceFromActiveKnowledge() {
+        String guidance = "请打开订单收到的发货/提货入口，按页面提示扫码进入售后群，群内有客服协助。";
+        XianyuGoodsConfig config = new XianyuGoodsConfig();
+        config.setXianyuAutoReplyContextOn(0);
+        when(configMapper.selectByAccountAndGoodsId(1L, "g1")).thenReturn(config);
+        when(goodsKnowledgeService.effective(1L, "g1")).thenReturn(
+                new GoodsKnowledgeService.ActiveKnowledge(92L, 4, guidance, null, null));
+        RAGReplyResult aiResult = new RAGReplyResult();
+        aiResult.setReplyContent(guidance);
+        when(aiService.chatByRAGWithFixedMaterial(any(), any(), any(), any(), any())).thenReturn(aiResult);
+
+        ReplyStrategy.ReplyResult result = strategy.execute(List.of(message("暗标检查售后怎么联系")));
+
+        assertTrue(result.isSuccess());
+        assertEquals(guidance, result.getItems().getFirst().getTextContent());
+        assertEquals("AFTER_SALES", result.getAiIntent());
+        assertEquals(92L, result.getKnowledgeVersionId());
     }
 
     private static ChatMessageData message(String content) {

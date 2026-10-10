@@ -1,6 +1,7 @@
 package com.xianyusmart.service.delivery;
 
 import com.xianyusmart.entity.XianyuKamiItem;
+import com.xianyusmart.entity.XianyuGoodsAutoDeliveryConfig;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.service.KamiConfigService;
 import lombok.extern.slf4j.Slf4j;
@@ -37,13 +38,14 @@ public class KamiDeliveryStrategy implements DeliveryContentStrategy {
     @Override
     public String resolve(DeliveryContext context) {
         String content = acquireKamiContent(
-                context.getDeliveryConfig().getKamiConfigIds(),
+                context.getDeliveryConfig(),
                 context.getOrderId(),
                 context.getAccountId(),
                 context.getXyGoodsId(),
                 context.getSId(),
                 context.getBuyerUserName(),
-                context.getQuantity() != null ? context.getQuantity() : 1
+                context.getQuantity() != null ? context.getQuantity() : 1,
+                context.isUniformCardRequired()
         );
         if (content == null) {
             log.warn("【账号{}】卡密发货模式下无可用卡密: xyGoodsId={}, kamiConfigIds={}",
@@ -54,9 +56,10 @@ public class KamiDeliveryStrategy implements DeliveryContentStrategy {
         return content;
     }
 
-    private String acquireKamiContent(String kamiConfigIds, String orderId,
+    private String acquireKamiContent(XianyuGoodsAutoDeliveryConfig deliveryConfig, String orderId,
                                        Long accountId, String xyGoodsId, String sId,
-                                       String buyerUserName, int quantity) {
+                                       String buyerUserName, int quantity, boolean uniformRequired) {
+        String kamiConfigIds = deliveryConfig.getKamiConfigIds();
         if (kamiConfigIds == null || kamiConfigIds.trim().isEmpty()) {
             log.warn("【账号{}】卡密发货未绑定卡密配置: xyGoodsId={}", accountId, xyGoodsId);
             return null;
@@ -66,7 +69,8 @@ public class KamiDeliveryStrategy implements DeliveryContentStrategy {
         for (String configIdStr : configIdArr) {
             try {
                 Long configId = Long.parseLong(configIdStr.trim());
-                return kamiConfigService.reserveKami(configId, orderId, accountId, quantity).stream()
+                return kamiConfigService.reserveForDelivery(configId, orderId, accountId, quantity,
+                                deliveryConfig, uniformRequired).stream()
                         .map(XianyuKamiItem::getKamiContent)
                         .reduce((left, right) -> left + "\n" + right)
                         .orElse(null);

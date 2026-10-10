@@ -14,12 +14,12 @@ import java.util.List;
  */
 @Mapper
 public interface XianyuAccountMapper extends BaseMapper<XianyuAccount> {
+    @Select("SELECT DISTINCT tenant_id FROM xianyu_account WHERE tenant_id IS NOT NULL AND tenant_id > 0 ORDER BY tenant_id")
+    List<Long> selectDeliveryTaskTenantIds();
+
     @Select("SELECT a.* FROM xianyu_account a WHERE a.status=1 AND EXISTS (SELECT 1 FROM xianyu_cookie c " +
             "WHERE c.xianyu_account_id=a.id AND c.tenant_id=a.tenant_id AND c.cookie_status IN (2,3))")
     java.util.List<XianyuAccount> selectExpiredCredentialAccounts();
-
-    @Select("SELECT COUNT(*) FROM xianyu_account WHERE unb=#{buyer}")
-    int countOwnBuyer(@Param("buyer") String buyer);
 
     @Select("SELECT account.* FROM xianyu_account account WHERE account.status = 1 " +
             "AND EXISTS (SELECT 1 FROM xianyu_cookie cookie " +

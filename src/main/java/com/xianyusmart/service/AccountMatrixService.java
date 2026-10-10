@@ -80,6 +80,10 @@ public class AccountMatrixService {
 
     public MatrixPage listAccounts(String search, String connectionStatus, String riskSeverity,
                                    Long groupId, Integer page, Integer pageSize) {
+        return listAccounts(search,connectionStatus,riskSeverity,groupId,null,page,pageSize);
+    }
+    public MatrixPage listAccounts(String search,String connectionStatus,String riskSeverity,Long groupId,String lifecycleState,Integer page,Integer pageSize) {
+        String localState=normalizeOptional(lifecycleState,Set.of("ACTIVE","DISABLED","ARCHIVED","ALL"),"本地账号状态");
         int normalizedPage = page == null || page < 1 ? 1 : page;
         int normalizedSize = pageSize == null || pageSize < 1 ? 20 : Math.min(pageSize, 100);
         String normalizedSearch = trimToNull(search);
@@ -91,6 +95,8 @@ public class AccountMatrixService {
         List<Map<String, Object>> matched = new ArrayList<>();
         for (XianyuAccount account : accounts) {
             Map<String, Object> view = buildAccountView(account, false);
+            if(localState==null&&"ARCHIVED".equals(view.get("lifecycleState")))continue;
+            if(localState!=null&&!"ALL".equals(localState)&&!localState.equals(view.get("lifecycleState")))continue;
             if (normalizedSearch != null) {
                 String haystack = (string(account.getId()) + " " + string(account.getAccountNote()) + " "
                         + string(account.getUnb()) + " " + string(view.get("shopNickname"))).toLowerCase(Locale.ROOT);
@@ -157,6 +163,7 @@ public class AccountMatrixService {
                 "shopRisks", datasetStateWithSnapshotFallback(accountId, "SHOP_RISKS",
                         result.get("riskSource"), result.get("riskSyncStatus"),
                         result.get("riskCoverageStatus"), result.get("riskSyncedAt"))));
+        result.put("profileRefresh", latestProfileRefresh(accountId));
         return result;
     }
 
@@ -368,6 +375,9 @@ public class AccountMatrixService {
         int knownRiskCount = countActiveRisks(account.getId());
         String riskCoverage = string(riskState.get("coverageStatus"));
         Map<String, Object> result = new LinkedHashMap<>();
+        var localProfiles=jdbcTemplate.queryForList("SELECT lifecycle_state lifecycleState,row_version rowVersion,auto_reply_allowed autoReplyAllowed,auto_delivery_allowed autoDeliveryAllowed FROM xianyu_account_local_profile WHERE tenant_id=? AND xianyu_account_id=?",requireTenant(),account.getId());
+        result.put("lifecycleState",localProfiles.isEmpty()?"ACTIVE":localProfiles.getFirst().get("lifecycleState"));
+        result.put("rowVersion",localProfiles.isEmpty()?0:localProfiles.getFirst().get("rowVersion"));
         result.put("accountId", account.getId());
         result.put("accountNote", account.getAccountNote());
         result.put("unb", account.getUnb());
@@ -621,7 +631,8 @@ public class AccountMatrixService {
     private Map<String, Object> latestProfile(Long accountId) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
                 SELECT * FROM xianyu_shop_profile_snapshot
-                 WHERE tenant_id=? AND xianyu_account_id=? ORDER BY created_time DESC, id DESC LIMIT 1
+                 WHERE tenant_id=? AND xianyu_account_id=? AND sync_status<>'FAILED'
+                 ORDER BY created_time DESC, id DESC LIMIT 1
                 """, (rs, rowNum) -> profileRow(rs), requireTenant(), accountId);
         if (!rows.isEmpty()) return rows.get(0);
         Map<String, Object> unknown = new LinkedHashMap<>();
@@ -633,7 +644,8 @@ public class AccountMatrixService {
                 "superSeller", "sellerCredit", "buyerCredit", "sesameVerified", "realNameVerified", "xianyuExpert",
                 "userType", "xianyuUpgraded", "taobaoBound", "pinLimit", "onSaleCount", "soldCount", "followerCount",
                 "positiveRate", "totalReviewCount", "totalBoughtCount", "totalSoldCount", "lastActiveTime", "errorCode",
-                "errorMessage")) unknown.put(key, null);
+                "errorMessage", "platformOnlineStatus", "certificationLabels", "platformIdentity",
+                "shopAuthorization", "fieldEvidence", "collectorVersion", "rawSnapshotHash")) unknown.put(key, null);
         return unknown;
     }
 
@@ -664,7 +676,26 @@ public class AccountMatrixService {
         map.put("positiveRate", rs.getBigDecimal("positive_rate"));
         map.put("lastActiveTime", instant(rs, "last_active_time"));
         map.put("syncedAt", instant(rs, "synced_at"));
+        map.put("rawSnapshotHash", rs.getString("raw_snapshot_hash"));
+        map.put("fieldEvidence", readJson(rs.getString("field_evidence_json")));
+        map.put("collectorVersion", rs.getString("collector_version"));
+        map.put("platformOnlineStatus", rs.getString("platform_online_status"));
+        map.put("certificationLabels", readJson(rs.getString("certification_labels_json")));
+        map.put("platformIdentity", readJson(rs.getString("platform_identity_json")));
+        map.put("shopAuthorization", readJson(rs.getString("shop_authorization_json")));
         return map;
+    }
+
+    private Map<String, Object> latestProfileRefresh(Long accountId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT request_id requestId,status,source,coverage_status coverageStatus,
+                       started_at startedAt,completed_at completedAt,retry_after retryAfter,
+                       error_code errorCode,error_message errorMessage,recovery_hint recoveryHint
+                  FROM xianyu_shop_profile_sync_attempt
+                 WHERE tenant_id=? AND xianyu_account_id=? ORDER BY id DESC LIMIT 1
+                """, requireTenant(), accountId);
+        if (rows.isEmpty()) return Map.of("status", "UNSYNCED", "source", "NONE", "coverageStatus", "UNSYNCED");
+        return rows.get(0);
     }
 
     private Map<String, Object> riskRow(ResultSet rs) throws SQLException {
@@ -696,8 +727,8 @@ public class AccountMatrixService {
 
     private Map<String, Object> datasetState(Long accountId, String datasetCode) {
         List<Map<String, Object>> rows = jdbcTemplate.query("""
-                SELECT source, sync_status, coverage_status, as_of_time, last_attempt_time,
-                       last_success_time, last_error_code, last_error_message, request_id
+                SELECT source, sync_status, coverage_status, as_of_time, last_attempt_time, started_at,
+                       last_success_time, last_error_code, last_error_message, retry_after, recovery_hint, request_id
                   FROM xianyu_account_dataset_state
                  WHERE tenant_id=? AND xianyu_account_id=? AND dataset_code=?
                 """, (rs, rowNum) -> {
@@ -707,9 +738,12 @@ public class AccountMatrixService {
             state.put("coverageStatus", rs.getString("coverage_status"));
             state.put("asOfTime", instant(rs, "as_of_time"));
             state.put("lastAttemptTime", instant(rs, "last_attempt_time"));
+            state.put("startedAt", instant(rs, "started_at"));
             state.put("lastSuccessTime", instant(rs, "last_success_time"));
             state.put("lastErrorCode", rs.getString("last_error_code"));
             state.put("lastErrorMessage", rs.getString("last_error_message"));
+            state.put("retryAfter", instant(rs, "retry_after"));
+            state.put("recoveryHint", rs.getString("recovery_hint"));
             state.put("requestId", rs.getString("request_id"));
             return state;
         }, requireTenant(), accountId, datasetCode);
@@ -720,9 +754,12 @@ public class AccountMatrixService {
         unknown.put("coverageStatus", "UNSYNCED");
         unknown.put("asOfTime", null);
         unknown.put("lastAttemptTime", null);
+        unknown.put("startedAt", null);
         unknown.put("lastSuccessTime", null);
         unknown.put("lastErrorCode", null);
         unknown.put("lastErrorMessage", null);
+        unknown.put("retryAfter", null);
+        unknown.put("recoveryHint", null);
         unknown.put("requestId", null);
         return unknown;
     }

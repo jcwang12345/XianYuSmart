@@ -9,6 +9,8 @@ import com.xianyusmart.entity.XianyuGoodsOrder;
 import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
+import com.xianyusmart.service.delivery.DeliveryExecution;
+import com.xianyusmart.exception.DeliveryUncertainException;
 import com.xianyusmart.utils.XianyuApiCallUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +57,8 @@ public class GoodsAutomationService {
     private final RiskControlService riskControlService;
     private final OrderEngagementService orderEngagementService;
     private final OperationalIssueService operationalIssueService;
+    @Autowired
+    private AutomationActivationService activationService;
     private final Map<Long, Integer> rateScanStartPages = new ConcurrentHashMap<>();
     private final Clock clock;
 
@@ -102,14 +106,20 @@ public class GoodsAutomationService {
     }
 
     public void runAutoRate() {
+        activationService.initializeEnabled();
         Map<Long, List<XianyuGoodsConfig>> configsByAccount = goodsConfigMapper.selectAutoRateEnabled().stream()
-                .filter(config -> config.getXianyuAccountId() != null && config.getXyGoodsId() != null)
+                .filter(config -> config.getTenantId() != null && config.getXianyuAccountId() != null && config.getXyGoodsId() != null)
                 .collect(Collectors.groupingBy(XianyuGoodsConfig::getXianyuAccountId));
         configsByAccount.forEach((accountId, configs) -> {
             try {
+                Long tenant = configs.getFirst().getTenantId();
+                if (configs.stream().anyMatch(config -> !tenant.equals(config.getTenantId()))) return;
+                TenantContext.set(tenant);
                 ratePendingOrders(accountId, configs);
             } catch (Exception e) {
                 log.warn("【账号{}】自动评价任务执行失败: {}", accountId, e.getMessage());
+            } finally {
+                TenantContext.clear();
             }
         });
     }
@@ -140,9 +150,19 @@ public class GoodsAutomationService {
     }
 
     public void runReceiptFollowUps() {
+        activationService.initializeEnabled();
         List<XianyuGoodsOrder> orders = goodsOrderMapper.selectDueReceiptFollowUps(100).stream()
-                .filter(order -> goodsOrderMapper.claimReceiptFollowUp(order.getId(),
-                        order.getReceiptFollowUpSentCount() == null ? 0 : order.getReceiptFollowUpSentCount()) == 1)
+                .filter(this::isEngagementSafe)
+                .filter(order -> {
+                    try {
+                        TenantContext.set(order.getTenantId());
+                        return activationService.allowsOrder("REVIEW_INVITE", order)
+                                && goodsOrderMapper.claimReceiptFollowUp(order.getId(),
+                                order.getReceiptFollowUpSentCount() == null ? 0 : order.getReceiptFollowUpSentCount()) == 1;
+                    } finally {
+                        TenantContext.clear();
+                    }
+                })
                 .toList();
         Map<Long, List<XianyuGoodsOrder>> ordersByAccount = orders.stream()
                 .filter(order -> order.getXianyuAccountId() != null && order.getOrderId() != null)
@@ -151,6 +171,17 @@ public class GoodsAutomationService {
     }
 
     private void sendReceiptFollowUps(Long accountId, List<XianyuGoodsOrder> orders) {
+        Long tenant = orders.getFirst().getTenantId();
+        if (tenant == null || orders.stream().anyMatch(order -> !tenant.equals(order.getTenantId()))) return;
+        try {
+            TenantContext.set(tenant);
+            sendReceiptFollowUpsForAccount(accountId, orders);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private void sendReceiptFollowUpsForAccount(Long accountId, List<XianyuGoodsOrder> orders) {
         Map<String, OrderRateDetailDTO> rateDetails = new HashMap<>();
         List<String> pendingOrderIds = orders.stream()
                 .map(XianyuGoodsOrder::getOrderId)
@@ -166,10 +197,16 @@ public class GoodsAutomationService {
         }
 
         for (XianyuGoodsOrder order : orders) {
+            int sentCount = order.getReceiptFollowUpSentCount() == null
+                    ? 0 : order.getReceiptFollowUpSentCount();
+            OrderEngagementService.Admission admission = null;
+            boolean[] sendStarted = {false};
+            boolean eventResolved = false;
             try {
                 TenantContext.set(order.getTenantId());
-                int sentCount = order.getReceiptFollowUpSentCount() == null
-                        ? 0 : order.getReceiptFollowUpSentCount();
+                if (!isEngagementSafe(order) || !activationService.allowsOrder("REVIEW_INVITE", order)) {
+                    continue;
+                }
                 OrderRateDetailDTO detail = rateDetails.get(order.getOrderId());
                 if (detail == null || !TRADE_COMPLETED.equals(detail.getTradeStatus())) {
                     goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now().plusMinutes(1));
@@ -200,7 +237,8 @@ public class GoodsAutomationService {
                 }
 
                 String inviteTemplate = messages.get(sentCount);
-                OrderEngagementService.Admission admission = orderEngagementService.beginInvite(
+                buyerMessageService.verifyReceiptFollowUp(order);
+                admission = orderEngagementService.beginInvite(
                         order.getTenantId(), accountId, order.getId(), order.getOrderId(), sentCount, inviteTemplate);
                 if (admission.decision() == OrderEngagementService.Decision.ALREADY_CONFIRMED) {
                     advanceReceiptFollowUp(order, sentCount, messages.size(), config);
@@ -222,10 +260,16 @@ public class GoodsAutomationService {
                 }
 
                 boolean success;
-                try {
+                // Observe the existing message channel's write boundary; identity and connection checks
+                // before beforeExternal() are known not to have sent a message.
+                try (DeliveryExecution ignored = new DeliveryExecution(null, () -> true, () -> {
+                    sendStarted[0] = true;
+                    return true;
+                })) {
                     success = buyerMessageService.sendReceiptFollowUp(order, inviteTemplate);
-                } catch (com.xianyusmart.exception.DeliveryUncertainException e) {
+                } catch (DeliveryUncertainException e) {
                     orderEngagementService.unknown(order.getTenantId(), admission.eventId(), e.getMessage());
+                    eventResolved = true;
                     stopInviteForManualReview(order, sentCount, admission.requestId(),
                             "邀评消息回执未知，请核对买家会话后人工处理");
                     continue;
@@ -233,6 +277,7 @@ public class GoodsAutomationService {
                 if (!success) {
                     boolean manual = orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
                             "消息通道未确认发送", admission.attemptCount());
+                    eventResolved = true;
                     if (manual) {
                         stopInviteForManualReview(order, sentCount, admission.requestId(),
                                 "邀评消息连续失败，已停止自动重试");
@@ -242,6 +287,7 @@ public class GoodsAutomationService {
                     continue;
                 }
                 orderEngagementService.success(order.getTenantId(), admission.eventId());
+                eventResolved = true;
                 advanceReceiptFollowUp(order, sentCount, messages.size(), config);
                 operationLogService.log(accountId, OperationConstants.Type.SEND, OperationConstants.Module.ORDER,
                         "确认收货后话术发送成功", OperationConstants.Status.SUCCESS,
@@ -249,9 +295,24 @@ public class GoodsAutomationService {
                         "{\"requestId\":\"" + admission.requestId() + "\",\"contentStored\":false}",
                         null, null, null);
             } catch (Exception e) {
-                log.warn("【账号{}】发送确认收货后话术失败: orderId={}, error={}",
-                        accountId, order.getOrderId(), e.getMessage());
-                goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now().plusMinutes(1));
+                log.warn("【账号{}】发送确认收货后话术失败: orderId={}, errorType={}",
+                        accountId, order.getOrderId(), e.getClass().getSimpleName());
+                if (admission != null && admission.allowed() && !eventResolved) {
+                    if (sendStarted[0]) {
+                        orderEngagementService.unknown(order.getTenantId(), admission.eventId(), "邀评发送结果未确认");
+                        stopInviteForManualReview(order, sentCount, admission.requestId(),
+                                "邀评消息结果未确认，已停止自动重发");
+                        continue;
+                    }
+                    boolean manual = orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
+                            "邀评发送前检查失败", admission.attemptCount());
+                    if (manual) {
+                        stopInviteForManualReview(order, sentCount, admission.requestId(),
+                                "邀评发送前检查连续失败，已停止自动重试");
+                        continue;
+                    }
+                }
+                goodsOrderMapper.deferReceiptFollowUp(order.getId(), LocalDateTime.now(clock).plusMinutes(1));
             } finally {
                 TenantContext.clear();
             }
@@ -302,7 +363,19 @@ public class GoodsAutomationService {
                 && !"[]".equals(config.getReceiptFollowUpMessages());
     }
 
+    private boolean isEngagementSafe(XianyuGoodsOrder order) {
+        return order != null && order.getId() != null && order.getTenantId() != null
+                && order.getXianyuAccountId() != null && order.getXyGoodsId() != null && !order.getXyGoodsId().isBlank()
+                && order.getOrderId() != null && !order.getOrderId().isBlank()
+                && Integer.valueOf(1).equals(order.getState())
+                && "COMPLETED".equals(order.getDeliveryStatus())
+                && (Integer.valueOf(1).equals(order.getConfirmState())
+                    || Integer.valueOf(1).equals(order.getDeliveryMessageState()))
+                && (order.getRefundStatus() == null || "NONE".equals(order.getRefundStatus()));
+    }
+
     private void ratePendingOrders(Long accountId, List<XianyuGoodsConfig> configs) {
+        Long tenant = configs.getFirst().getTenantId();
         String cookie = accountService.getCookieByAccountId(accountId);
         if (cookie == null || cookie.isBlank()) {
             return;
@@ -353,13 +426,15 @@ public class GoodsAutomationService {
         int attemptedCount = 0;
         // 先完成分页快照再回评，避免评价成功后列表收缩导致跨页订单被跳过。
         for (Map<String, Object> item : pendingItems.values()) {
+            TenantContext.set(tenant);
             String orderId = extractOrderId(item);
             if (orderId == null) {
                 continue;
             }
             XianyuGoodsOrder order = goodsOrderMapper.selectByAccountIdAndOrderId(accountId, orderId);
             XianyuGoodsConfig config = order == null ? null : configsByGoodsId.get(order.getXyGoodsId());
-            if (config == null) {
+            if (config == null || !isEngagementSafe(order) || !tenant.equals(order.getTenantId())
+                    || Integer.valueOf(1).equals(order.getRateStatus())) {
                 continue;
             }
             if (!isRateEligible(item, config.getXianyuAutoRateOn())) {
@@ -368,21 +443,55 @@ public class GoodsAutomationService {
             if (attemptedCount >= MAX_RATE_PER_ACCOUNT) {
                 break;
             }
-            String content;
+            OrderEngagementService.Admission admission = null;
+            boolean[] rateStarted = {false};
+            boolean eventResolved = false;
             try {
-                content = ratingContentService.resolve(config.getXianyuAutoRateContent(), order);
-            } catch (IllegalArgumentException e) {
-                log.warn("【账号{}】自动评价文案无效，已跳过订单: orderId={}, error={}",
-                        accountId, orderId, e.getMessage());
-                continue;
+                TenantContext.set(order.getTenantId());
+                if (!activationService.allowsOrder("AUTO_RATE", order)) continue;
+                String content = ratingContentService.resolve(config.getXianyuAutoRateContent(), order);
+                buyerMessageService.verifyReceiptFollowUp(order);
+                RiskControlService.GuardDecision permit =
+                        riskControlService.tryAcquire(accountId, RiskControlService.WriteOperation.ORDER_RATE);
+                if (!permit.allowed()) break;
+                admission = orderEngagementService.beginAutoRate(
+                        order.getTenantId(), accountId, order.getId(), orderId, content);
+                if (admission.decision() == OrderEngagementService.Decision.DAILY_LIMIT) break;
+                if (admission.decision() == OrderEngagementService.Decision.RESULT_UNKNOWN) {
+                    reportRateIssue(order, admission.requestId(), "评价结果未知或已达到重试上限，已停止自动重发");
+                    continue;
+                }
+                if (!admission.allowed()) continue;
+                attemptedCount++;
+                XianyuApiCallUtils.ApiCallResult result = rateOrder(accountId, orderId, order.getXyGoodsId(),
+                        content, "AUTO", cookie, permit, () -> rateStarted[0] = true);
+                if (result.isSuccess()) {
+                    orderEngagementService.success(order.getTenantId(), admission.eventId());
+                } else if (isRateOutcomeUnknown(result)) {
+                    orderEngagementService.unknown(order.getTenantId(), admission.eventId(), "平台评价结果未确认");
+                    reportRateIssue(order, admission.requestId(), "平台评价结果未确认，已停止自动重发");
+                } else if (orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
+                        result.getErrorMessage(), admission.attemptCount())) {
+                    reportRateIssue(order, admission.requestId(), "评价连续失败，已停止自动重试");
+                }
+                eventResolved = true;
+                if (!result.isSuccess() && isCredentialOrRiskFailure(result)) break;
+                pauseBetweenRequests();
+            } catch (Exception e) {
+                if (admission != null && admission.allowed() && !eventResolved) {
+                    if (rateStarted[0] || e instanceof DeliveryUncertainException) {
+                        orderEngagementService.unknown(order.getTenantId(), admission.eventId(), "评价调用结果未确认");
+                        reportRateIssue(order, admission.requestId(), "评价调用结果未确认，已停止自动重发");
+                    } else if (orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
+                            "评价请求开始前失败", admission.attemptCount())) {
+                        reportRateIssue(order, admission.requestId(), "评价请求开始前连续失败，已停止自动重试");
+                    }
+                }
+                log.warn("【账号{}】自动评价已跳过订单: orderId={}, errorType={}",
+                        accountId, orderId, e.getClass().getSimpleName());
+            } finally {
+                TenantContext.clear();
             }
-            attemptedCount++;
-            XianyuApiCallUtils.ApiCallResult result = rateOrder(
-                    accountId, orderId, order.getXyGoodsId(), content, "AUTO", cookie);
-            if (!result.isSuccess() && isCredentialOrRiskFailure(result)) {
-                break;
-            }
-            pauseBetweenRequests();
         }
     }
 
@@ -396,6 +505,9 @@ public class GoodsAutomationService {
         XianyuGoodsOrder order = goodsOrderMapper.selectByAccountIdAndOrderId(accountId, orderId.trim());
         if (order == null) {
             throw new IllegalArgumentException("订单不存在或无权操作");
+        }
+        if (!isEngagementSafe(order)) {
+            throw new IllegalArgumentException("订单履约或退款状态需要人工核对，已停止评价");
         }
         String content = ratingContentService.renderTemplate(feedback, order);
         String cookie = accountService.getCookieByAccountId(accountId);
@@ -412,15 +524,71 @@ public class GoodsAutomationService {
         if (!Boolean.TRUE.equals(detail.getCanRate())) {
             throw new IllegalArgumentException(detail.getStatusText());
         }
-        XianyuApiCallUtils.ApiCallResult result = rateOrder(
-                accountId, order.getOrderId(), order.getXyGoodsId(), content, "MANUAL", cookie);
-        if (!result.isSuccess()) {
-            throw new IllegalStateException(result.getErrorMessage() == null ? "评价失败，请稍后重试" : result.getErrorMessage());
+        buyerMessageService.verifyReceiptFollowUp(order);
+        RiskControlService.GuardDecision permit =
+                riskControlService.tryAcquire(accountId, RiskControlService.WriteOperation.ORDER_RATE);
+        if (!permit.allowed()) throw new IllegalStateException("账号评价写操作正在等待恢复，请稍后重试");
+        OrderEngagementService.Admission admission = orderEngagementService.beginAutoRate(
+                order.getTenantId(), accountId, order.getId(), order.getOrderId(), content);
+        if (!admission.allowed()) {
+            if (admission.decision() == OrderEngagementService.Decision.RESULT_UNKNOWN) {
+                reportRateIssue(order, admission.requestId(), "评价结果未知，需先人工核对平台评价状态");
+            }
+            throw new IllegalStateException("订单评价已记录或正在等待处理，请先核对平台状态");
+        }
+        boolean[] rateStarted = {false};
+        boolean eventResolved = false;
+        try {
+            XianyuApiCallUtils.ApiCallResult result = rateOrder(accountId, order.getOrderId(), order.getXyGoodsId(),
+                    content, "MANUAL", cookie, permit, () -> rateStarted[0] = true);
+            if (result.isSuccess()) {
+                orderEngagementService.success(order.getTenantId(), admission.eventId());
+            } else if (isRateOutcomeUnknown(result)) {
+                orderEngagementService.unknown(order.getTenantId(), admission.eventId(), "平台评价结果未确认");
+                reportRateIssue(order, admission.requestId(), "平台评价结果未确认，需人工核对后处理");
+            } else if (orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
+                    result.getErrorMessage(), admission.attemptCount())) {
+                reportRateIssue(order, admission.requestId(), "评价连续失败，已停止自动重试");
+            }
+            eventResolved = true;
+            if (!result.isSuccess()) {
+                throw new IllegalStateException(result.getErrorMessage() == null ? "评价失败，请稍后重试" : result.getErrorMessage());
+            }
+        } catch (RuntimeException e) {
+            if (!eventResolved) {
+                if (rateStarted[0] || e instanceof DeliveryUncertainException) {
+                    orderEngagementService.unknown(order.getTenantId(), admission.eventId(), "评价调用结果未确认");
+                    reportRateIssue(order, admission.requestId(), "评价调用结果未确认，需人工核对后处理");
+                } else {
+                    orderEngagementService.knownFailure(order.getTenantId(), admission.eventId(),
+                            "评价请求开始前失败", admission.attemptCount());
+                }
+            }
+            throw e;
         }
     }
 
+    private void reportRateIssue(XianyuGoodsOrder order, String requestId, String reason) {
+        operationalIssueService.report("AUTO_RATE", "auto-rate:" + order.getId(), order.getXianyuAccountId(),
+                "WARNING", "订单评价需要人工核对", reason, "ORDER", order.getOrderId(),
+                LocalDateTime.now(clock).plusHours(1));
+        operationLogService.log(order.getXianyuAccountId(), OperationConstants.Type.SEND,
+                OperationConstants.Module.AUTO_RATE, reason, OperationConstants.Status.FAIL,
+                OperationConstants.TargetType.ORDER, order.getOrderId(),
+                "{\"requestId\":\"" + requestId + "\",\"automaticRetry\":false}", null, reason, null);
+    }
+
+    private boolean isRateOutcomeUnknown(XianyuApiCallUtils.ApiCallResult result) {
+        if (result.isSuccess() || result.isGuardBlocked() || result.isTokenExpired()) return false;
+        return result.isOutcomeUnknown() || "评价结果缺少业务状态".equals(result.getErrorMessage())
+                || "评价未被平台确认".equals(result.getErrorMessage())
+                || "评价成功与失败结果冲突".equals(result.getErrorMessage())
+                || "响应格式错误".equals(result.getErrorMessage());
+    }
+
     private XianyuApiCallUtils.ApiCallResult rateOrder(Long accountId, String orderId, String goodsId, String feedback,
-                                                       String source, String cookie) {
+                                                       String source, String cookie,
+                                                       RiskControlService.GuardDecision permit, Runnable beforeExternal) {
         Map<String, Object> request = new HashMap<>();
         request.put("tradeIdList", List.of(orderId));
         request.put("imageUrls", List.of());
@@ -428,12 +596,11 @@ public class GoodsAutomationService {
         request.put("feedback", feedback);
         request.put("anonymous", false);
 
-        RiskControlService.GuardDecision permit =
-                riskControlService.tryAcquire(accountId, RiskControlService.WriteOperation.ORDER_RATE);
         if (!permit.allowed()) {
             // 未请求平台时保留待评价状态，下一轮继续处理。
             return XianyuApiCallUtils.ApiCallResult.guardBlocked(permit);
         }
+        beforeExternal.run();
         XianyuApiCallUtils.ApiCallResult result = normalizeRateResult(apiCallUtils.callApiWithRetry(
                 accountId, "mtop.taobao.idle.merchant.rate.create", request, cookie,
                 sellerHeaders(), sellerQueryParams()), orderId);
@@ -571,7 +738,12 @@ public class GoodsAutomationService {
             orderSucceeded = successOrderIds.stream().anyMatch(value -> orderId.equals(stringValue(value)));
         }
         String errorMessage = extractRateError(module, orderId);
-        if (success && (orderSucceeded || errorMessage == null)) {
+        if (orderSucceeded && errorMessage != null) {
+            return new XianyuApiCallUtils.ApiCallResult(false, result.getResponse(),
+                    "评价成功与失败结果冲突", false);
+        }
+        // A success flag without an exact order acknowledgment is insufficient evidence.
+        if (success && orderSucceeded && errorMessage == null) {
             return result;
         }
         return new XianyuApiCallUtils.ApiCallResult(false, result.getResponse(),
@@ -629,9 +801,13 @@ public class GoodsAutomationService {
             return null;
         }
         for (Object value : failOrderInfos) {
-            if (value instanceof Map<?, ?> failure
-                    && (orderId.equals(stringValue(failure.get("orderId"))) || failOrderInfos.size() == 1)) {
-                return stringValue(failure.get("errorMsg"));
+            if (value instanceof Map<?, ?> failure) {
+                String failedOrderId = stringValue(failure.get("orderId"));
+                if (orderId.equals(failedOrderId)
+                        || (failedOrderId == null || failedOrderId.isBlank()) && failOrderInfos.size() == 1) {
+                    String error = stringValue(failure.get("errorMsg"));
+                    return error == null || error.isBlank() ? "平台明确拒绝当前订单评价" : error;
+                }
             }
         }
         return null;

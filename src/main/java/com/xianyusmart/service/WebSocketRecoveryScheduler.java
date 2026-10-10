@@ -5,6 +5,7 @@ import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -25,6 +26,10 @@ public class WebSocketRecoveryScheduler {
     private final Set<Long> connectingAccounts = ConcurrentHashMap.newKeySet();
     private final java.util.Map<Long, Long> nextAttempt = new ConcurrentHashMap<>();
     private final java.util.Map<Long, Integer> failures = new ConcurrentHashMap<>();
+    @Value("${websocket.recovery-enabled:true}")
+    private boolean recoveryEnabled = true;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
     @org.springframework.beans.factory.annotation.Autowired
     private WebSocketTokenService tokenService;
 
@@ -38,6 +43,7 @@ public class WebSocketRecoveryScheduler {
 
     @Scheduled(fixedDelayString = "${websocket.recovery-check-interval-ms:10000}", initialDelay = 3000)
     public void maintainConnections() {
+        if (!backgroundPlatformActivityPolicy.enabled() || !recoveryEnabled) return;
         // 仅检查凭证有效的启用账号，避免无效账号产生重复连接和无意义日志。
         for (XianyuAccount account : accountMapper.selectReconnectableAccounts()) {
             if (webSocketService.isConnected(account.getId())) {

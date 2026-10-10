@@ -3,6 +3,9 @@ package com.xianyusmart.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.AccountScopeContext;
 import com.xianyusmart.context.UserContext;
+import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.entity.SysUser;
+import com.xianyusmart.mapper.SysUserMapper;
 import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.entity.XianyuOperationLog;
 import com.xianyusmart.exception.BusinessException;
@@ -13,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.namedparam.SqlParameterSource;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.time.Instant;
@@ -38,6 +42,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ProductMatrixServiceTest {
+
+    @Test
+    void unverifiedSellerUpshelfIsSafeDegradationNotAnExecutableTask() {
+        ProductMatrixService subject = new ProductMatrixService(mock(JdbcTemplate.class),
+                mock(NamedParameterJdbcTemplate.class), mock(AccountAccessService.class),
+                mock(OperationLogService.class), new ObjectMapper(), mock(ProductBatchQaMockService.class),
+                mock(PlatformWritePolicy.class));
+        String reason = ReflectionTestUtils.invokeMethod(subject, "conflict", "ON_SALE", Map.of(), Map.of(
+                "status", 1, "product_source", "PLATFORM", "account_status", 1,
+                "credential_ready", 1, "sync_status", "SUCCEEDED"));
+        assertTrue(reason.contains("官方 App 上架后同步"));
+    }
 
     private JdbcTemplate jdbcTemplate;
     private NamedParameterJdbcTemplate namedJdbc;
@@ -68,6 +84,46 @@ class ProductMatrixServiceTest {
     void tearDown() {
         AccountScopeContext.clear();
         UserContext.clear();
+        TenantContext.clear();
+    }
+
+    SysUser snapshotManager(String role) {
+        TenantContext.set(9L);var users=mock(SysUserMapper.class);var permissions=mock(PlatformPermissionService.class);
+        var actor=new SysUser();actor.setId(4L);actor.setTenantId(9L);actor.setStatus(1);actor.setRole("USER");actor.setMemberRole(role);
+        when(users.selectById(4L)).thenReturn(actor);when(permissions.hasPermission(any(SysUser.class),anyString())).thenReturn(true);
+        when(accountAccessService.loadScope(any())).thenReturn(new AccountAccessService.Scope(true,Set.of()));
+        service.configureSnapshotSecurity(new ProductEventSafety(new ObjectMapper()),users,permissions);return actor;
+    }
+    @Test void rawSnapshotRequiresManagementEvenWhenAnOperatorHasAuditExportPermission() {
+        for(String role:List.of("OPERATOR","SUPPORT")) { snapshotManager(role);assertEquals(403,assertThrows(BusinessException.class,()->service.rawSnapshotMetadata(99L,"QA-R03-goods",1L)).getCode()); }
+    }
+    @Test void rawSnapshotAdminFastPathCannotCrossTenant() {
+        var actor=snapshotManager("OWNER");actor.setRole("ADMIN");actor.setTenantId(10L);
+        assertEquals(403,assertThrows(BusinessException.class,()->service.rawSnapshotMetadata(99L,"QA-R03-goods",1L)).getCode());
+    }
+    @Test void rawSnapshotReturnsNonemptySafeContentAndPreservesHistoricalSource() {
+        snapshotManager("OWNER");var row=new LinkedHashMap<String,Object>();row.put("id",1L);row.put("raw_snapshot_hash","a".repeat(64));row.put("data_source","PLATFORM_WEB");
+        row.put("before_json","{\"title\":\"old\",\"Token\":\"synthetic-private\"}");row.put("after_json","{\"title\":\"new\"}");row.put("field_diff_json","{}");
+        when(jdbcTemplate.queryForList(anyString(),eq(9L),eq(99L),eq("QA-R03-goods"),eq(1L))).thenReturn(List.of(row));
+        var result=service.rawSnapshotMetadata(99L,"QA-R03-goods",1L);assertEquals("SANITIZED_STRUCTURED",result.get("storageStatus"));assertEquals("PLATFORM_WEB",result.get("source"));
+        assertFalse(result.containsKey("platformVerified"));assertFalse(result.toString().contains("synthetic-private"));assertFalse(result.containsKey("before_json"));
+    }
+    @Test void hashOnlyAndContentOmittedAreDistinctHonestStates() {
+        snapshotManager("OWNER");var row=new LinkedHashMap<String,Object>();row.put("id",1L);row.put("data_source","QA_WEBHOOK");row.put("before_json","{\"body\":\"synthetic-private\"}");row.put("raw_snapshot_hash","a".repeat(64));
+        when(jdbcTemplate.queryForList(anyString(),eq(9L),eq(99L),eq("QA-R03-goods"),eq(1L))).thenReturn(List.of(row));assertEquals("CONTENT_OMITTED",service.rawSnapshotMetadata(99L,"QA-R03-goods",1L).get("storageStatus"));
+        row.remove("before_json");assertEquals("HASH_ONLY",service.rawSnapshotMetadata(99L,"QA-R03-goods",1L).get("storageStatus"));
+        row.put("raw_snapshot_hash",null);assertEquals("CONTENT_OMITTED",service.rawSnapshotMetadata(99L,"QA-R03-goods",1L).get("storageStatus"));
+    }
+    @Test void commonTimelineReturnsSafeDiffWithoutFullSnapshotOrPrivateErrorText() throws Exception {
+        var rs=mock(java.sql.ResultSet.class);when(rs.getString("data_source")).thenReturn("PLATFORM_WEB");
+        when(rs.getString("event_type")).thenReturn("LOCAL_DETAILS_EDIT");when(rs.getString("event_origin")).thenReturn("USER");when(rs.getString("outcome_state")).thenReturn("LOCAL_SUCCESS");
+        when(rs.getString("before_json")).thenReturn("{\"title\":\"old\",\"stock\":3}");when(rs.getString("after_json")).thenReturn("{\"title\":\"new\",\"stock\":3}");
+        when(rs.getString("field_diff_json")).thenReturn("{\"fields\":{\"title\":{\"before\":\"old\",\"after\":\"new\"}}}");
+        when(rs.getString("error_message")).thenReturn("Cookie=synthetic-private");
+        Map<String,Object> result=org.springframework.test.util.ReflectionTestUtils.invokeMethod(service,"eventRow",rs);
+        assertFalse(result.containsKey("before"));assertFalse(result.containsKey("after"));assertNull(result.get("errorMessage"));
+        assertFalse(result.toString().contains("synthetic-private"));assertEquals("PLATFORM_WEB",result.get("dataSource"));assertFalse(result.containsKey("platformVerified"));
+        assertEquals(1,((Map<?,?>)result.get("fieldDiff")).get("changedFieldCount"));
     }
 
     @Test

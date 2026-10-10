@@ -100,6 +100,18 @@ class OrderMatrixServiceTest {
 
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
+    void localResolutionRequiresOfficialPlatformCheckAndRejectsInvalidStatus() {
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class))).thenReturn(List.of(refund()));
+        BusinessException unchecked = assertThrows(BusinessException.class, () -> service.recordRefundHandling(3L,
+                new OrderMatrixService.RefundHandlingCommand("handling-1", "RESOLVED", "处理说明", false)));
+        assertEquals(400, unchecked.getCode());
+        BusinessException invalid = assertThrows(BusinessException.class, () -> service.recordRefundHandling(3L,
+                new OrderMatrixService.RefundHandlingCommand("handling-2", "APPROVE", "同意退款", true)));
+        assertEquals(400, invalid.getCode());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
     void refundApprovalIsExplicitlyUnavailableWhenNoReliablePlatformApiExists() {
         when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
                 .thenReturn(List.of(refund()));

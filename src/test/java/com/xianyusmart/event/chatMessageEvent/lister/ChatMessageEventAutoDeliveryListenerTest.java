@@ -49,6 +49,7 @@ class ChatMessageEventAutoDeliveryListenerTest {
     private ChatMessageEventAutoDeliveryListener listener;
 
     private ChatMessageReceivedEvent event;
+    private XianyuGoodsOrder persisted;
 
     @BeforeEach
     void setUp() {
@@ -68,14 +69,12 @@ class ChatMessageEventAutoDeliveryListenerTest {
         goods.setId(10L);
         when(goodsInfoMapper.selectOne(any(QueryWrapper.class))).thenReturn(goods);
 
-        XianyuGoodsConfig config = new XianyuGoodsConfig();
-        config.setXianyuAutoDeliveryOn(1);
-        when(goodsConfigMapper.selectByAccountAndGoodsId(1L, "goods-1")).thenReturn(config);
         when(buyerProfileService.automationBlockReason(1L, "buyer-1")).thenReturn(null);
 
-        XianyuGoodsOrder persisted = new XianyuGoodsOrder();
+        persisted = new XianyuGoodsOrder();
         persisted.setId(100L);
-        when(deliveryTaskService.discover(any(XianyuGoodsOrder.class), any())).thenReturn(persisted);
+        persisted.setDeliveryStatus("PENDING");
+        when(deliveryTaskService.recordPaymentProjection(any(XianyuGoodsOrder.class), any())).thenReturn(persisted);
     }
 
     @Test
@@ -96,5 +95,17 @@ class ChatMessageEventAutoDeliveryListenerTest {
 
         verify(notificationCenterService, never()).dispatch(eq("ORDER_CREATED"), anyLong(),
                 any(), any(), any());
+    }
+
+    @Test
+    void recordsProtectedPaymentWithoutAdvertisingAutomaticDelivery() {
+        persisted.setDeliveryStatus("REVIEW_REQUIRED");
+        when(deliveryTaskService.claimOrderCreatedNotification(100L)).thenReturn(true);
+        listener.handleChatMessageReceived(event);
+        verify(deliveryTaskService).recordPaymentProjection(any(), eq(com.xianyusmart.enums.DeliveryChannel.WEBSOCKET));
+        verify(deliveryTaskService, never()).discover(any(), any());
+        verify(notificationCenterService).dispatch(eq("ORDER_CREATED"), eq(1L), any(),
+                eq("付款消息已记录，自动发货未执行，待人工核对"), any());
+        verify(orderService, never()).confirmShipment(any(), any());
     }
 }

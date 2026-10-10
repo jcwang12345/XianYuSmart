@@ -25,6 +25,8 @@ public class AccountDataPermissionHandler implements MultiDataPermissionHandler 
             "xianyu_order_confirmation", "xianyu_device_profile", "operational_issue",
             "xianyu_account_capability", "conversation_assignment",
             "xianyu_account_access_channel", "xianyu_account_dataset_state", "xianyu_shop_profile_snapshot",
+            "xianyu_shop_profile_sync_attempt",
+            "xianyu_shop_risk_sync_attempt",
             "xianyu_shop_risk_event", "xianyu_shop_risk_action",
             "xianyu_goods_event", "xianyu_goods_metric_daily", "xianyu_goods_batch_item",
             "xianyu_order_event", "xianyu_refund_case", "xianyu_refund_action", "xianyu_return_shipment",

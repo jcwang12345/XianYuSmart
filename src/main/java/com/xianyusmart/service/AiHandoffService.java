@@ -34,6 +34,7 @@ public class AiHandoffService {
             Map.entry("NO_REPLY_STRATEGY", "没有可用回复策略"),
             Map.entry("AI_NO_SAFE_ANSWER", "AI 未生成可安全发送的内容"),
             Map.entry("LOW_CONFIDENCE", "知识命中置信度不足"),
+            Map.entry("REFUND_QUESTION", "退款咨询待核对（仅当前消息）"),
             Map.entry("AI_UNAVAILABLE", "AI 服务不可用或超时"),
             Map.entry("MESSAGE_OUTCOME_UNKNOWN", "消息发送结果未知"),
             Map.entry("REPLY_PREPARATION_FAILED", "回复准备失败")
@@ -73,6 +74,7 @@ public class AiHandoffService {
         accountAccessService.requireAccess(accountId);
         String sessionId = required(command.sessionId(), "会话ID", 100);
         String reasonCode = normalizedReason(command.reasonCode());
+        boolean blocksAutoReply = !"REFUND_QUESTION".equals(reasonCode);
         String requestId = required(command.requestId(), "requestId", 80);
         String dedupeKey = required(command.dedupeKey(), "去重键", 191);
         BigDecimal confidence = confidence(command.confidenceScore());
@@ -80,12 +82,12 @@ public class AiHandoffService {
         jdbcTemplate.update("""
                 INSERT INTO xianyu_ai_handoff_task
                 (tenant_id,xianyu_account_id,session_id,xy_goods_id,buyer_user_id,source_reply_record_id,
-                 reason_code,reason_detail,priority,status,confidence_score,model_name,dedupe_key,request_id,open_attempt_token)
-                VALUES (?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?)
+                 reason_code,reason_detail,priority,status,blocks_auto_reply,confidence_score,model_name,dedupe_key,request_id,open_attempt_token)
+                VALUES (?,?,?,?,?,?,?,?,?,'OPEN',?,?,?,?,?,?)
                 ON DUPLICATE KEY UPDATE id=id
                 """, tenant(), accountId, sessionId, trim(command.goodsId(), 100), trim(command.buyerUserId(), 100),
                 command.sourceReplyRecordId(), reasonCode, trim(command.reasonDetail(), 500),
-                priority(reasonCode), confidence, trim(command.modelName(), 100), dedupeKey, requestId, openAttemptToken);
+                priority(reasonCode), blocksAutoReply ? 1 : 0, confidence, trim(command.modelName(), 100), dedupeKey, requestId, openAttemptToken);
         Map<String, Object> task = taskByDedupe(dedupeKey);
         Long taskId = number(task.get("id"));
         jdbcTemplate.update("""
@@ -95,7 +97,7 @@ public class AiHandoffService {
                 ON DUPLICATE KEY UPDATE buyer_user_id=COALESCE(buyer_user_id,VALUES(buyer_user_id)),
                     last_message_time=GREATEST(COALESCE(last_message_time,VALUES(last_message_time)),VALUES(last_message_time))
                 """, tenant(), accountId, sessionId, trim(command.buyerUserId(), 100));
-        jdbcTemplate.update("""
+        if (blocksAutoReply) jdbcTemplate.update("""
                 UPDATE conversation_assignment
                    SET auto_reply_state='HUMAN_REQUIRED',handoff_status=?,handoff_reason_code=?,
                        handoff_task_id=?,handoff_created_time=COALESCE(handoff_created_time,NOW(3)),
@@ -143,6 +145,7 @@ public class AiHandoffService {
                        task.session_id sessionId,task.xy_goods_id goodsId,task.buyer_user_id buyerUserId,
                        task.source_reply_record_id sourceReplyRecordId,task.reason_code reasonCode,
                        task.reason_detail reasonDetail,task.priority,task.status,
+                       CASE WHEN task.blocks_auto_reply=1 THEN 'SESSION' ELSE 'MESSAGE' END blockingScope,
                        task.confidence_score confidenceScore,task.model_name modelName,
                        task.request_id requestId,task.claimed_by claimedBy,task.claimed_username claimedUsername,
                        task.claimed_time claimedTime,task.resolved_by resolvedBy,
@@ -203,7 +206,7 @@ public class AiHandoffService {
         if (updated == 0) throw new BusinessException(409, "任务状态已变化，请刷新后重试");
         Long remaining = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM xianyu_ai_handoff_task
-                 WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? AND status IN ('OPEN','CLAIMED')
+                 WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? AND status IN ('OPEN','CLAIMED') AND blocks_auto_reply=1
                 """, Long.class, tenant(), number(task.get("accountId")), task.get("sessionId"));
         if (remaining != null && remaining == 0) {
             jdbcTemplate.update("""
@@ -243,7 +246,7 @@ public class AiHandoffService {
         if (accountId == null || sessionId == null || sessionId.isBlank() || TenantContext.get() == null) return false;
         Long count = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM xianyu_ai_handoff_task
-                 WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? AND status IN ('OPEN','CLAIMED')
+                 WHERE tenant_id=? AND xianyu_account_id=? AND session_id=? AND status IN ('OPEN','CLAIMED') AND blocks_auto_reply=1
                 """, Long.class, tenant(), accountId, sessionId);
         return count != null && count > 0;
     }
@@ -264,7 +267,8 @@ public class AiHandoffService {
         if (id == null || id <= 0) throw new BusinessException(400, "任务ID无效");
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT id,xianyu_account_id accountId,session_id sessionId,status,claimed_by claimedBy,
-                       reason_code reasonCode,request_id requestId FROM xianyu_ai_handoff_task
+                       reason_code reasonCode,request_id requestId,
+                       CASE WHEN blocks_auto_reply=1 THEN 'SESSION' ELSE 'MESSAGE' END blockingScope FROM xianyu_ai_handoff_task
                  WHERE tenant_id=? AND id=?
                 """, tenant(), id);
         if (rows.isEmpty()) throw new BusinessException(404, "人工接管任务不存在或无权访问");
@@ -275,7 +279,8 @@ public class AiHandoffService {
     private Map<String, Object> taskByDedupe(String dedupeKey) {
         return new LinkedHashMap<>(jdbcTemplate.queryForMap("""
                 SELECT id,xianyu_account_id accountId,session_id sessionId,status,reason_code reasonCode,
-                       request_id requestId,open_attempt_token openAttemptToken,created_time createdTime
+                       request_id requestId,open_attempt_token openAttemptToken,created_time createdTime,
+                       CASE WHEN blocks_auto_reply=1 THEN 'SESSION' ELSE 'MESSAGE' END blockingScope
                   FROM xianyu_ai_handoff_task
                  WHERE tenant_id=? AND dedupe_key=?
                 """, tenant(), dedupeKey));

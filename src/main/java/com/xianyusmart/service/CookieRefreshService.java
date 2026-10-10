@@ -25,6 +25,9 @@ public interface CookieRefreshService {
      * @return 是否登录有效
      */
     boolean checkLoginStatusQuietly(Long accountId);
+
+    /** Consume the credential version proven invalid by this thread’s last check. */
+    default Long consumeConfirmedInvalidVersion(Long accountId) { return null; }
     
     /**
      * 刷新Cookie

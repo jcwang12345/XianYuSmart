@@ -14,6 +14,7 @@ import com.xianyusmart.service.KamiConfigService;
 import com.xianyusmart.service.MerchantOperationsService;
 import com.xianyusmart.service.NotificationCenterService;
 import com.xianyusmart.service.OrderService;
+import com.xianyusmart.service.RefundObservationService;
 import com.xianyusmart.entity.XianyuGoodsConfig;
 import com.xianyusmart.mapper.XianyuGoodsConfigMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -73,6 +74,9 @@ public class ChatMessageEventAutoDeliveryListener {
     @Autowired
     private MerchantOperationsService merchantOperationsService;
 
+    @Autowired
+    private RefundObservationService refundObservationService;
+
     private final Map<String, Long> bargainMessageStages = new ConcurrentHashMap<>();
 
     @Async
@@ -87,7 +91,7 @@ public class ChatMessageEventAutoDeliveryListener {
 
         try {
             if (isRefundRequestedMessage(message)) {
-                handleRefundRequested(message);
+                refundObservationService.observeMessage(message);
                 return;
             }
 
@@ -123,17 +127,12 @@ public class ChatMessageEventAutoDeliveryListener {
                 return;
             }
 
-            XianyuGoodsConfig goodsConfig = goodsConfigMapper.selectByAccountAndGoodsId(accountId, message.getXyGoodsId());
-            if (goodsConfig == null || goodsConfig.getXianyuAutoDeliveryOn() == null || goodsConfig.getXianyuAutoDeliveryOn() != 1) {
-                log.info("【账号{}】商品未开启自动发货，跳过: xyGoodsId={}", accountId, message.getXyGoodsId());
-                return;
-            }
-
             String blockReason = buyerProfileService.automationBlockReason(accountId, message.getSenderUserId());
-            Long recordId = createOrderRecord(accountId, xianyuGoodsId, message, blockReason);
-            if (recordId == null) {
+            XianyuGoodsOrder recorded = createOrderRecord(accountId, xianyuGoodsId, message, blockReason);
+            if (recorded == null) {
                 return;
             }
+            Long recordId = recorded.getId();
             if (!deliveryTaskService.claimOrderCreatedNotification(recordId)) {
                 log.info("【账号{}】订单待发货通知已发送，跳过重放事件: recordId={}, orderId={}, pnmId={}",
                         accountId, recordId, message.getOrderId(), message.getPnmId());
@@ -142,15 +141,19 @@ public class ChatMessageEventAutoDeliveryListener {
             if (blockReason != null) {
                 log.warn("【账号{}】{}，订单已进入人工复核: orderId={}", accountId, blockReason, message.getOrderId());
             }
+            boolean reviewRequired = com.xianyusmart.enums.DeliveryStatus.REVIEW_REQUIRED.name().equals(recorded.getDeliveryStatus());
+            boolean queued = com.xianyusmart.enums.DeliveryStatus.PENDING.name().equals(recorded.getDeliveryStatus())
+                    || com.xianyusmart.enums.DeliveryStatus.RETRY_WAIT.name().equals(recorded.getDeliveryStatus());
             notificationCenterService.dispatch("ORDER_CREATED", accountId, "发现新的待发货订单",
-                    blockReason != null
-                            ? "订单已暂停自动化并进入人工复核"
+                    reviewRequired
+                            ? "付款消息已记录，自动发货未执行，待人工核对"
+                            : !queued ? "付款消息已关联现有订单，履约状态保持不变"
                             : buyerUserName == null
                             ? "新订单已进入自动发货队列"
                             : buyerUserName + " 的订单已进入自动发货队列",
                     Map.of("orderId", message.getOrderId() == null ? "" : message.getOrderId(),
                             "xyGoodsId", message.getXyGoodsId(),
-                            "reviewRequired", blockReason != null));
+                            "reviewRequired", reviewRequired));
 
         } catch (Exception e) {
             log.error("【账号{}】处理自动发货异常: pnmId={}", accountId, message.getPnmId(), e);
@@ -173,21 +176,6 @@ public class ChatMessageEventAutoDeliveryListener {
                 && message.getContentType() == 26
                 && message.getMsgContent() != null
                 && message.getMsgContent().contains("我发起了退款申请");
-    }
-
-    private void handleRefundRequested(ChatMessageData message) {
-        Long accountId = message.getXianyuAccountId();
-        String orderId = message.getOrderId();
-        if (accountId == null || orderId == null || orderId.isBlank()) {
-            log.warn("【账号{}】退款消息缺少订单ID，无法停止自动发货: pnmId={}",
-                    accountId, message.getPnmId());
-            return;
-        }
-        String reason = "买家已发起退款，已停止自动发货";
-        if (orderMapper.skipPendingTaskForRefund(accountId, orderId, reason) == 1) {
-            kamiConfigService.releaseReservation(orderId, accountId);
-            log.info("【账号{}】检测到买家退款，已停止自动发货: orderId={}", accountId, orderId);
-        }
     }
 
     private boolean isBargainWaitingMessage(ChatMessageData message) {
@@ -287,7 +275,7 @@ public class ChatMessageEventAutoDeliveryListener {
         return goodsInfo.getId();
     }
 
-    private Long createOrderRecord(Long accountId, Long xianyuGoodsId, ChatMessageData message,
+    private XianyuGoodsOrder createOrderRecord(Long accountId, Long xianyuGoodsId, ChatMessageData message,
                                    String reviewReason) {
         XianyuGoodsOrder record = new XianyuGoodsOrder();
         record.setXianyuAccountId(accountId);
@@ -307,9 +295,9 @@ public class ChatMessageEventAutoDeliveryListener {
         }
 
         try {
-            XianyuGoodsOrder task = deliveryTaskService.discover(record, DeliveryChannel.WEBSOCKET);
+            XianyuGoodsOrder task = deliveryTaskService.recordPaymentProjection(record, DeliveryChannel.WEBSOCKET);
             log.info("【账号{}】创建订单任务成功: recordId={}, orderId={}", accountId, task.getId(), message.getOrderId());
-            return task.getId();
+            return task;
         } catch (Exception e) {
             throw new RuntimeException("创建订单记录失败", e);
         }

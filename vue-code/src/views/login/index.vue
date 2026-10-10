@@ -4,6 +4,11 @@ import { checkUserExists, login, register } from '@/api/auth'
 import { getApiErrorCode, setAuthToken, isLoggedIn } from '@/utils/request'
 import { evaluateRegistrationPassword } from '@/utils/registration-password'
 import { resolveLoginFailure } from './login-challenge'
+import { bootstrapAccountSessions } from '@/api/matrix'
+import { useRoute } from 'vue-router'
+import { loginReturnPath } from '@/utils/login-return'
+
+const loginRoute = useRoute()
 
 // 'checking' -> 'login' -> 'register'
 const mode = ref<'checking' | 'login' | 'register'>('checking')
@@ -51,7 +56,7 @@ watch(username, () => {
 onMounted(async () => {
   // 已登录则跳转首页
   if (isLoggedIn()) {
-    window.location.href = '/dashboard'
+    window.location.href = loginReturnPath(loginRoute.query.redirect)
     return
   }
   // 检查是否有用户，决定显示登录还是注册
@@ -85,7 +90,8 @@ async function handleLogin() {
     const res = await login({ username: username.value.trim(), password: password.value, totpCode: totpCode.value.trim() || undefined })
     if (res.code === 200 && res.data && res.data.token) {
       setAuthToken(res.data.token, res.data.username, res.data.refreshToken)
-      window.location.href = '/dashboard'
+      await bootstrapAccountSessions().catch(() => undefined)
+      window.location.href = loginReturnPath(loginRoute.query.redirect)
     } else {
       loginError.value = '登录响应无效，请稍后重试'
     }
@@ -120,7 +126,8 @@ async function handleRegister() {
     })
     if (res.code === 200 && res.data && res.data.token) {
       setAuthToken(res.data.token, res.data.username, res.data.refreshToken)
-      window.location.href = '/dashboard'
+      await bootstrapAccountSessions().catch(() => undefined)
+      window.location.href = loginReturnPath(loginRoute.query.redirect)
     }
   } catch {
     // 通用请求层已经展示脱敏提示；不要把可能含请求配置的异常写入控制台。

@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.util.ArrayList;
@@ -22,6 +23,8 @@ import java.util.concurrent.TimeUnit;
 @RestController
 @RequestMapping("/api/data-panel")
 public class DataPanelController {
+
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
 
     @Autowired
     private XianyuGoodsOrderMapper orderMapper;
@@ -41,10 +44,10 @@ public class DataPanelController {
             if (req != null && req.getDate() != null && !req.getDate().isEmpty()) {
                 date = req.getDate();
             } else {
-                date = LocalDate.now().minusDays(1).format(DateTimeFormatter.ISO_LOCAL_DATE);
+                date = LocalDate.now(BUSINESS_ZONE).minusDays(1).format(DateTimeFormatter.ISO_LOCAL_DATE);
             }
 
-            boolean isToday = date.equals(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE));
+            boolean isToday = date.equals(LocalDate.now(BUSINESS_ZONE).format(DateTimeFormatter.ISO_LOCAL_DATE));
             String cacheKey = "dataPanelStats:" + date;
 
             if (!isToday) {
@@ -75,7 +78,7 @@ public class DataPanelController {
     @PostMapping("/trend")
     public ResultObject<DataPanelTrendRespDTO> getDataPanelTrend() {
         try {
-            String cacheKey = "dataPanelTrend:" + LocalDate.now();
+            String cacheKey = "dataPanelTrend:" + LocalDate.now(BUSINESS_ZONE);
             DataPanelTrendRespDTO cached = cacheService.get(cacheKey, DataPanelTrendRespDTO.class);
             if (cached != null) {
                 return ResultObject.success(cached);
@@ -87,7 +90,7 @@ public class DataPanelController {
             List<Integer> deliveryFail = new ArrayList<>();
             List<Integer> aiReplies = new ArrayList<>();
 
-            LocalDate today = LocalDate.now();
+            LocalDate today = LocalDate.now(BUSINESS_ZONE);
             DateTimeFormatter fmt = DateTimeFormatter.ISO_LOCAL_DATE;
 
             for (int i = 7; i >= 1; i--) {
@@ -116,7 +119,7 @@ public class DataPanelController {
     @GetMapping("/realtimeRevenue")
     public ResultObject<Double> getRealtimeRevenue() {
         try {
-            double amount = orderMapper.sumDeliverySuccessAmount();
+            Double amount = orderMapper.sumConfirmedDeliveryAmountByOrderDate(LocalDate.now(BUSINESS_ZONE).toString());
             return ResultObject.success(amount);
         } catch (Exception e) {
             log.error("获取实时销售额失败", e);

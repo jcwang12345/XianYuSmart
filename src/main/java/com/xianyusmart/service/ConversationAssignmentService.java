@@ -11,44 +11,122 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.locks.ReentrantLock;
+import lombok.extern.slf4j.Slf4j;
 
 /** 跨店客服会话认领、优先级和首次响应 SLA。 */
 @Service
+@Slf4j
 public class ConversationAssignmentService {
 
     private static final Set<String> STATUSES = Set.of("OPEN", "IN_PROGRESS", "CLOSED");
     private static final Set<String> PRIORITIES = Set.of("LOW", "NORMAL", "HIGH", "URGENT");
     private final JdbcTemplate jdbcTemplate;
+    private static final ReentrantLock[] PROJECTION_GATES = new ReentrantLock[128];
+    static {
+        java.util.Arrays.setAll(PROJECTION_GATES, ignored -> new ReentrantLock(true));
+    }
+    private org.springframework.transaction.support.TransactionTemplate projectionTransaction;
 
     public ConversationAssignmentService(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    @Transactional
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setProjectionTransactionManager(org.springframework.transaction.PlatformTransactionManager manager) {
+        projectionTransaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+    }
+
     public int refresh() {
+        // Projection statements are idempotent. Concurrent handoff/message transactions
+        // may deadlock an INSERT SELECT; only retry outside a caller-owned transaction.
+        boolean callerTransaction = org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
+        // Never wait for an in-process gate while holding a caller's database locks.
+        if (callerTransaction) return refreshOnce();
+        Long tenantId = requireTenantId();
+        ReentrantLock gate = PROJECTION_GATES[Math.floorMod(tenantId.hashCode(), PROJECTION_GATES.length)];
+        try {
+            if (!gate.tryLock(5, TimeUnit.SECONDS)) {
+                throw new BusinessException(409, "会话视图正在刷新，请稍后重试");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(409, "会话视图刷新已中断，请重试");
+        }
+        try {
+            return refreshWithRetry(tenantId);
+        } finally {
+            gate.unlock();
+        }
+    }
+
+    private int refreshWithRetry(Long tenantId) {
+        for(int attempt=0;;attempt++) {
+            try {
+                return projectionTransaction == null ? refreshOnce()
+                    : projectionTransaction.execute(status -> refreshOnce());
+            }
+            catch(org.springframework.dao.PessimisticLockingFailureException conflict) {
+                if(attempt>=2 || Thread.currentThread().isInterrupted()) {
+                    log.warn("Conversation projection lock conflict: tenantId={}, attempts={}, failureType={}",
+                            tenantId, attempt + 1, conflict.getClass().getSimpleName());
+                    throw new BusinessException(409, "会话视图暂时繁忙，请重试；消息处理结果未被重发");
+                }
+                long backoff = (attempt + 1) * 20_000_000L + ThreadLocalRandom.current().nextLong(10_000_000L);
+                java.util.concurrent.locks.LockSupport.parkNanos(backoff);
+                if(Thread.currentThread().isInterrupted()) {
+                    throw new BusinessException(409, "会话视图刷新已中断，请重试");
+                }
+            }
+        }
+    }
+
+    private int refreshOnce() {
         Long tenantId = requireTenantId();
         int inserted = jdbcTemplate.update("""
                 INSERT INTO conversation_assignment
                     (tenant_id, xianyu_account_id, session_id, buyer_user_id,
                      first_message_time, first_response_time, last_message_time, sla_due_time)
-                SELECT messages.tenant_id, messages.xianyu_account_id, messages.s_id,
-                       MAX(CASE WHEN messages.sender_user_id <> account.unb THEN messages.sender_user_id END),
-                       MIN(CASE WHEN messages.sender_user_id <> account.unb THEN messages.create_time END),
-                       MIN(CASE WHEN messages.sender_user_id = account.unb THEN messages.create_time END),
-                       MAX(messages.create_time),
-                       DATE_ADD(MIN(CASE WHEN messages.sender_user_id <> account.unb THEN messages.create_time END), INTERVAL 5 MINUTE)
-                FROM xianyu_chat_message messages
-                JOIN xianyu_account account ON account.id = messages.xianyu_account_id
-                WHERE messages.tenant_id = ? AND messages.s_id IS NOT NULL
-                  AND messages.create_time >= DATE_SUB(NOW(3), INTERVAL 7 DAY)
+                SELECT conversations.tenant_id, conversations.xianyu_account_id, conversations.s_id,
+                       conversations.buyer_user_id,
+                       FROM_UNIXTIME(conversations.first_message_millis / 1000.0),
+                       FROM_UNIXTIME(MIN(replies.message_time) / 1000.0),
+                       FROM_UNIXTIME(conversations.last_message_millis / 1000.0),
+                       DATE_ADD(FROM_UNIXTIME(conversations.first_message_millis / 1000.0), INTERVAL 5 MINUTE)
+                FROM (
+                    SELECT messages.tenant_id, messages.xianyu_account_id, messages.s_id,
+                           MAX(CASE WHEN messages.sender_user_id <> account.unb THEN messages.sender_user_id END) buyer_user_id,
+                           MIN(CASE WHEN messages.sender_user_id <> account.unb THEN messages.message_time END) first_message_millis,
+                           MAX(messages.message_time) last_message_millis
+                    FROM xianyu_chat_message messages
+                    JOIN xianyu_account account ON account.id = messages.xianyu_account_id AND account.tenant_id=messages.tenant_id
+                    WHERE messages.tenant_id = ? AND messages.s_id IS NOT NULL
+                      AND messages.message_time >= 946684800000
+                      AND messages.message_time >= CAST(UNIX_TIMESTAMP(DATE_SUB(NOW(3), INTERVAL 7 DAY))*1000 AS SIGNED)
+                      AND messages.message_time <= CAST(UNIX_TIMESTAMP(DATE_ADD(NOW(3), INTERVAL 1 MINUTE))*1000 AS SIGNED)
                 """ + accountCondition("messages") + """
-                GROUP BY messages.tenant_id, messages.xianyu_account_id, messages.s_id
-                HAVING MIN(CASE WHEN messages.sender_user_id <> account.unb THEN messages.create_time END) IS NOT NULL
+                    GROUP BY messages.tenant_id, messages.xianyu_account_id, messages.s_id
+                    HAVING MIN(CASE WHEN messages.sender_user_id <> account.unb THEN messages.message_time END) IS NOT NULL
+                ) conversations
+                JOIN xianyu_account account ON account.id=conversations.xianyu_account_id AND account.tenant_id=conversations.tenant_id
+                LEFT JOIN xianyu_chat_message replies ON replies.tenant_id=conversations.tenant_id
+                    AND replies.xianyu_account_id=conversations.xianyu_account_id AND replies.s_id=conversations.s_id
+                    AND replies.sender_user_id=account.unb AND replies.message_time>=conversations.first_message_millis
+                    AND replies.message_time<=CAST(UNIX_TIMESTAMP(DATE_ADD(NOW(3), INTERVAL 1 MINUTE))*1000 AS SIGNED)
+                GROUP BY conversations.tenant_id, conversations.xianyu_account_id, conversations.s_id,
+                         conversations.buyer_user_id, conversations.first_message_millis, conversations.last_message_millis
                 ON DUPLICATE KEY UPDATE buyer_user_id = VALUES(buyer_user_id),
-                    first_message_time = LEAST(first_message_time, VALUES(first_message_time)),
-                    first_response_time = COALESCE(first_response_time, VALUES(first_response_time)),
+                    first_response_time = CASE
+                        WHEN first_message_time >= VALUES(first_message_time)
+                          OR first_response_time < first_message_time
+                          OR first_response_time > DATE_ADD(NOW(3), INTERVAL 1 MINUTE)
+                        THEN VALUES(first_response_time)
+                        ELSE COALESCE(LEAST(first_response_time, VALUES(first_response_time)), first_response_time, VALUES(first_response_time)) END,
+                    first_message_time = COALESCE(LEAST(first_message_time, VALUES(first_message_time)), first_message_time, VALUES(first_message_time)),
                     last_message_time = GREATEST(last_message_time, VALUES(last_message_time)),
-                    sla_due_time = COALESCE(sla_due_time, VALUES(sla_due_time))
+                    sla_due_time = DATE_ADD(first_message_time, INTERVAL 5 MINUTE)
                 """, tenantId);
         projectBuyersFromConversations(tenantId);
         jdbcTemplate.update("""
@@ -75,6 +153,17 @@ public class ConversationAssignmentService {
                             AND intervention.s_id=assignment.session_id AND intervention.end_time>NOW(3)
                        )
                  WHERE assignment.tenant_id=?
+                """ + accountCondition("assignment"), tenantId);
+        // Runtime takeover expiry is derived from intervention records. Keep the visible
+        // auto-reply state in sync after the last intervention expires; an open AI handoff
+        // still takes precedence and must never be silently cleared here.
+        jdbcTemplate.update("""
+                UPDATE conversation_assignment assignment
+                   SET assignment.auto_reply_state='AUTO_READY'
+                 WHERE assignment.tenant_id=?
+                   AND assignment.auto_reply_state='PAUSED_MANUAL'
+                   AND assignment.manual_takeover_state='AUTO'
+                   AND COALESCE(assignment.handoff_status,'NONE') NOT IN ('OPEN','CLAIMED')
                 """ + accountCondition("assignment"), tenantId);
         return inserted;
     }
@@ -181,15 +270,19 @@ public class ConversationAssignmentService {
     }
 
     public void markHistorySync(Long accountId, String sessionId, int received, int requested, String error) {
+        markHistorySync(accountId,sessionId,received,requested,false,error);
+    }
+
+    public void markHistorySync(Long accountId,String sessionId,int received,int requested,boolean complete,String error) {
         String status = error == null ? "SUCCEEDED" : "FAILED";
-        String coverage = error != null ? "PARTIAL" : received < requested ? "FULL" : "PARTIAL";
+        String coverage = error == null && complete ? "FULL" : "PARTIAL";
         jdbcTemplate.update("""
                 UPDATE conversation_assignment
                    SET history_sync_status=?, history_coverage_status=?,
                        history_last_synced_time=CASE WHEN ? IS NULL THEN NOW(3) ELSE history_last_synced_time END,
                        history_last_error=?
                  WHERE tenant_id=? AND xianyu_account_id=? AND session_id=?
-                """, status, coverage, error, trim(error), requireTenantId(), accountId, sessionId);
+                """ + accountCondition("conversation_assignment"), status, coverage, error, trim(error), requireTenantId(), accountId, sessionId);
     }
 
     private String accountCondition(String alias) {

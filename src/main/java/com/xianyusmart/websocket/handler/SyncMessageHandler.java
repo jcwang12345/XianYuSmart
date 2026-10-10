@@ -4,8 +4,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.entity.XianyuChatMessage;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageData;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageReceivedEvent;
-import com.xianyusmart.service.GoodsInfoService;
-import com.xianyusmart.entity.XianyuGoodsInfo;
 import com.xianyusmart.utils.MessageDecryptUtils;
 import org.springframework.beans.BeanUtils;
 import lombok.Data;
@@ -37,7 +35,7 @@ public class SyncMessageHandler extends AbstractLwpHandler {
     private ApplicationEventPublisher eventPublisher;
     
     @Autowired
-    private GoodsInfoService goodsInfoService;
+    private LiveSyncMessageParser liveSyncMessageParser;
     
     private final ObjectMapper objectMapper = new ObjectMapper();
     
@@ -108,7 +106,10 @@ public class SyncMessageHandler extends AbstractLwpHandler {
             log.debug("【账号{}】收到加密消息[{}]，长度={}", accountId, i, encryptedData.length());
             
             // 解密消息
-            String decryptedData = MessageDecryptUtils.decrypt(encryptedData);
+            String decryptedData = getString(syncData, "decryptedData");
+            if (decryptedData == null) {
+                decryptedData = MessageDecryptUtils.decrypt(encryptedData);
+            }
             if (decryptedData != null) {
                 log.debug("【账号{}】消息[{}]解密成功，长度={}", accountId, i, decryptedData.length());
                 decryptedMessages.add(decryptedData);
@@ -136,129 +137,42 @@ public class SyncMessageHandler extends AbstractLwpHandler {
      * @param lwp WebSocket消息路径
      */
     private void parseAndPublishEvent(String accountId, String decryptedData, String lwp) {
+        LiveSyncMessageParser.ParseResult result = liveSyncMessageParser.parse(
+                Long.parseLong(accountId), lwp, decryptedData);
+        if (!result.parsed()) {
+            // Keep classification failures observable without writing chat bodies
+            // or credentials to production logs.
+            log.info("【账号{}】同步消息未生成业务事件: lwp={}, reason={}, decodedLength={}, shape={}",
+                    accountId, lwp, result.ignoredReason(), decryptedData.length(),
+                    "UNSUPPORTED_RECORD_SHAPE".equals(result.ignoredReason())
+                            ? payloadShape(decryptedData) : "not-applicable");
+            return;
+        }
+        publishChatMessageReceivedEvent(result.message());
+    }
+
+    /** Log only protocol field names and value types; never chat text or IDs. */
+    private String payloadShape(String decryptedData) {
         try {
-            // 解析JSON
             @SuppressWarnings("unchecked")
-            Map<String, Object> data = objectMapper.readValue(decryptedData, Map.class);
-            
-            // 检查消息类型
-            Object typeObj = data.get("2");
-            if (typeObj != null && "2".equals(typeObj.toString())) {
-                // 已读回执，不处理
-                return;
-            }
-            
-            // 检查是否是聊天消息
-            Object field1 = data.get("1");
-            if (!(field1 instanceof Map)) {
-                return;
-            }
-            
-            @SuppressWarnings("unchecked")
-            Map<String, Object> messageInfo = (Map<String, Object>) field1;
-            
-            // 创建消息实体
-            XianyuChatMessage message = new XianyuChatMessage();
-            Long accountIdLong = Long.parseLong(accountId);
-            message.setXianyuAccountId(accountIdLong);
-            message.setLwp(lwp);
-            
-            // 提取pnm_id（字段1.3）
-            String pnmId = extractString(messageInfo, "3");
-            if (pnmId == null || pnmId.isEmpty()) {
-                return;
-            }
-            message.setPnmId(pnmId);
-            
-            // 提取s_id（字段1.2）
-            message.setSId(extractString(messageInfo, "2"));
-            
-            // 提取时间戳（字段1.5）
-            message.setMessageTime(extractLong(messageInfo, "5"));
-            
-            // 提取字段1.6的内容
-            Object field6 = messageInfo.get("6");
-            if (field6 instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> field6Map = (Map<String, Object>) field6;
-                
-                // 提取字段1.6.3
-                Object field63 = field6Map.get("3");
-                if (field63 instanceof Map) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> field63Map = (Map<String, Object>) field63;
-                    
-                    // 提取字段1.6.3.5中的contentType
-                    String field635 = extractString(field63Map, "5");
-                    if (field635 != null) {
-                        try {
-                            // 解析JSON字符串获取contentType
-                            @SuppressWarnings("unchecked")
-                            Map<String, Object> contentMap = objectMapper.readValue(field635, Map.class);
-                            Integer contentType = extractInteger(contentMap, "contentType");
-                            message.setContentType(contentType);
-                            
-                            log.info("【账号{}】提取contentType: contentType={}, field635={}", 
-                                    accountId, contentType, field635.length() > 200 ? field635.substring(0, 200) + "..." : field635);
-                        } catch (Exception e) {
-                            log.warn("【账号{}】解析contentType失败: field635={}, error={}", 
-                                    accountId, field635.length() > 100 ? field635.substring(0, 100) + "..." : field635, e.getMessage());
-                        }
-                    } else {
-                        log.debug("【账号{}】字段1.6.3.5为空，无法提取contentType", accountId);
-                    }
+            Map<String, Object> root = objectMapper.readValue(decryptedData, Map.class);
+            StringBuilder shape = new StringBuilder();
+            for (Map.Entry<String, Object> entry : root.entrySet()) {
+                if (!shape.isEmpty()) shape.append(',');
+                shape.append(entry.getKey()).append(':');
+                if (entry.getValue() instanceof Map<?, ?> nested) {
+                    shape.append("map").append(nested.keySet());
+                } else if (entry.getValue() instanceof List<?> list) {
+                    shape.append("list(").append(list.size()).append(')');
+                } else if (entry.getValue() instanceof String value) {
+                    shape.append("string(").append(value.length()).append(')');
                 } else {
-                    log.debug("【账号{}】字段1.6.3不存在或不是Map类型", accountId);
+                    shape.append(entry.getValue() == null ? "null" : entry.getValue().getClass().getSimpleName());
                 }
-            } else {
-                log.debug("【账号{}】字段1.6不存在或不是Map类型", accountId);
             }
-            
-            // 提取字段1.10的内容
-            Object field10 = messageInfo.get("10");
-            if (field10 instanceof Map) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> field10Map = (Map<String, Object>) field10;
-                
-                // 提取各个字段
-                message.setMsgContent(extractString(field10Map, "reminderContent"));
-                String reminderTitle = extractString(field10Map, "reminderTitle");
-                String reminderContent = extractString(field10Map, "reminderContent");
-                String senderUserName = reminderTitle;
-                if (reminderContent != null && !reminderContent.isEmpty()) {
-                    int nameEnd = reminderContent.indexOf(" 向你发送了一条新消息");
-                    if (nameEnd > 0) {
-                        senderUserName = reminderContent.substring(0, nameEnd);
-                    } else {
-                        nameEnd = reminderContent.indexOf(" ：");
-                        if (nameEnd > 0 && nameEnd < 20) {
-                            senderUserName = reminderContent.substring(0, nameEnd);
-                        }
-                    }
-                }
-                message.setSenderUserName(senderUserName);
-                message.setSenderUserId(extractString(field10Map, "senderUserId"));
-                
-                // 提取reminderUrl并解析商品ID
-                String reminderUrl = extractString(field10Map, "reminderUrl");
-                message.setReminderUrl(reminderUrl);
-                if (reminderUrl != null) {
-                    String goodsId = extractItemIdFromUrl(reminderUrl);
-                    message.setXyGoodsId(goodsId);
-                }
-                
-                message.setSenderAppV(extractString(field10Map, "_appVersion"));
-                message.setSenderOsType(extractString(field10Map, "_platform"));
-            }
-            
-            // 保存完整消息体
-            message.setCompleteMsg(decryptedData);
-            
-            // 发布消息接收事件
-            publishChatMessageReceivedEvent(message);
-            
+            return shape.substring(0, Math.min(shape.length(), 240));
         } catch (Exception e) {
-            log.error("【账号{}】解析消息异常: lwp={}, error={}", accountId, lwp, e.getMessage(), e);
+            return "invalid-json";
         }
     }
     
@@ -275,34 +189,9 @@ public class SyncMessageHandler extends AbstractLwpHandler {
             String orderId = extractOrderIdFromMessage(message.getCompleteMsg());
             messageData.setOrderId(orderId);
             
-            log.info("【账号{}】准备发布ChatMessageReceivedEvent事件，完整消息对象: \n" +
-                    "  pnmId={}\n" +
-                    "  sId={}\n" +
-                    "  lwp={}\n" +
-                    "  contentType={}\n" +
-                    "  msgContent={}\n" +
-                    "  xyGoodsId={}\n" +
-                    "  reminderUrl={}\n" +
-                    "  senderUserId={}\n" +
-                    "  senderUserName={}\n" +
-                    "  senderAppV={}\n" +
-                    "  senderOsType={}\n" +
-                    "  messageTime={}\n" +
-                    "  orderId={}", 
-                    message.getXianyuAccountId(),
-                    message.getPnmId(),
-                    message.getSId(),
-                    message.getLwp(),
-                    message.getContentType(),
-                    message.getMsgContent(),
-                    message.getXyGoodsId(),
-                    message.getReminderUrl(),
-                    message.getSenderUserId(),
-                    message.getSenderUserName(),
-                    message.getSenderAppV(),
-                    message.getSenderOsType(),
-                    message.getMessageTime(),
-                    orderId);
+            log.info("【账号{}】准备发布ChatMessageReceivedEvent事件: pnmId={}, contentType={}, hasGoodsId={}, hasOrderId={}",
+                    message.getXianyuAccountId(), message.getPnmId(), message.getContentType(),
+                    message.getXyGoodsId() != null, orderId != null);
             
             ChatMessageReceivedEvent event = new ChatMessageReceivedEvent(this, messageData);
             eventPublisher.publishEvent(event);
@@ -327,6 +216,11 @@ public class SyncMessageHandler extends AbstractLwpHandler {
             
             @SuppressWarnings("unchecked")
             Map<String, Object> data = objectMapper.readValue(completeMsg, Map.class);
+
+            String directOrderId = findOrderId(data, 0);
+            if (directOrderId != null) {
+                return directOrderId;
+            }
             
             // 从 1.6.3.5 中提取订单ID
             // 路径: 1.6.3.5 (这是一个JSON字符串，需要再次解析)
@@ -398,8 +292,6 @@ public class SyncMessageHandler extends AbstractLwpHandler {
                             Object button = ((Map<?, ?>) exContent).get("button");
                             if (button instanceof Map) {
                                 String targetUrl = (String) ((Map<?, ?>) button).get("targetUrl");
-                                log.info("📋 提取订单ID: targetUrl={}", targetUrl);
-                                
                                 if (targetUrl != null) {
                                     return extractOrderIdFromUrl(targetUrl);
                                 }
@@ -435,8 +327,6 @@ public class SyncMessageHandler extends AbstractLwpHandler {
                                     Object button = ((Map<?, ?>) exContent).get("button");
                                     if (button instanceof Map) {
                                         String targetUrl = (String) ((Map<?, ?>) button).get("targetUrl");
-                                        log.info("📋 提取订单ID: targetUrl={}", targetUrl);
-                                        
                                         if (targetUrl != null) {
                                             return extractOrderIdFromUrl(targetUrl);
                                         }
@@ -463,120 +353,71 @@ public class SyncMessageHandler extends AbstractLwpHandler {
         if (url == null || url.isEmpty()) {
             return null;
         }
-        
-        try {
-            // 优先尝试提取 orderId 参数
-            int orderIdIndex = url.indexOf("orderId=");
-            if (orderIdIndex != -1) {
-                int startIndex = orderIdIndex + 8;
-                int endIndex = url.indexOf("&", startIndex);
-                
-                String orderId;
-                if (endIndex == -1) {
-                    orderId = url.substring(startIndex);
-                } else {
-                    orderId = url.substring(startIndex, endIndex);
+        String orderId = extractQueryValue(url, "orderId");
+        return orderId != null ? orderId : extractQueryValue(url, "id");
+    }
+
+    private String extractQueryValue(String value, String key) {
+        int start = -1;
+        for (String prefix : List.of("?", "&", "#", "")) {
+            int candidate = value.indexOf(prefix + key + "=");
+            if (candidate >= 0 && (prefix.length() > 0 || candidate == 0)) {
+                start = candidate + prefix.length() + key.length() + 1;
+                break;
+            }
+        }
+        if (start < 0) return null;
+        int end = start;
+        while (end < value.length() && isOrderIdCharacter(value.charAt(end))) end++;
+        if (end == start || end - start > 100) return null;
+        return value.substring(start, end);
+    }
+
+    private boolean isOrderIdCharacter(char value) {
+        return value >= '0' && value <= '9'
+                || value >= 'a' && value <= 'z'
+                || value >= 'A' && value <= 'Z'
+                || value == '_' || value == '-';
+    }
+
+    private String findOrderId(Object value, int depth) {
+        if (value == null || depth > 10) {
+            return null;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (String key : List.of("orderId", "tradeId", "mainOrderId")) {
+                Object direct = map.get(key);
+                if (direct != null && !direct.toString().isBlank()) {
+                    String candidate = direct.toString();
+                    if (candidate.length() <= 100 && candidate.chars().allMatch(c -> isOrderIdCharacter((char) c))) {
+                        return candidate;
+                    }
                 }
-                
-                log.info("✅ 成功提取订单ID: orderId={}", orderId);
-                return orderId;
             }
-            
-            // 尝试提取 id 参数
-            int idIndex = url.indexOf("id=");
-            if (idIndex != -1) {
-                int startIndex = idIndex + 3;
-                int endIndex = url.indexOf("&", startIndex);
-                
-                String orderId;
-                if (endIndex == -1) {
-                    orderId = url.substring(startIndex);
-                } else {
-                    orderId = url.substring(startIndex, endIndex);
+            for (Object child : map.values()) {
+                String found = findOrderId(child, depth + 1);
+                if (found != null) return found;
+            }
+        } else if (value instanceof List<?> list) {
+            for (Object child : list) {
+                String found = findOrderId(child, depth + 1);
+                if (found != null) return found;
+            }
+        } else if (value instanceof String text) {
+            String trimmed = text.trim();
+            if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+                try {
+                    String nested = findOrderId(objectMapper.readValue(trimmed, Object.class), depth + 1);
+                    if (nested != null) return nested;
+                } catch (Exception ignored) {
+                    // Not nested JSON.
                 }
-                
-                log.info("✅ 成功提取订单ID: id={}", orderId);
-                return orderId;
             }
-            
-            log.warn("⚠️ 消息URL中未找到orderId或id参数");
-            return null;
-            
-        } catch (Exception e) {
-            log.error("❌ 从消息URL提取订单ID失败", e);
-            return null;
-        }
-    }
-    
-    /**
-     * 从reminder_url中提取itemId（商品ID）
-     */
-    private String extractItemIdFromUrl(String url) {
-        if (url == null || url.isEmpty()) {
-            return null;
-        }
-        
-        try {
-            int itemIdIndex = url.indexOf("itemId=");
-            if (itemIdIndex == -1) {
-                return null;
+            if (text.contains("orderId=") || text.contains("?id=") || text.contains("&id=")) {
+                return extractOrderIdFromUrl(text);
             }
-            
-            int startIndex = itemIdIndex + 7;
-            int endIndex = url.indexOf("&", startIndex);
-            
-            if (endIndex == -1) {
-                return url.substring(startIndex);
-            } else {
-                return url.substring(startIndex, endIndex);
-            }
-        } catch (Exception e) {
-            return null;
         }
-    }
-    
-    /**
-     * 从Map中提取字符串值
-     */
-    private String extractString(Map<String, Object> map, String key) {
-        Object value = map.get(key);
-        return value != null ? value.toString() : null;
-    }
-    
-    /**
-     * 从Map中提取整数值
-     */
-    private Integer extractInteger(Map<String, Object> map, String key) {
-        Object value = map.get(key);
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number) {
-            return ((Number) value).intValue();
-        }
-        try {
-            return Integer.parseInt(value.toString());
-        } catch (Exception e) {
-            return null;
-        }
-    }
-    
-    /**
-     * 从Map中提取长整数值
-     */
-    private Long extractLong(Map<String, Object> map, String key) {
-        Object value = map.get(key);
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number) {
-            return ((Number) value).longValue();
-        }
-        try {
-            return Long.parseLong(value.toString());
-        } catch (Exception e) {
-            return null;
-        }
+        return null;
     }
     
     /**

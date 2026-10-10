@@ -15,6 +15,7 @@ class AccountBatchExecutionServiceTest {
     private final XianyuAccountMapper accounts = mock(XianyuAccountMapper.class);
     private final WebSocketService websocket = mock(WebSocketService.class);
     private final CredentialRenewalService renewal = mock(CredentialRenewalService.class);
+    private final ShopProfileSyncService profileSync = mock(ShopProfileSyncService.class);
 
     @AfterEach void clear() { TenantContext.clear(); }
 
@@ -59,6 +60,22 @@ class AccountBatchExecutionServiceTest {
                 accounts, websocket, renewal, true, 1L, "101");
         assertThrows(IllegalStateException.class, () -> service.execute("SYNC", 101L));
         assertThrows(IllegalStateException.class, () -> service.execute("RENEW", 101L));
+    }
+
+    @Test
+    void keepsLegacySyncScopeAndSeparatesProfileSync() {
+        TenantContext.set(1L);
+        when(accounts.selectById(101L)).thenReturn(account(101L, 1));
+        AccountBatchExecutionService service = new AccountBatchExecutionService(
+                accounts, websocket, renewal, profileSync, true, 1L, "101");
+
+        Map<String, Object> runtime = service.execute("SYNC", 101L);
+        Map<String, Object> profile = service.execute("PROFILE_SYNC", 101L, "profile-request");
+
+        assertEquals("CONNECTION_RUNTIME", runtime.get("syncScope"));
+        assertEquals("SHOP_PROFILE", profile.get("syncScope"));
+        assertEquals("QA_FIXTURE_ONLY", profile.get("outcome"));
+        verifyNoInteractions(profileSync);
     }
 
     private static XianyuAccount account(long id, int status) {

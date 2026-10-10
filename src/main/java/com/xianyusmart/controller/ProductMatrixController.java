@@ -3,6 +3,7 @@ package com.xianyusmart.controller;
 import com.xianyusmart.common.ResultObject;
 import com.xianyusmart.exception.BusinessException;
 import com.xianyusmart.service.ProductMatrixService;
+import com.xianyusmart.service.ProductBatchExecutionService;
 import com.xianyusmart.service.ProductMarketingService;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -30,11 +31,14 @@ public class ProductMatrixController {
 
     private final ProductMatrixService productMatrixService;
     private final ProductMarketingService productMarketingService;
+    private final ProductBatchExecutionService productBatchExecutionService;
 
     public ProductMatrixController(ProductMatrixService productMatrixService,
-                                   ProductMarketingService productMarketingService) {
+                                   ProductMarketingService productMarketingService,
+                                   ProductBatchExecutionService productBatchExecutionService) {
         this.productMatrixService = productMatrixService;
         this.productMarketingService = productMarketingService;
+        this.productBatchExecutionService = productBatchExecutionService;
     }
 
     @PostMapping("/products/query")
@@ -134,6 +138,16 @@ public class ProductMatrixController {
                                                      @RequestBody ProductMatrixService.BatchRequest request) {
         requireOperationMatches(operation, request.operationType());
         return ResultObject.success(productMatrixService.createBatch(request));
+    }
+
+    /** User-triggered single-product dispatch; batch selections still use the background task centre. */
+    @PostMapping("/batches/{operation}/{jobId}/execute-now")
+    public ResultObject<Map<String, Object>> executeSingleNow(@PathVariable String operation,
+                                                               @PathVariable Long jobId) {
+        Map<String, Object> visibleJob = productMatrixService.batchDetail(jobId);
+        requireOperationMatches(operation, String.valueOf(visibleJob.get("operationType")));
+        productBatchExecutionService.dispatchOneUserJob(jobId);
+        return ResultObject.success(productMatrixService.batchDetail(jobId));
     }
 
     @GetMapping("/batches")

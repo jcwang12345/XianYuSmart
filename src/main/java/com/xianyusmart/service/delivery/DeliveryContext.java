@@ -13,6 +13,8 @@ import lombok.Data;
 @Data
 @Builder
 public class DeliveryContext {
+    /** A captured policy requirement must not become optional when consent is revoked. */
+    private boolean uniformCardRequired;
     private Long recordId;
     private Long accountId;
     private String xyGoodsId;

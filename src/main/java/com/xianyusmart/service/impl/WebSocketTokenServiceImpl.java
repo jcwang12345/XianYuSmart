@@ -49,6 +49,11 @@ import java.util.regex.Pattern;
 @Slf4j
 @Service
 public class WebSocketTokenServiceImpl implements WebSocketTokenService {
+    private final ThreadLocal<Boolean> forceFreshToken=ThreadLocal.withInitial(() -> false);
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
     @Override
     public Long getTokenExpireTime(Long accountId) {
         XianyuCookie cookie = xianyuCookieMapper.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<XianyuCookie>()
@@ -151,6 +156,11 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
     @Override
     public String getAccessToken(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> getAccessTokenAllowed(accountId));
+    }
+
+    private String getAccessTokenAllowed(Long accountId) {
         synchronized (getTokenLock(accountId)) {
             return getAccessTokenWithRetry(accountId, 0);
         }
@@ -222,7 +232,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
             );
 
-            if (cookieEntity != null && cookieEntity.getWebsocketToken() != null
+            if (!forceFreshToken.get() && cookieEntity != null && cookieEntity.getWebsocketToken() != null
                     && cookieEntity.getTokenExpireTime() != null) {
                 long now = System.currentTimeMillis();
                 if (cookieEntity.getTokenExpireTime() > now) {
@@ -316,6 +326,15 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
                 String responseBody = httpResponse.body() != null ? httpResponse.body().string() : "";
 
+                XianyuCookie currentCredential=xianyuCookieMapper.selectOne(
+                        new LambdaQueryWrapper<XianyuCookie>().eq(XianyuCookie::getXianyuAccountId,accountId));
+                if(cookieEntity==null || currentCredential==null
+                        || !java.util.Objects.equals(cookieEntity.getCredentialVersion(),currentCredential.getCredentialVersion())) {
+                    log.warn("Token响应已过期，保留更新后的账号凭据: accountId={}",accountId);
+                    return null;
+                }
+
+                long responseCredentialVersion = cookieEntity.getCredentialVersion() == null ? 0L : cookieEntity.getCredentialVersion();
                 // 【关键改进】处理响应中的Set-Cookie（参考Python: session自动处理 + clear_duplicate_cookies）
                 // OkHttp能正确返回Set-Cookie头，这是与RestTemplate的关键区别
                 Headers responseHeaders = httpResponse.headers();
@@ -323,8 +342,9 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
                 if (!setCookieHeaders.isEmpty()) {
                     log.info("【账号{}】检测到响应中的Set-Cookie，数量: {}", accountId, setCookieHeaders.size());
-                    String updatedCookieStr = updateCookiesFromResponse(accountId, cookiesStr, setCookieHeaders);
+                    String updatedCookieStr = updateCookiesFromResponse(accountId, cookiesStr, setCookieHeaders, responseCredentialVersion);
                     if (updatedCookieStr != null && !updatedCookieStr.equals(cookiesStr)) {
+                        responseCredentialVersion++;
                         log.info("【账号{}】Cookie已从响应Set-Cookie中更新，_m_h5_tk可能已更新", accountId);
                     } else {
                         log.info("【账号{}】Set-Cookie未改变Cookie内容", accountId);
@@ -349,7 +369,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                 if (retObj instanceof java.util.List) {
                     @SuppressWarnings("unchecked")
                     java.util.List<String> retList = (java.util.List<String>) retObj;
-                    log.info("【账号{}】ret字段内容: {}", accountId, retList);
+                    log.debug("Token响应分类条目数: accountId={}, count={}",accountId,retList.size());
 
                     boolean success = retList.stream().anyMatch(ret -> ret.contains("SUCCESS::调用成功"));
 
@@ -360,7 +380,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                             String accessToken = (String) dataMap.get("accessToken");
 
                             // 保存 token 到数据库
-                            saveTokenToDatabase(accountId, accessToken);
+                            if(!saveTokenToDatabase(accountId, accessToken, responseCredentialVersion))return null;
 
                             // 更新账号状态为正常（1）
                             updateAccountStatusToNormal(accountId);
@@ -548,8 +568,8 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             return getAccessTokenWithRetry(accountId, retryCount + 1, refreshAttempt);
         }
 
-        log.warn("【账号{}】Token获取重试已达上限，尝试通过hasLogin刷新Cookie...", accountId);
-        return refreshTokenViaHasLogin(accountId, refreshAttempt);
+        log.warn("Token读取暂不可用，保留原凭据，不创建续期二维码: accountId={}",accountId);
+        return null;
     }
 
     /**
@@ -567,7 +587,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
         if (refreshAttempt >= MAX_COOKIE_RETRY_COUNT) {
             log.error("【账号{}】hasLogin刷新重试次数已达上限，Cookie已彻底过期，无法自动续期", accountId);
             // 确认无法自动续期后，才标记为过期并触发邮件通知
-            updateCookieStatus(accountId, 2, true);
+            if (!updateCookieStatus(accountId, 2, true)) return null;
 
             operationLogService.log(accountId,
                 com.xianyusmart.constants.OperationConstants.Type.REFRESH,
@@ -624,8 +644,13 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             throw e;
         } catch (com.xianyusmart.exception.CookieExpiredException e) {
             throw e;
+        } catch (com.xianyusmart.exception.BusinessException unavailable) {
+            if(unavailable.getCode()==503) {
+                log.warn("凭据续期检查暂不可用，原状态保留: accountId={}",accountId);return null;
+            }
+            throw unavailable;
         } catch (Exception e) {
-            log.error("【账号{}】hasLogin刷新过程发生异常", accountId, e);
+            log.warn("凭据续期检查异常，原状态保留: accountId={}, failureType={}",accountId,e.getClass().getSimpleName());return null;
         }
 
         // hasLogin失败，重试
@@ -654,7 +679,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      * @param setCookieHeaders 响应中的Set-Cookie列表
      * @return 更新后的Cookie字符串
      */
-    private String updateCookiesFromResponse(Long accountId, String currentCookieStr, List<String> setCookieHeaders) {
+    private String updateCookiesFromResponse(Long accountId, String currentCookieStr, List<String> setCookieHeaders, long expectedVersion) {
         try {
             // 只记录字段是否存在，任何日志级别都不输出凭证内容。
             for (int i = 0; i < setCookieHeaders.size(); i++) {
@@ -688,29 +713,24 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
 
             // 更新数据库中的Cookie
             if (!newCookieStr.equals(currentCookieStr)) {
-                xianyuCookieMapper.update(null,
-                        new LambdaUpdateWrapper<XianyuCookie>()
-                                .eq(XianyuCookie::getXianyuAccountId, accountId)
-                                .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(newCookieStr))
-                                .set(XianyuCookie::getCookieStatus, 1)
-                );
-
-                // 如果_m_h5_tk更新了，也更新mH5Tk字段
-                if (mh5tkUpdated && newMh5tk != null) {
-                    xianyuCookieMapper.update(null,
-                            new LambdaUpdateWrapper<XianyuCookie>()
-                                    .eq(XianyuCookie::getXianyuAccountId, accountId)
-                                    .set(XianyuCookie::getMH5Tk, SensitiveDataCodec.encrypt(newMh5tk))
-                    );
-                }
+                LambdaUpdateWrapper<XianyuCookie> update = new LambdaUpdateWrapper<XianyuCookie>()
+                        .eq(XianyuCookie::getXianyuAccountId, accountId)
+                        .eq(XianyuCookie::getCredentialVersion, expectedVersion)
+                        .set(XianyuCookie::getCookieText, SensitiveDataCodec.encrypt(newCookieStr))
+                        .set(XianyuCookie::getCookieStatus, 1)
+                        .setSql("credential_version=credential_version+1");
+                if (mh5tkUpdated) update.set(XianyuCookie::getMH5Tk, SensitiveDataCodec.encrypt(newMh5tk));
+                if (xianyuCookieMapper.update(null, update) != 1)
+                    throw new com.xianyusmart.exception.BusinessException(409, "凭据已更新，旧响应已丢弃");
 
                 log.info("【账号{}】Cookie已从响应Set-Cookie更新到数据库", accountId);
             }
 
             return newCookieStr;
         } catch (Exception e) {
-            log.error("【账号{}】处理响应Set-Cookie失败", accountId, e);
-            return currentCookieStr;
+            if (e instanceof com.xianyusmart.exception.BusinessException business) throw business;
+            log.error("处理响应Cookie失败: accountId={}, failureType={}", accountId, e.getClass().getSimpleName());
+            throw new com.xianyusmart.exception.BusinessException(503, "响应凭据保存暂不可用，原凭据保留");
         }
     }
 
@@ -766,7 +786,9 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
     @Override
     public void saveToken(Long accountId, String token) {
         synchronized (getTokenLock(accountId)) {
-            saveTokenToDatabase(accountId, token);
+            XianyuCookie credential=xianyuCookieMapper.selectOne(new LambdaQueryWrapper<XianyuCookie>().eq(XianyuCookie::getXianyuAccountId,accountId));
+            if(credential==null || !saveTokenToDatabase(accountId, token,credential.getCredentialVersion()))
+                throw new com.xianyusmart.exception.BusinessException(409,"凭据版本已变化，令牌未覆盖");
         }
     }
 
@@ -813,15 +835,21 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      */
     @Override
     public String refreshToken(Long accountId) {
+        return accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,
+                () -> refreshTokenAllowed(accountId));
+    }
+
+    private String refreshTokenAllowed(Long accountId) {
         synchronized (getTokenLock(accountId)) {
             try {
                 log.info("【账号{}】开始刷新WebSocket token...", accountId);
 
-                // 1. 清除旧token，强制重新获取
-                clearToken(accountId);
-
-                // 2. 获取新token
-                String newToken = getAccessTokenWithRetry(accountId, 0);
+                // Bypass the cache for this call without expiring a still-usable token.
+                // A network failure cannot destroy the previous credential or fake a refresh.
+                forceFreshToken.set(true);
+                String newToken;
+                try { newToken = getAccessTokenWithRetry(accountId, 0); }
+                finally { forceFreshToken.remove(); }
 
                 if (newToken != null && !newToken.isEmpty()) {
                     log.info("【账号{}】✅ WebSocket token刷新成功", accountId);
@@ -889,7 +917,7 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
      * @param status Cookie状态
      * @param sendNotify 是否发送邮件通知（仅当确认无法自动续期时才为true）
      */
-    private void updateCookieStatus(Long accountId, Integer status, boolean sendNotify) {
+    private boolean updateCookieStatus(Long accountId, Integer status, boolean sendNotify) {
         try {
             XianyuCookie currentCookie = xianyuCookieMapper.selectOne(
                     new LambdaQueryWrapper<XianyuCookie>()
@@ -898,12 +926,18 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
                             .last("LIMIT 1")
             );
             Integer oldStatus = currentCookie != null ? currentCookie.getCookieStatus() : null;
+            Long expectedVersion = Objects.equals(status, 2) ? cookieRefreshService.consumeConfirmedInvalidVersion(accountId)
+                    : currentCookie == null ? null : currentCookie.getCredentialVersion();
+            if (expectedVersion == null) return false;
 
-            xianyuCookieMapper.update(null,
+            int changed = xianyuCookieMapper.update(null,
                     new LambdaUpdateWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
+                            .eq(XianyuCookie::getCredentialVersion, expectedVersion)
+                            .setSql("credential_version=credential_version+1")
                             .set(XianyuCookie::getCookieStatus, status)
             );
+            if (changed != 1) return false;
             String statusText = status == 2 ? "过期" : status == 3 ? "失效" : "未知";
             log.info("【账号{}】Cookie状态已更新为{}({})", accountId, status, statusText);
 
@@ -916,21 +950,26 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             } else if (Objects.equals(status, 2) && !Objects.equals(oldStatus, 2)) {
                 log.info("【账号{}】Cookie被标记为过期，但系统将尝试自动续期，暂不发送邮件通知", accountId);
             }
+            return true;
         } catch (Exception e) {
-            log.error("【账号{}】更新Cookie状态失败", accountId, e);
+            log.error("更新Cookie状态失败: accountId={}, failureType={}", accountId, e.getClass().getSimpleName());
+            return false;
         }
     }
 
     /**
      * 保存 Token 到数据库
      */
-    private void saveTokenToDatabase(Long accountId, String token) {
+    private boolean saveTokenToDatabase(Long accountId, String token, Long expectedVersion) {
+        if(expectedVersion==null || token==null || token.isBlank())return false;
         try {
             long expireTime = System.currentTimeMillis() + TOKEN_VALID_DURATION;
 
             int updated = xianyuCookieMapper.update(null,
                     new LambdaUpdateWrapper<XianyuCookie>()
                             .eq(XianyuCookie::getXianyuAccountId, accountId)
+                            .eq(XianyuCookie::getCredentialVersion,expectedVersion)
+                            .setSql("credential_version=credential_version+1")
                             .set(XianyuCookie::getWebsocketToken, SensitiveDataCodec.encrypt(token))
                             .set(XianyuCookie::getTokenExpireTime, expireTime)
             );
@@ -942,8 +981,10 @@ public class WebSocketTokenServiceImpl implements WebSocketTokenService {
             } else {
                 log.warn("【账号{}】Token保存失败，未找到对应的Cookie记录", accountId);
             }
+            return updated==1;
         } catch (Exception e) {
-            log.error("【账号{}】保存Token到数据库失败", accountId, e);
+            log.error("保存Token到数据库失败: accountId={}, failureType={}",accountId,e.getClass().getSimpleName());
+            return false;
         }
     }
 }

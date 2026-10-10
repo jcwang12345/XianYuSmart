@@ -31,6 +31,23 @@ import java.util.UUID;
 @Service
 public class ListingDraftService {
 
+    private enum CategoryMode { SPECIFIED_CATALOG, BASIC_PLATFORM_RECOMMENDED }
+
+    private static boolean basicCategoryMode(Map<String, Object> payload) {
+        String mode = text(payload.get("categoryMode"));
+        CategoryMode selected;
+        try {
+            selected = mode.isBlank() ? CategoryMode.SPECIFIED_CATALOG : CategoryMode.valueOf(mode);
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(400, "类目模式无效");
+        }
+        boolean basic = selected == CategoryMode.BASIC_PLATFORM_RECOMMENDED;
+        if (basic && !"QR_COOKIE".equals(text(payload.get("publishChannel")))) {
+            throw new BusinessException(400, "平台推荐类目的基本发布仅适用于 QR_COOKIE 通道");
+        }
+        return basic;
+    }
+
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final AccountAccessService accountAccessService;
@@ -354,6 +371,26 @@ public class ListingDraftService {
      * 其他通道只有明确返回能力证据时才允许提交对应字段。
      */
     public Map<String, Object> requireExecutable(Map<String, Object> request) {
+        Map<String, Object> validation = requirePreflightEligible(request);
+        if (basicCategoryMode(payload(request)) && text(request.get("confirmedPlatformCategoryId")).isBlank()) {
+            throw new BusinessException(409, "请先确认平台推荐类目并重新预检");
+        }
+        return validation;
+    }
+
+    public boolean preflightCategoryConfirmed(Map<String, Object> request, Map<String, Object> result) {
+        if (!basicCategoryMode(payload(request))) return true;
+        Map<?, ?> platform = result.get("platform") instanceof Map<?, ?> map ? map : Map.of();
+        Map<?, ?> category = platform.get("category") instanceof Map<?, ?> map ? map : Map.of();
+        String actual = firstText(category, "catId", "cid", "categoryId");
+        if (actual.isBlank()) throw new BusinessException(409, "平台未返回可确认的推荐类目，请重新预检");
+        String confirmed = text(request.get("confirmedPlatformCategoryId"));
+        if (confirmed.isBlank()) return false;
+        if (!confirmed.equals(actual)) throw new BusinessException(409, "平台推荐类目已变化，请确认新类目并重新预检");
+        return true;
+    }
+
+    public Map<String, Object> requirePreflightEligible(Map<String, Object> request) {
         Map<String, Object> validation = requireValidForPublish(request);
         Map<String, Object> payload = payload(request);
         String channelCode = text(payload.get("publishChannel")).toUpperCase(Locale.ROOT);
@@ -392,7 +429,8 @@ public class ListingDraftService {
         Map<?, ?> platform = result.get("platform") instanceof Map<?, ?> map ? map : Map.of();
         Map<?, ?> category = platform.get("category") instanceof Map<?, ?> map ? map : Map.of();
         List<Map<String, Object>> differences = new ArrayList<>();
-        String requestedCategory = text(payload.get("leafCategoryCode"));
+        String requestedCategory = basicCategoryMode(payload)
+                ? text(payload.get("confirmedPlatformCategoryId")) : text(payload.get("leafCategoryCode"));
         String returnedCategory = firstText(category, "categoryCode", "catId", "categoryId");
         if (returnedCategory.isBlank()) {
             differences.add(difference("leafCategoryCode", requestedCategory, null, "UNAVAILABLE",
@@ -424,6 +462,9 @@ public class ListingDraftService {
         List<Map<String, Object>> fieldErrors = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         String type = normalizeType(text(payload.get("productType")));
+        boolean qrBasic = "VIRTUAL".equals(type)
+                && "QR_COOKIE".equals(text(payload.get("publishChannel")))
+                && "BASIC_PLATFORM_RECOMMENDED".equals(text(payload.get("categoryMode")));
         String title = text(payload.get("name"));
         String description = text(payload.get("description"));
         if (title.isBlank()) addError(errors, fieldErrors, "name", "REQUIRED", "商品标题不能为空");
@@ -446,8 +487,9 @@ public class ListingDraftService {
         BigDecimal stockValue = decimal(payload.get("stock"));
         if (stockValue == null || stockValue.stripTrailingZeros().scale() > 0
                 || stockValue.compareTo(BigDecimal.ONE) < 0
-                || stockValue.compareTo(new BigDecimal("999999999")) > 0) {
-            addError(errors, fieldErrors, "stock", "INTEGER_RANGE", "库存必须为1至999999999的整数");
+                || stockValue.compareTo(new BigDecimal(qrBasic ? "9999" : "999999999")) > 0) {
+            addError(errors, fieldErrors, "stock", "INTEGER_RANGE", qrBasic
+                    ? "基础发布库存必须为1至9999的整数" : "库存必须为1至999999999的整数");
         }
         if (text(payload.get("outerId")).length() > 64) {
             addError(errors, fieldErrors, "outerId", "MAX_LENGTH", "商家编码不能超过64个字符");
@@ -486,9 +528,10 @@ public class ListingDraftService {
             addError(errors, fieldErrors, "freightTemplateId", "REQUIRED", "使用运费模板时必须填写模板ID");
         }
         if ("VIRTUAL".equals(type)) {
-            if (text(payload.get("fulfillmentMode")).isBlank()) addError(errors, fieldErrors, "fulfillmentMode", "REQUIRED", "请选择虚拟商品履约方式");
-            if (intValue(payload.get("validityDays"), 0) < 1) addError(errors, fieldErrors, "validityDays", "INTEGER_RANGE", "虚拟商品有效期必须至少1天");
-            if (text(payload.get("supportPolicy")).isBlank()) addError(errors, fieldErrors, "supportPolicy", "REQUIRED", "请填写虚拟商品售后说明");
+            if (!qrBasic && text(payload.get("fulfillmentMode")).isBlank()) addError(errors, fieldErrors, "fulfillmentMode", "REQUIRED", "请选择虚拟商品履约方式");
+            if ((!qrBasic || !text(payload.get("validityDays")).isBlank()) && intValue(payload.get("validityDays"), 0) < 1)
+                addError(errors, fieldErrors, "validityDays", "INTEGER_RANGE", "填写有效期时必须至少1天");
+            if (!qrBasic && text(payload.get("supportPolicy")).isBlank()) addError(errors, fieldErrors, "supportPolicy", "REQUIRED", "请填写虚拟商品售后说明");
         } else if ("SERVICE".equals(type)) {
             if (intValue(payload.get("serviceDurationMinutes"), 0) < 1) addError(errors, fieldErrors, "serviceDurationMinutes", "INTEGER_RANGE", "请填写服务时长");
             if (intValue(payload.get("appointmentLeadHours"), -1) < 0) addError(errors, fieldErrors, "appointmentLeadHours", "INTEGER_RANGE", "预约提前时间不能为负数");
@@ -507,6 +550,23 @@ public class ListingDraftService {
     private static void validateCatalog(Map<String, Object> payload, ListingCatalogService.Catalog catalog,
                                         List<String> errors, List<Map<String, Object>> fieldErrors,
                                         List<String> warnings) {
+        boolean basic;
+        try { basic = basicCategoryMode(payload); }
+        catch (BusinessException e) {
+            addError(errors, fieldErrors, "categoryMode", "INVALID_MODE", e.getMessage());
+            return;
+        }
+        if (basic) {
+            if (!text(payload.get("leafCategoryCode")).isBlank()) {
+                addError(errors, fieldErrors, "leafCategoryCode", "BASIC_SPECIFIED_FIELDS", "基本发布不能混入指定叶子类目，请显式清除或改用指定类目模式");
+            }
+            Object attributes = payload.get("categoryAttributes");
+            if (attributes != null && !(attributes instanceof Map<?, ?> values && values.isEmpty())) {
+                addError(errors, fieldErrors, "categoryAttributes", "BASIC_SPECIFIED_FIELDS", "基本发布不能混入指定类目属性，请显式清除或改用指定类目模式");
+            }
+            warnings.add("基本发布使用平台预检推荐类目，不支持提交指定类目及结构化属性");
+            return;
+        }
         String industry = text(payload.get("industryCode"));
         String leafCode = text(payload.get("leafCategoryCode"));
         if (industry.isBlank()) addError(errors, fieldErrors, "industryCode", "REQUIRED", "请选择商品行业");
@@ -763,7 +823,7 @@ public class ListingDraftService {
         return Map.of(
                 "fulfillmentFields", List.of("fulfillmentMode", "validityDays"),
                 "afterSalesFields", List.of("supportPolicy"),
-                "notice", "虚拟商品必须说明交付方式、有效期和售后，不生成快递物流");
+                "notice", "虚拟商品按当前通道要求填写交付信息；扫码基础发布的有效期与售后说明可选，不生成快递物流");
     }
 
     private String requireCurrentCatalog(Map<String, Object> payload) {

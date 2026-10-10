@@ -41,6 +41,14 @@ public class AutoDeliveryConfigRespDTO {
 
     private String skuName;
 
+    private String skuReadinessStatus;
+    private Integer skuDeclaredCount;
+    private Integer skuVerifiedCount;
+    private Boolean configurationReady;
+    /** Merchant-declared uniform card entitlement, not a verified absence of SKU. */
+    private Boolean uniformCardDeliveryEnabled;
+    private String readinessMessage;
+
     private String autoDeliveryContent;
 
     /**

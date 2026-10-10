@@ -16,6 +16,9 @@ import java.util.Map;
 @Slf4j
 @Service
 public class PendingOrderPollService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
 
     @Autowired
     private OrderService orderService;
@@ -34,6 +37,12 @@ public class PendingOrderPollService {
 
     @SuppressWarnings("unchecked")
     public int deliverPendingOrders(Long accountId) {
+        if(!accountAutomationPolicy.allows(accountId,AccountAutomationPolicy.Action.DISCOVERY))return 0;
+        return accountAutomationPolicy.guarded(accountId,AccountAutomationPolicy.Action.DISCOVERY,
+                () -> deliverPendingOrdersAllowed(accountId));
+    }
+
+    private int deliverPendingOrdersAllowed(Long accountId) {
         List<Map<String, Object>> pendingOrders = orderService.queryPendingOrders(accountId);
         if (pendingOrders == null || pendingOrders.isEmpty()) {
             return 0;
@@ -100,10 +109,10 @@ public class PendingOrderPollService {
         }
         XianyuGoodsOrder existing = orderMapper.selectByAccountIdAndOrderId(accountId, record.getOrderId());
         if (existing != null) {
-            if (!Integer.valueOf(1).equals(existing.getState())) {
-                deliveryTaskService.requeue(existing.getId());
-            }
-            return existing;
+            // Offline recovery may rediscover an order while the platform is throttling delivery.
+            // An existing task owns its retry time and terminal/review state; only the due-task
+            // scheduler (or the guarded merchant action) may transition it for execution.
+            return null;
         }
         return deliveryTaskService.discover(record, DeliveryChannel.HTTP_API);
     }

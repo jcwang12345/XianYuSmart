@@ -150,7 +150,18 @@ export interface InboxPage {
   totalPages: number
 }
 
-export const getNotificationInbox = (params: Record<string, unknown> = {}) => request<InboxPage>({ url: '/notifications/inbox', method: 'GET', params })
+export interface NotificationInboxQuery {
+  view?: 'ALL' | 'UNREAD' | 'PENDING' | 'SENT'
+  accountId?: number
+  search?: string
+  page?: number
+  pageSize?: number
+  severity?: 'INFO' | 'WARNING' | 'ERROR'
+  eventType?: string
+  handlingStatus?: 'UNHANDLED' | 'IN_PROGRESS' | 'RESOLVED' | 'IGNORED'
+  deliveryStatus?: InboxNotification['deliveryStatus']
+}
+export const getNotificationInbox = (params: NotificationInboxQuery = {}) => request<InboxPage>({ url: '/notifications/inbox', method: 'GET', params })
 export const markNotificationRead = (id: number) => request<void>({ url: `/notifications/inbox/${id}/read`, method: 'POST' })
 export const updateNotificationHandling = (id: number, status: string, note = '') => request<void>({ url: `/notifications/inbox/${id}/handling`, method: 'POST', data: { status, note } })
 

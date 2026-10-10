@@ -28,7 +28,7 @@ import java.util.Set;
 /** ACC-10 cross-page account selection, preflight and persistent per-account tasks. */
 @Service
 public class AccountBatchService {
-    private static final Set<String> OPERATIONS = Set.of("ENABLE", "DISABLE", "SYNC", "RENEW");
+    private static final Set<String> OPERATIONS = Set.of("ENABLE", "DISABLE", "SYNC", "PROFILE_SYNC", "RENEW");
     private static final Set<String> SELECTION_MODES = Set.of("EXPLICIT", "FILTER_SNAPSHOT");
     private static final int MAX_ACCOUNTS = 1000;
 
@@ -80,6 +80,8 @@ public class AccountBatchService {
                 + ("QA_MOCK".equals(channel) ? "；隔离 QA Mock，不触达闲鱼平台" : "");
         String notice = "SYNC".equals(normalized.operationType())
                 ? "当前同步范围为消息连接运行实况；店铺画像和处罚仍以各自平台快照及来源时间为准。"
+                : "PROFILE_SYNC".equals(normalized.operationType())
+                ? "仅调用店铺个人页只读接口；不会点击、提交或修改闲鱼平台数据。"
                 : "RENEW".equals(normalized.operationType())
                 ? "续期会逐账号准备私密二维码，仍需使用对应闲鱼 App 扫码确认，系统不会代替安全验证。"
                 : null;
@@ -287,7 +289,8 @@ public class AccountBatchService {
         Integer status = integer(account.get("accountStatus"));
         if ("ENABLE".equals(operation) && Integer.valueOf(1).equals(status)) return "账号已经启用";
         if ("DISABLE".equals(operation) && Integer.valueOf(0).equals(status)) return "账号已经停用";
-        if (("SYNC".equals(operation) || "RENEW".equals(operation)) && Integer.valueOf(0).equals(status)) return "账号已停用";
+        if (("SYNC".equals(operation) || "PROFILE_SYNC".equals(operation) || "RENEW".equals(operation))
+                && Integer.valueOf(0).equals(status)) return "账号已停用";
         return null;
     }
 
@@ -320,7 +323,7 @@ public class AccountBatchService {
     private static String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
     private static Integer integer(Object value) { return value instanceof Number number ? number.intValue() : null; }
     private static String displayName(Map<String, Object> account) { String note=text(account.get("accountNote")); return note.isBlank()?"账号 "+account.get("accountId"):note; }
-    private static String label(String operation) { return Map.of("ENABLE","启用","DISABLE","停用","SYNC","同步运行状态","RENEW","准备扫码续期").getOrDefault(operation, operation); }
+    private static String label(String operation) { return Map.of("ENABLE","启用","DISABLE","停用","SYNC","同步运行状态","PROFILE_SYNC","同步店铺画像","RENEW","准备扫码续期").getOrDefault(operation, operation); }
     private static String sha256(String value) { try { return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); } catch (Exception e) { throw new IllegalStateException(e); } }
 
     public record Filter(String search, String connectionStatus, String riskSeverity, Long groupId) {}

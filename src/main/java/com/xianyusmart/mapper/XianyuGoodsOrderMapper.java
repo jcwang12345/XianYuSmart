@@ -26,7 +26,7 @@ public interface XianyuGoodsOrderMapper {
             "WHERE delivery_message_state=2 AND delivery_message_next_retry_time<NOW(3)")
     int recoverInterruptedMessages();
 
-    @Update("UPDATE xianyu_goods_order SET state=1, delivery_status='COMPLETED', fail_reason=NULL " +
+    @Update("UPDATE xianyu_goods_order SET state=1, delivery_status='COMPLETED', delivered_quantity=expected_quantity, fail_reason=NULL " +
             "WHERE id=#{id} AND delivery_status='AWAITING_MESSAGE' AND delivery_message_state=1")
     int finishAwaitingMessage(@Param("id") Long id);
 
@@ -216,10 +216,16 @@ public interface XianyuGoodsOrderMapper {
             "delivery_message_content = NULL, delivery_message_state = 0, delivery_message_attempt_count = 0, " +
             "delivery_message_next_retry_time = NULL " +
             "WHERE xianyu_account_id = #{accountId} AND order_id = #{orderId} " +
-            "AND state <> 1 AND confirm_state <> 1 AND delivery_status NOT IN ('COMPLETED', 'SKIPPED')")
+            "AND state <> 1 AND confirm_state <> 1 AND delivery_status NOT IN ('COMPLETED', 'SKIPPED', 'REVIEW_REQUIRED', 'UNKNOWN')")
     int skipPendingTaskForRefund(@Param("accountId") Long accountId,
                                  @Param("orderId") String orderId,
                                  @Param("reason") String reason);
+
+    @Update("UPDATE xianyu_goods_order SET refund_status='REQUESTED' " +
+            "WHERE xianyu_account_id=#{accountId} AND order_id=#{orderId} " +
+            "AND refund_status IN ('NONE','UNKNOWN')")
+    int markRefundRequested(@Param("accountId") Long accountId,
+                            @Param("orderId") String orderId);
 
     @Update("UPDATE xianyu_goods_order SET delivery_status = 'RETRY_WAIT', " +
             "attempt_count = GREATEST(attempt_count - 1, 0), next_retry_time = #{retryAt}, " +
@@ -238,14 +244,15 @@ public interface XianyuGoodsOrderMapper {
     int markTaskReviewRequired(@Param("id") Long id, @Param("errorMessage") String errorMessage);
 
     @Update("UPDATE xianyu_goods_order SET delivery_status = 'PENDING', next_retry_time = NOW(3), " +
-            "lease_owner = NULL, lease_expire_time = NULL WHERE id = #{id} AND state <> 1 AND delivery_status IN ('FAILED', 'RETRY_WAIT')")
-    int requeueTask(@Param("id") Long id);
-
-    @Update("UPDATE xianyu_goods_order SET delivery_status = 'PENDING', next_retry_time = NOW(3), " +
             "state = 0, fail_reason = NULL, attempt_count = 0, lease_owner = NULL, lease_expire_time = NULL, " +
             "last_error_code = NULL, last_error_message = NULL " +
             "WHERE id = #{id} AND xianyu_account_id = #{accountId} AND state <> 1 " +
-            "AND delivery_status IN ('FAILED', 'RETRY_WAIT', 'REVIEW_REQUIRED')")
+            "AND confirm_state = 0 AND delivery_message_state NOT IN (3, 4, 5) " +
+            "AND refund_status = 'NONE' " +
+            "AND delivery_status IN ('FAILED', 'REVIEW_REQUIRED') " +
+            "AND external_attempt_started = 0 " +
+            "AND order_status_code = 'PAID' AND platform_trade_status = 'PAID' " +
+            "AND platform_status_checked_at >= DATE_SUB(NOW(3), INTERVAL 30 MINUTE)")
     int requeueFailedTask(@Param("id") Long id, @Param("accountId") Long accountId);
 
     @Update("UPDATE xianyu_goods_order SET state = 1, delivery_status = 'COMPLETED', " +
@@ -341,9 +348,16 @@ public interface XianyuGoodsOrderMapper {
     List<XianyuGoodsOrder> selectCommittedHeldDeliveryMessages(@Param("limit") int limit);
 
     @Select("SELECT o.* FROM xianyu_goods_order o WHERE o.state = 1 AND o.receipt_follow_up_completed = 0 " +
+            "AND o.delivery_status = 'COMPLETED' AND (o.confirm_state = 1 OR o.delivery_message_state = 1) " +
+            "AND (o.refund_status IS NULL OR o.refund_status = 'NONE') " +
             "AND (o.receipt_follow_up_next_time IS NULL OR o.receipt_follow_up_next_time <= NOW(3)) " +
+            "AND EXISTS (SELECT 1 FROM xianyu_sys_setting s WHERE s.tenant_id = o.tenant_id " +
+            "AND s.setting_key = CONCAT('engagement_since:REVIEW_INVITE:', o.xianyu_account_id, ':', o.xy_goods_id) " +
+            "AND o.id > CAST(SUBSTRING_INDEX(s.setting_value, '|', -1) AS UNSIGNED) " +
+            "AND o.create_time > s.created_time " +
+            "AND STR_TO_DATE(REPLACE(o.order_create_time, 'T', ' '), '%Y-%m-%d %H:%i:%s') > s.created_time) " +
             "AND EXISTS (SELECT 1 FROM xianyu_goods_auto_delivery_config c " +
-            "WHERE c.xianyu_account_id = o.xianyu_account_id AND c.xy_goods_id = o.xy_goods_id " +
+            "WHERE c.tenant_id = o.tenant_id AND c.xianyu_account_id = o.xianyu_account_id AND c.xy_goods_id = o.xy_goods_id " +
             "AND (c.sku_id IS NULL OR c.sku_id = o.sku_id) " +
             "AND c.receipt_follow_up_messages IS NOT NULL AND c.receipt_follow_up_messages NOT IN ('', '[]')) " +
             "ORDER BY o.receipt_follow_up_next_time ASC, o.create_time ASC LIMIT #{limit}")
@@ -354,6 +368,8 @@ public interface XianyuGoodsOrderMapper {
 
     @Update("UPDATE xianyu_goods_order SET receipt_follow_up_next_time = DATE_ADD(NOW(3), INTERVAL 2 MINUTE) " +
             "WHERE id = #{id} AND receipt_follow_up_completed = 0 AND receipt_follow_up_sent_count = #{sentCount} " +
+            "AND state = 1 AND delivery_status = 'COMPLETED' AND (confirm_state = 1 OR delivery_message_state = 1) " +
+            "AND (refund_status IS NULL OR refund_status = 'NONE') " +
             "AND (receipt_follow_up_next_time IS NULL OR receipt_follow_up_next_time <= NOW(3))")
     int claimReceiptFollowUp(@Param("id") Long id, @Param("sentCount") Integer sentCount);
 
@@ -469,19 +485,35 @@ public interface XianyuGoodsOrderMapper {
     @Select("SELECT COALESCE(SUM(CAST(total_price AS DECIMAL(12, 2))), 0) FROM xianyu_goods_order WHERE state = 1 AND confirm_state = 1")
     double sumDeliverySuccessAmount();
 
+    // NULL means this date has no verified, confirmed delivery amount. Do not report it as ¥0.
+    @Select("SELECT SUM(CAST(total_price AS DECIMAL(12, 2))) FROM xianyu_goods_order " +
+            "WHERE state = 1 AND confirm_state = 1 AND DATE(create_time) = #{date}")
+    Double sumConfirmedDeliveryAmountByOrderDate(@Param("date") String date);
+
     @Update("UPDATE xianyu_goods_order SET sku_name = #{skuName} WHERE id = #{id}")
     int updateSkuName(@Param("id") Long id, @Param("skuName") String skuName);
 
     @Update("UPDATE xianyu_goods_order SET buyer_user_id=COALESCE(NULLIF(#{buyerUserId},''),buyer_user_id), " +
-            "buyer_user_name=COALESCE(NULLIF(#{buyerUserName},''),buyer_user_name), order_create_time=#{orderCreateTime}, " +
-            "pay_success_time=#{paySuccessTime},consign_time=#{consignTime},sku_name=#{skuName}, " +
-            "sku_id=COALESCE(#{skuId},sku_id),goods_title=#{goodsTitle},total_price=#{totalPrice},buy_num=#{buyNum} WHERE id=#{id}")
+            "buyer_user_name=COALESCE(NULLIF(#{buyerUserName},''),buyer_user_name), " +
+            "order_create_time=COALESCE(#{orderCreateTime},order_create_time), " +
+            "pay_success_time=COALESCE(#{paySuccessTime},pay_success_time), " +
+            "consign_time=COALESCE(#{consignTime},consign_time),sku_name=COALESCE(#{skuName},sku_name), " +
+            "sku_id=COALESCE(#{skuId},sku_id),goods_title=COALESCE(#{goodsTitle},goods_title), " +
+            "total_price=COALESCE(#{totalPrice},total_price),buy_num=COALESCE(#{buyNum},buy_num) WHERE id=#{id}")
     int updateOrderDetail(@Param("id") Long id, @Param("buyerUserId") String buyerUserId,
                           @Param("buyerUserName") String buyerUserName, @Param("orderCreateTime") String orderCreateTime,
                           @Param("paySuccessTime") String paySuccessTime, @Param("consignTime") String consignTime,
                           @Param("skuName") String skuName, @Param("skuId") String skuId,
                           @Param("goodsTitle") String goodsTitle, @Param("totalPrice") String totalPrice,
                           @Param("buyNum") Integer buyNum);
+
+    @Update("UPDATE xianyu_goods_order SET order_status_code=#{status}, platform_trade_status=#{status}, " +
+            "order_amount=COALESCE(#{amount},order_amount), platform_status_checked_at=NOW(3), " +
+            "last_synced_time=NOW(3) WHERE id=#{id} AND xianyu_account_id=#{accountId} " +
+            "AND order_id=#{orderId} AND xy_goods_id=#{goodsId}")
+    int updateVerifiedOrderSnapshot(@Param("id") Long id, @Param("accountId") Long accountId,
+                                    @Param("orderId") String orderId, @Param("goodsId") String goodsId,
+                                    @Param("status") String status, @Param("amount") java.math.BigDecimal amount);
 
     @Select("SELECT COALESCE(SUM(CAST(total_price AS DECIMAL(12, 2))), 0) FROM xianyu_goods_order WHERE state = 1 AND confirm_state = 1 AND date(create_time) = #{date}")
     double sumDeliverySuccessAmountByDate(@Param("date") String date);

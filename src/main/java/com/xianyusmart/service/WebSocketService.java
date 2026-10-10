@@ -108,4 +108,17 @@ public interface WebSocketService {
      * 分页读取指定会话的历史消息
      */
     List<Map<String, Object>> listConversationHistory(Long accountId, String cid, int maxMessages);
+
+    /** Existing list callers stay compatible; a bare list cannot prove a terminal page. */
+    default HistoryResult listConversationHistoryResult(Long accountId, String cid, int maxMessages) {
+        return new HistoryResult(listConversationHistory(accountId,cid,maxMessages),false,"LEGACY_UNVERIFIED");
+    }
+
+    record HistoryResult(List<Map<String,Object>> messages, boolean complete, String stopReason) {
+        public HistoryResult {
+            messages=List.copyOf(messages);
+            if(!java.util.Set.of("TERMINAL","LEGACY_UNVERIFIED","INVALID_PAGE","UNKNOWN_TERMINAL","INVALID_CURSOR","MESSAGE_LIMIT","PAGE_LIMIT").contains(stopReason)
+                || complete && !"TERMINAL".equals(stopReason)) throw new IllegalArgumentException("历史分页事实无效");
+        }
+    }
 }

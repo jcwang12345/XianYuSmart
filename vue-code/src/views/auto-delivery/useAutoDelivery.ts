@@ -1,7 +1,7 @@
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAccountList } from '@/api/account'
-import { getGoodsList, syncSingleItem, updateAutoDeliveryStatus, updateAutoConfirmShipment } from '@/api/goods'
+import { getGoodsList, syncSingleItem, updateAutoDeliveryStatus, updateAutoConfirmShipment, getItemVerificationEntry, consumeItemVerificationEntry, type ItemVerificationEntry } from '@/api/goods'
 import {
   getAutoDeliveryConfig,
   saveOrUpdateAutoDeliveryConfig,
@@ -60,11 +60,125 @@ export function useAutoDelivery() {
 
   const loading = ref(false)
   const saving = ref(false)
+  let saveRun = 0
+  let toggleRun = 0
+  let deliveryContextRun = 0
+  let deliveryMounted = true
+  const invalidateDeliveryRequests = () => {
+    deliveryContextRun++
+    saveRun++
+    toggleRun++
+    saving.value = false
+  }
   const accounts = ref<Account[]>([])
   const selectedAccountId = ref<number | null>(null)
   const goodsList = ref<GoodsItemWithConfig[]>([])
   const selectedGoods = ref<GoodsItemWithConfig | null>(null)
-  const currentConfig = ref<AutoDeliveryConfig | null>(null)
+  type ReadinessConfig = AutoDeliveryConfig & { skuReadinessStatus?: string; configurationReady?: boolean; readinessMessage?: string }
+  const currentConfig = ref<ReadinessConfig | null>(null)
+  const verificationEntry = ref<ItemVerificationEntry | null>(null)
+  const verificationOpening = ref(false)
+  const verificationMessage = ref('')
+  let verificationVersion = 0
+  let verificationAttempt = 0
+  let verificationPopup: Window | null = null
+  let verificationExpiry: ReturnType<typeof setTimeout> | undefined
+  const clearVerificationEntry = () => {
+    verificationVersion++
+    verificationEntry.value = null
+    verificationMessage.value = ''
+    verificationAttempt++
+    verificationOpening.value = false
+    if (verificationPopup && !verificationPopup.closed) verificationPopup.close()
+    verificationPopup = null
+    if (verificationExpiry) clearTimeout(verificationExpiry)
+  }
+  const loadVerificationEntry = async () => {
+    const accountId = selectedAccountId.value
+    const goodsId = selectedGoods.value?.item.xyGoodId
+    const version = ++verificationVersion
+    if (verificationExpiry) clearTimeout(verificationExpiry)
+    verificationEntry.value = null
+    if (!accountId || !goodsId) return
+    try {
+      const response = await getItemVerificationEntry({ xianyuAccountId: accountId, xyGoodsId: goodsId })
+      if (version !== verificationVersion || !isCurrentGoods(accountId, goodsId)) return
+      verificationEntry.value = response.data || null
+      if (response.data?.available && response.data.expiresAt) {
+        const remaining = response.data.expiresAt - Date.now()
+        if (remaining <= 0) { clearVerificationEntry(); return }
+        verificationExpiry = setTimeout(() => clearVerificationEntry(), Math.min(remaining, 300000))
+      }
+    } catch (error: any) {
+      if (version === verificationVersion) {
+        clearVerificationEntry()
+        if (error?.businessCode === 403 || error?.response?.status === 403) {
+          verificationMessage.value = '仅当前租户账号拥有者可使用本商品官方验证入口。'
+        }
+      }
+    }
+  }
+  const openOfficialVerification = async () => {
+    const accountId = selectedAccountId.value
+    const goodsId = selectedGoods.value?.item.xyGoodId
+    const handle = verificationEntry.value?.entryHandle
+    if (!accountId || !goodsId || !handle || verificationOpening.value) return
+    const version = verificationVersion
+    // Open only a blank page synchronously in this explicit click. If blocked, do not consume.
+    const popup = window.open('about:blank', '_blank')
+    if (!popup) {
+      verificationMessage.value = '浏览器拦截了弹窗，入口尚未消耗；请允许本次弹窗后再点击。'
+      return
+    }
+    try {
+      popup.opener = null
+      const policy = popup.document.createElement('meta')
+      policy.name = 'referrer'
+      policy.content = 'no-referrer'
+      popup.document.head.appendChild(policy)
+    } catch {
+      popup.close()
+      verificationMessage.value = '无法安全打开新页面，入口尚未消耗。'
+      return
+    }
+    verificationPopup = popup
+    const attempt = ++verificationAttempt
+    verificationOpening.value = true
+    let navigated = false
+    try {
+      const response = await consumeItemVerificationEntry({ xianyuAccountId: accountId, xyGoodsId: goodsId, entryHandle: handle })
+      if (version !== verificationVersion || !isCurrentGoods(accountId, goodsId) || popup.closed) return
+      // The URL exists only in this click handler, never in Vue state, logs or browser storage.
+      const officialUrl = response.data?.url
+      if (!officialUrl) throw new Error('MISSING_ENTRY')
+      const url = new URL(officialUrl)
+      if (url.protocol !== 'https:' || url.hostname !== 'h5api.m.goofish.com'
+        || url.username || url.password || (url.port && url.port !== '443')
+        || !['/_____tmd_____/punish', '/h5/mtop.taobao.idle.pc.detail/1.0/_____tmd_____/punish'].includes(url.pathname)) {
+        throw new Error('UNSAFE_ENTRY')
+      }
+      verificationPopup = null
+      clearVerificationEntry()
+      popup.location.replace(officialUrl)
+      navigated = true
+      verificationMessage.value = '已打开官方页面，请手工完成验证；完成后再手工同步规格。'
+    } catch (error: any) {
+      if (version !== verificationVersion || !isCurrentGoods(accountId, goodsId)) return
+      clearVerificationEntry()
+      verificationMessage.value = error?.businessCode === 403 || error?.response?.status === 403
+        ? '仅当前租户账号拥有者可使用本商品官方验证入口。'
+        : '入口不可用或已失效，请等待有效入口；不要反复同步或扫码。'
+    } finally {
+      if (!navigated && !popup.closed) popup.close()
+      if (verificationPopup === popup) verificationPopup = null
+      if (attempt === verificationAttempt) verificationOpening.value = false
+    }
+  }
+  watch([selectedAccountId, () => selectedGoods.value?.item.xyGoodId], () => {
+    clearVerificationEntry()
+    void loadVerificationEntry()
+  })
+
 
   const skuList = ref<GoodsSku[]>([])
   const selectedSkuId = ref<string | null>(null)
@@ -149,15 +263,25 @@ export function useAutoDelivery() {
   const skuCoverageIncomplete = computed(() => {
     const declared = declaredSkuCount.value
     if (declared == null || !Number.isInteger(declared) || declared < 0) return true
-    return declared > 0 ? skuList.value.length !== declared : skuList.value.length > 0
+    return declared > 0 ? skuList.value.length !== declared
+      : skuList.value.length > 0 || selectedGoods.value?.item.coverageStatus?.toUpperCase() !== 'FULL'
   })
   const skuCoverageMessage = computed(() => declaredSkuCount.value == null
-    ? `SKU 主档数量尚未同步，已验证 ${skuList.value.length} 个；请同步完整商品详情`
-    : `SKU 同步不完整：主档 ${declaredSkuCount.value} 个，已验证 ${skuList.value.length} 个`)
+    ? '商品规格/版本/套餐信息未确认；可先保存配置，开启前需完成商品详情验证'
+    : declaredSkuCount.value === 0 && skuList.value.length === 0
+      ? '商品规格/版本/套餐信息未确认；0/0不代表无规格，可先保存配置，开启前需完成验证'
+      : `商品声明 ${declaredSkuCount.value} 个规格，已验证 ${skuList.value.length} 个；开启前需完成验证`)
+  const savedReadinessMessage = computed(() => currentConfig.value?.readinessMessage
+    || (skuCoverageIncomplete.value ? '配置可保存，自动发货待就绪；保存不会开启或执行发货' : '保存配置后可手工开启，开启和执行仍会校验'))
   const configuredSkuCount = computed(() => skuList.value
     .filter(sku => sku.skuId && skuConfigs.value.has(sku.skuId)).length)
-  const skuConfigurationComplete = computed(() => !skuCoverageIncomplete.value
-    && (!hasSku.value || configuredSkuCount.value === skuList.value.length))
+  const skuConfigurationComplete = computed(() => !skuLoading.value && !configLoading.value
+    && !skuLoadError.value && !configLoadError.value
+    && (!skuCoverageIncomplete.value || currentConfig.value?.configurationReady === true
+      && declaredSkuCount.value === 0 && skuList.value.length === 0
+      && currentConfig.value.deliveryMode === 1 && !!currentConfig.value.fixedTemplateId)
+    && currentConfig.value?.configurationReady !== false
+    && (hasSku.value ? configuredSkuCount.value === skuList.value.length : !!currentConfig.value))
   const hasFixedDelivery = computed(() => configForm.value.deliveryMode === 1)
   const hasCardDelivery = computed(() => configForm.value.deliveryMode === 2)
   const selectedFixedTemplate = computed(() =>
@@ -322,7 +446,8 @@ export function useAutoDelivery() {
 
         if (accounts.value.length > 0 && !selectedAccountId.value) {
           selectedAccountId.value = accounts.value[0]?.id || null
-          activeAccountId.value = selectedAccountId.value
+          invalidateDeliveryRequests()
+    activeAccountId.value = selectedAccountId.value
           await loadGoods()
         }
       }
@@ -407,6 +532,7 @@ export function useAutoDelivery() {
       selectedAccountId.value = activeAccountId.value
       return
     }
+    invalidateDeliveryRequests()
     activeAccountId.value = selectedAccountId.value
     skuRequestVersion++
     skuConfigRequestVersion++
@@ -492,6 +618,7 @@ export function useAutoDelivery() {
     if (selectedGoods.value?.item.xyGoodId === goods.item.xyGoodId) return
     if (!confirmDiscardChanges()) return
 
+    invalidateDeliveryRequests()
     selectedGoods.value = goods
     const accountId = selectedAccountId.value!
     const goodsId = goods.item.xyGoodId
@@ -567,7 +694,7 @@ export function useAutoDelivery() {
         showInfo('平台暂未返回规格；单规格商品可直接配置，多规格商品请稍后重试')
       }
     } catch (error: any) {
-      console.error('同步商品规格失败:', error)
+      if (isCurrentGoods(accountId, goodsId)) await loadVerificationEntry()
       if (!error.messageShown) showError(error?.message || '规格同步失败，请重试')
     } finally {
       skuSyncing.value = false
@@ -679,6 +806,7 @@ export function useAutoDelivery() {
   }
 
   const saveConfig = async () => {
+    if (saving.value) return
     if (!selectedGoods.value || !selectedAccountId.value) {
       showInfo('请先选择商品')
       return
@@ -695,8 +823,8 @@ export function useAutoDelivery() {
       showInfo('请先选择商品规格')
       return
     }
-    if (skuCoverageIncomplete.value) {
-      showInfo(`${skuCoverageMessage.value}，请重新同步后再保存`)
+    if (skuCoverageIncomplete.value && selectedGoods.value.xianyuAutoDeliveryOn === 1) {
+      showInfo('商品规格信息未就绪，不能覆盖正在运行的配置；请先关闭自动发货再保存')
       return
     }
 
@@ -735,6 +863,13 @@ export function useAutoDelivery() {
       return
     }
 
+    const accountId = selectedAccountId.value
+    const goodsId = selectedGoods.value.item.xyGoodId
+    const skuId = selectedSkuId.value
+    const version = configRequestVersion
+    const submittedSnapshot = serializeConfig()
+    const run = ++saveRun
+    const contextRun = deliveryContextRun
     saving.value = true
     try {
       const skuName = selectedSkuId.value
@@ -762,21 +897,25 @@ export function useAutoDelivery() {
       }
 
       const response = await saveOrUpdateAutoDeliveryConfig(req)
+      if (!deliveryMounted || run !== saveRun || contextRun !== deliveryContextRun || version !== configRequestVersion || !isCurrentGoods(accountId, goodsId) || skuId !== selectedSkuId.value) return
       if (response.code === 0 || response.code === 200) {
-        showSuccess('保存配置成功')
-        currentConfig.value = response.data || null
-        markConfigSaved()
+        currentConfig.value = (response.data as ReadinessConfig | null) || null
+        savedConfigSnapshot.value = submittedSnapshot
         if (hasSku.value) {
           await loadAllSkuConfigs()
         }
+        if (!deliveryMounted || run !== saveRun || contextRun !== deliveryContextRun || version !== configRequestVersion || !isCurrentGoods(accountId, goodsId) || skuId !== selectedSkuId.value) return
+        showSuccess(currentConfig.value?.configurationReady === true && skuConfigurationComplete.value
+          ? '已保存，可手工开启自动发货' : '已保存，待验证；自动发货未就绪')
       } else {
         throw new Error(response.msg || '保存配置失败')
       }
     } catch (error: any) {
+      if (!deliveryMounted || run !== saveRun || contextRun !== deliveryContextRun || version !== configRequestVersion || !isCurrentGoods(accountId, goodsId) || skuId !== selectedSkuId.value) return
       console.error('保存配置失败:', error)
       showError(error?.message || '保存配置失败')
     } finally {
-      saving.value = false
+      if (deliveryMounted && run === saveRun && contextRun === deliveryContextRun && isCurrentGoods(accountId, goodsId)) saving.value = false
     }
   }
 
@@ -792,30 +931,31 @@ export function useAutoDelivery() {
       return
     }
 
+    const accountId = selectedAccountId.value
+    const goodsId = selectedGoods.value.item.xyGoodId
+    const target = selectedGoods.value
+    const originalState = target.xianyuAutoDeliveryOn
+    const run = ++toggleRun
+    const contextRun = deliveryContextRun
+    const isCurrent = () => deliveryMounted && run === toggleRun
+      && contextRun === deliveryContextRun && isCurrentGoods(accountId, goodsId)
     try {
       const response = await updateAutoDeliveryStatus({
-        xianyuAccountId: selectedAccountId.value,
-        xyGoodsId: selectedGoods.value.item.xyGoodId,
+        xianyuAccountId: accountId,
+        xyGoodsId: goodsId,
         xianyuAutoDeliveryOn: value ? 1 : 0
       })
-
-      if (response.code === 0 || response.code === 200) {
-        showSuccess(`自动发货${value ? '开启' : '关闭'}成功`)
-        if (selectedGoods.value) {
-          selectedGoods.value.xianyuAutoDeliveryOn = value ? 1 : 0
-        }
-        const goodsItem = goodsList.value.find(item => item.item.xyGoodId === selectedGoods.value?.item.xyGoodId)
-        if (goodsItem) {
-          goodsItem.xianyuAutoDeliveryOn = value ? 1 : 0
-        }
-      } else {
-        throw new Error(response.msg || '操作失败')
-      }
+      if (!isCurrent()) return
+      if (response.code !== 0 && response.code !== 200) throw new Error(response.msg || '操作失败')
+      target.xianyuAutoDeliveryOn = value ? 1 : 0
+      const goodsItem = goodsList.value.find(item => item.item.xyGoodId === goodsId
+        && item.item.xianyuAccountId === accountId)
+      if (goodsItem) goodsItem.xianyuAutoDeliveryOn = value ? 1 : 0
+      showSuccess(`自动发货${value ? '开启' : '关闭'}成功`)
     } catch (error: any) {
-      console.error('操作失败:', error)
-      if (selectedGoods.value) {
-        selectedGoods.value.xianyuAutoDeliveryOn = value ? 0 : 1
-      }
+      if (!isCurrent()) return
+      target.xianyuAutoDeliveryOn = originalState
+      showError(error?.message || '自动发货设置失败，请核对配置后重试')
     }
   }
 
@@ -1033,6 +1173,7 @@ export function useAutoDelivery() {
   const toggleOnlyOnSale = () => {
     if (!confirmDiscardChanges()) return
     savedConfigSnapshot.value = ''
+    invalidateDeliveryRequests()
     onlyOnSale.value = !onlyOnSale.value
     goodsCurrentPage.value = 1
     selectedGoods.value = null
@@ -1047,11 +1188,18 @@ export function useAutoDelivery() {
   })
 
   onUnmounted(() => {
+    deliveryMounted = false
+    invalidateDeliveryRequests()
+    clearVerificationEntry()
     window.removeEventListener('resize', checkScreenSize)
     window.removeEventListener('beforeunload', handleBeforeUnload)
   })
 
   return {
+    verificationEntry,
+    verificationOpening,
+    verificationMessage,
+    openOfficialVerification,
     loading,
     saving,
     accounts,
@@ -1071,6 +1219,7 @@ export function useAutoDelivery() {
     hasSku,
     declaredSkuCount,
     skuCoverageMessage,
+    savedReadinessMessage,
     skuCoverageIncomplete,
     skuConfigurationComplete,
     configuredSkuCount,

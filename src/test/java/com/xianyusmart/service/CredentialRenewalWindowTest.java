@@ -30,9 +30,10 @@ class CredentialRenewalWindowTest {
         when(accounts.selectById(2L)).thenReturn(account);
         when(notices.hasRenewalImageChannel()).thenReturn(true);
         deadline=System.currentTimeMillis()+QRLoginSession.MAX_WAIT_MS;
-        when(qr.generateQRCode(2L)).thenReturn(new QRLoginResponse(true,"session",CredentialRenewalServiceTest.png(),null,deadline));
+        when(qr.generateRenewalQRCode(2L)).thenReturn(new QRLoginResponse(true,"session",CredentialRenewalServiceTest.png(),null,deadline));
         images=spy(new RenewalImageStore());
         service=new CredentialRenewalService(accounts,qr,wp,mp,notices,images,Runnable::run);
+        AccountPolicyFixture.active(service);
         TenantContext.set(7L);service.request(2L);
         flow=((Map<Long,Object>)ReflectionTestUtils.getField(service,"flows")).get(2L);
     }
@@ -49,26 +50,26 @@ class CredentialRenewalWindowTest {
     }
     @Test void platformExpiryReplacesImageBeforeLocalDeadline() {
         String old=(String)ReflectionTestUtils.getField(flow,"image");
-        poll("expired");verify(qr,times(2)).generateQRCode(2L);
+        poll("expired");verify(qr,times(2)).generateRenewalQRCode(2L);
         assertNull(images.get(old,7L,2L));
     }
     @Test void scannedConfirmationIsNotInterruptedAtImageCutoff() {
         ReflectionTestUtils.setField(flow,"expiresAt",0L);poll("scanned");
-        verify(qr,times(1)).generateQRCode(2L);
+        verify(qr,times(1)).generateRenewalQRCode(2L);
         assertEquals(false,ReflectionTestUtils.getField(flow,"terminal"));
     }
     @Test void thirtyMinuteWindowStopsReplacement() {
         ReflectionTestUtils.setField(flow,"windowEndsAt",0L);poll("expired");
-        verify(qr,times(1)).generateQRCode(2L);
+        verify(qr,times(1)).generateRenewalQRCode(2L);
         assertEquals(true,ReflectionTestUtils.getField(flow,"terminal"));
     }
     @Test void excessivePlatformExpiryHasTenImageLimit() {
         ReflectionTestUtils.setField(flow,"generation",10);poll("expired");
-        verify(qr,times(1)).generateQRCode(2L);
+        verify(qr,times(1)).generateRenewalQRCode(2L);
         assertEquals(true,ReflectionTestUtils.getField(flow,"terminal"));
     }
     @Test void missingSessionDeadlineNeverProducesMisleadingImage() {
-        when(qr.generateQRCode(2L)).thenReturn(new QRLoginResponse(true,"unknown-deadline", "invalid",null));
+        when(qr.generateRenewalQRCode(2L)).thenReturn(new QRLoginResponse(true,"unknown-deadline", "invalid",null));
         poll("expired");
         assertEquals(true,ReflectionTestUtils.getField(flow,"terminal"));
         verify(images,times(1)).put(anyLong(),anyLong(),anyString(),anyString(),anyLong());

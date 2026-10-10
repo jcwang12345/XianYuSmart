@@ -44,24 +44,80 @@ export function addAccount(data: Partial<Account>) {
   })
 }
 
-// 更新账号
-export function updateAccount(data: Partial<Account>) {
-  return request({
-    url: '/account/update',
-    method: 'POST',
-    data
-  })
+export interface AccountLocalProfile {
+  accountId: number
+  accountNote?: string
+  groupIds: number[]
+  operatingTags: string[]
+  lifecycleState: 'ACTIVE' | 'DISABLED' | 'ARCHIVED'
+  rowVersion: number
+  autoReplyAllowed: boolean
+  autoDeliveryAllowed: boolean
+  canEdit: boolean
+  canManageLifecycle: boolean
+  canDelete: boolean
+  runtimeConnection: 'CONNECTED' | 'DISCONNECTED' | 'UNKNOWN'
+  verificationState: 'VERIFICATION_REQUIRED' | 'UNKNOWN'
+  platformStatus?: number
+  archivedFromState?: 'ACTIVE' | 'DISABLED' | null
 }
-
-// 删除账号
-export function deleteAccount(data: { id: number }) {
-  return request({
-    url: '/account/delete',
-    method: 'POST',
-    data: {
-      accountId: data.id
-    }
-  })
+export interface AccountLocalCommand {
+  accountId: number
+  requestId: string
+  expectedVersion: number
+  accountNote?: string
+  groupIds?: number[]
+  operatingTags?: string[]
+  autoReplyAllowed?: boolean
+  autoDeliveryAllowed?: boolean
+}
+export interface AccountCommandResult {
+  commandId: string | number
+  requestId: string
+  replayed: boolean
+  rowVersion?: number | string
+  changedFields?: string[]
+  localResult: 'APPLIED' | 'NO_CHANGE' | 'DELETED'
+  connectionOutcome?: string
+  profile?: AccountLocalProfile
+}
+export interface DeletePreflight {
+  accountId: number
+  canDelete: boolean
+  rowVersion: number | string
+  confirmationLabel: string
+  archivePath: string
+  dependencies: Array<{ dependency: string; label: string; path: string; count: number | string }>
+  recommendation: string
+}
+function normalizeLocalProfile(profile: AccountLocalProfile): AccountLocalProfile {
+  const version = Number(profile.rowVersion)
+  if (!Number.isSafeInteger(version) || version < 0) throw new Error('账号版本无效，请重新加载')
+  return { ...profile, accountId: normalizeAccountId(profile.accountId), rowVersion: version,
+    groupIds: (profile.groupIds || []).map(normalizeAccountId) }
+}
+export async function getAccountLifecycle(accountId: number) {
+  const response = await request<AccountLocalProfile>({ url: '/account/lifecycle', method: 'GET', params: { accountId } })
+  if (response.data) response.data = normalizeLocalProfile(response.data)
+  return response
+}
+export async function updateAccount(data: AccountLocalCommand) {
+  const response = await request<AccountCommandResult>({ url: '/account/update', method: 'POST', data })
+  if (response.data?.profile) response.data.profile = normalizeLocalProfile(response.data.profile)
+  return response
+}
+export async function changeAccountLifecycle(data: Pick<AccountLocalCommand, 'accountId' | 'requestId' | 'expectedVersion'> & { action: 'DISABLE' | 'ENABLE' | 'ARCHIVE' | 'RESTORE' }) {
+  const response = await request<AccountCommandResult>({ url: '/account/lifecycle', method: 'POST', data })
+  if (response.data?.profile) response.data.profile = normalizeLocalProfile(response.data.profile)
+  return response
+}
+export function getAccountDeletePreflight(accountId: number) {
+  return request<DeletePreflight>({ url: '/account/delete-preflight', method: 'GET', params: { accountId } })
+}
+export function deleteAccount(data: { id: number; confirmationText: string; confirmationNote: string; requestId: string; expectedVersion: number }) {
+  return request<AccountCommandResult>({ url: '/account/delete', method: 'POST', data: { accountId: data.id,
+    confirmationText: data.confirmationText, confirmationNote: data.confirmationNote,
+    requestId: data.requestId, expectedVersion: data.expectedVersion } })
 }
 
 // 手动添加账号
@@ -72,4 +128,3 @@ export function manualAddAccount(data: { accountNote: string; cookie: string }) 
     data
   })
 }
-

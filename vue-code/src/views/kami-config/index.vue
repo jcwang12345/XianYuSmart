@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, inject, defineComponent, h } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch, inject, defineComponent, h } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { toast } from '@/utils/toast'
 import { showConfirm } from '@/utils/confirm'
@@ -45,6 +45,33 @@ const kamiItems = ref<KamiItem[]>([])
 const itemsLoading = ref(false)
 
 const showCreateDialog = ref(false)
+const createDialogRef = ref<HTMLElement | null>(null)
+let createDialogReturnFocus: HTMLElement | null = null
+watch(showCreateDialog, async (open) => {
+  if (open) {
+    createDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    await nextTick()
+    createDialogRef.value?.querySelector<HTMLInputElement>('input')?.focus()
+  } else {
+    await nextTick()
+    if (createDialogReturnFocus?.isConnected) createDialogReturnFocus.focus()
+  }
+})
+const handleCreateDialogKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    showCreateDialog.value = false
+    return
+  }
+  if (event.key !== 'Tab') return
+  const controls = Array.from(createDialogRef.value?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') || []).filter(el => el.offsetParent !== null)
+  const target = event.shiftKey ? controls[controls.length - 1] : controls[0]
+  if (target && (event.shiftKey ? document.activeElement === controls[0] : document.activeElement === controls[controls.length - 1])) {
+    event.preventDefault()
+    target.focus()
+  }
+}
 const editingConfigId = ref<number>()
 const createForm = ref({
   aliasName: '',
@@ -1026,25 +1053,25 @@ onUnmounted(() => {
       <!-- 新建卡密配置 -->
       <Transition name="modal">
         <div v-if="showCreateDialog" class="modal-overlay" @click.self="showCreateDialog = false">
-          <div class="modal-container">
+          <div ref="createDialogRef" class="modal-container" role="dialog" aria-modal="true" aria-labelledby="kami-config-dialog-title" @keydown="handleCreateDialogKeydown">
             <div class="modal-header">
-              <h2 class="modal-title">{{ editingConfigId ? '编辑卡密来源' : '新建卡密配置' }}</h2>
-              <button class="modal-close" @click="showCreateDialog = false">×</button>
+              <h2 id="kami-config-dialog-title" class="modal-title">{{ editingConfigId ? '编辑卡密来源' : '新建卡密配置' }}</h2>
+              <button class="modal-close" aria-label="关闭卡密配置" @click="showCreateDialog = false">×</button>
             </div>
             <div class="modal-body">
               <div class="form-row">
-                <label class="form-label">别名</label>
-                <input v-model="createForm.aliasName" class="form-input" placeholder="请输入别名" maxlength="50" />
+                <label class="form-label" for="kami-config-alias">别名</label>
+                <input id="kami-config-alias" v-model="createForm.aliasName" class="form-input" placeholder="请输入别名" maxlength="50" />
                 <small class="form-hint">{{ createForm.aliasName.length }} / 50</small>
               </div>
-              <div class="form-row">
-                <label class="form-label">库存使用方式</label>
-                <div class="form-radio-group">
+              <div class="form-row form-row--inventory">
+                <span id="kami-inventory-mode-label" class="form-label">库存使用方式</span>
+                <div class="form-radio-group" role="radiogroup" aria-labelledby="kami-inventory-mode-label">
                   <label class="form-radio" :class="{ 'is-active': createForm.sharingMode === 'PRIVATE' }">
-                    <input v-model="createForm.sharingMode" type="radio" value="PRIVATE" />私有库存
+                    <input v-model="createForm.sharingMode" name="kami-inventory-mode" type="radio" value="PRIVATE" />私有库存
                   </label>
                   <label class="form-radio" :class="{ 'is-active': createForm.sharingMode === 'SHARED' }">
-                    <input v-model="createForm.sharingMode" type="radio" value="SHARED" />共享库存池
+                    <input v-model="createForm.sharingMode" name="kami-inventory-mode" type="radio" value="SHARED" />共享库存池
                   </label>
                 </div>
                 <span class="form-suffix">私有库存仅当前账号使用；共享库存池由所选账号原子消费，同一张卡密不会重复发放。</span>
@@ -1977,11 +2004,23 @@ onUnmounted(() => {
 
 .form-radio-group {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+.form-row--inventory {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.form-row--inventory .form-suffix {
+  grid-column: 1 / -1;
 }
 
 .form-radio {
   display: inline-flex;
+  flex-shrink: 0;
+  white-space: nowrap;
   align-items: center;
   gap: 5px;
   font-size: 13px;

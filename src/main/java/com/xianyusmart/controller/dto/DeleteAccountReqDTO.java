@@ -8,4 +8,5 @@ import lombok.Data;
 @Data
 public class DeleteAccountReqDTO {
     private Long accountId;       // 账号ID
+    private String confirmationText; // 必须与账号 ID 的十进制文本完全一致
 }

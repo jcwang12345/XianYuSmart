@@ -77,9 +77,9 @@ public class GoodsInfoServiceImpl implements GoodsInfoService {
             // 关联闲鱼账号ID
             goodsInfo.setXianyuAccountId(xianyuAccountId);
             goodsInfo.setProductSource("PLATFORM_LIST_SYNC");
-            goodsInfo.setSyncStatus("SUCCEEDED");
+            goodsInfo.setSyncStatus("PARTIAL");
             goodsInfo.setCoverageStatus("PARTIAL");
-            goodsInfo.setLastSyncedTime(getCurrentTimeString());
+            // List observation is not a completed detail snapshot; preserve the last verified detail time.
             
             // 价格信息
             if (itemDTO.getPriceInfo() != null) {

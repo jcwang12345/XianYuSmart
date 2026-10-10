@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
@@ -31,6 +32,17 @@ public class OrderMatrixController {
     @GetMapping("/orders/{orderRecordId}")
     public ResultObject<Map<String, Object>> detail(@PathVariable Long orderRecordId) {
         return ResultObject.success(service.detail(orderRecordId));
+    }
+
+    @GetMapping("/accounts/{accountId}/order-detail")
+    public ResultObject<Map<String, Object>> detailByOrderId(@PathVariable Long accountId, @RequestParam String orderId) {
+        return ResultObject.success(service.detailByOrderId(accountId, orderId));
+    }
+
+    @PostMapping("/refunds/{refundCaseId}/handling")
+    public ResultObject<Map<String, Object>> recordHandling(@PathVariable Long refundCaseId,
+            @RequestBody OrderMatrixService.RefundHandlingCommand command) {
+        return ResultObject.success(service.recordRefundHandling(refundCaseId, command));
     }
 
     @GetMapping("/accounts/{accountId}/capabilities")

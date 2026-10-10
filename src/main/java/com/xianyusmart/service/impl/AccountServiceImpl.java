@@ -14,6 +14,7 @@ import com.xianyusmart.mapper.XianyuGoodsAutoDeliveryConfigMapper;
 import com.xianyusmart.mapper.XianyuGoodsOrderMapper;
 import com.xianyusmart.mapper.XianyuGoodsAutoReplyRecordMapper;
 import com.xianyusmart.mapper.XianyuOperationLogMapper;
+import com.xianyusmart.mapper.AccountDeletionCleanupMapper;
 import com.xianyusmart.service.AccountService;
 import com.xianyusmart.service.AccountBrowserProfileService;
 import com.xianyusmart.service.AccountCredentialCoordinator;
@@ -66,6 +67,9 @@ public class AccountServiceImpl implements AccountService {
     private XianyuOperationLogMapper operationLogMapper;
 
     @Autowired
+    private AccountDeletionCleanupMapper accountDeletionCleanupMapper;
+
+    @Autowired
     private RiskControlService riskControlService;
 
     @Autowired
@@ -73,6 +77,9 @@ public class AccountServiceImpl implements AccountService {
 
     @Autowired
     private AccountCredentialCoordinator accountCredentialCoordinator;
+    @Autowired private com.xianyusmart.service.AccountAutomationPolicy automation;
+    @Autowired private com.xianyusmart.service.AccountAccessService accountAccessService;
+    @Autowired private org.springframework.jdbc.core.JdbcTemplate lifecycleJdbc;
     
     private static final DateTimeFormatter DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     
@@ -121,13 +128,15 @@ public class AccountServiceImpl implements AccountService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long saveAccountAndCookie(String accountNote, String unb, String cookieText, String mH5Tk) {
+        var query=new LambdaQueryWrapper<XianyuAccount>().eq(XianyuAccount::getUnb,unb);
+        XianyuAccount existing=accountMapper.selectOne(query);
+        if(existing!=null){requireCredentialAccount(existing.getId());return automation.guarded(existing.getId(),com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,()->saveAccountAndCookieAllowed(accountNote,unb,cookieText,mH5Tk,existing));}
+        if(com.xianyusmart.context.TenantContext.get()==null)throw new com.xianyusmart.exception.BusinessException(403,"缺少经营主体上下文");
+        return saveAccountAndCookieAllowed(accountNote,unb,cookieText,mH5Tk,null);
+    }
+    private Long saveAccountAndCookieAllowed(String accountNote,String unb,String cookieText,String mH5Tk,XianyuAccount existingAccount) {
         try {
             log.info("开始保存账号和Cookie: accountNote={}, 包含m_h5_tk={}", accountNote, mH5Tk != null);
-
-            // 1. 检查账号是否已存在（根据UNB）
-            LambdaQueryWrapper<XianyuAccount> accountQuery = new LambdaQueryWrapper<>();
-            accountQuery.eq(XianyuAccount::getUnb, unb);
-            XianyuAccount existingAccount = accountMapper.selectOne(accountQuery);
 
             Long accountId;
             if (existingAccount != null) {
@@ -151,6 +160,7 @@ public class AccountServiceImpl implements AccountService {
                 log.info("创建新账号成功: accountId={}", accountId);
             }
 
+            lifecycleJdbc.update("INSERT IGNORE INTO xianyu_account_local_profile(tenant_id,xianyu_account_id) VALUES(?,?)",com.xianyusmart.context.TenantContext.get(),accountId);
             synchronized (accountCredentialCoordinator.lockFor(accountId)) {
                 // 2. 保存或更新Cookie。同账号的扫码、续期和令牌刷新共用一把锁，
                 // 避免旧凭证覆盖刚完成的登录结果。
@@ -164,7 +174,7 @@ public class AccountServiceImpl implements AccountService {
                     existingCookie.setCookieStatus(1);
                     existingCookie.setExpireTime(getFutureTimeString(30));
                     existingCookie.setUpdatedTime(getCurrentTimeString());
-                    cookieMapper.updateById(existingCookie);
+                    if(cookieMapper.updateById(existingCookie)!=1)throw new com.xianyusmart.exception.BusinessException(409,"凭据版本已变化，原凭据保留");
                     log.info("更新Cookie成功: cookieId={}, m_h5_tk={}",
                             existingCookie.getId(), mH5Tk != null ? "已保存" : "未提供");
                 } else {
@@ -188,6 +198,7 @@ public class AccountServiceImpl implements AccountService {
             log.info("保存账号和Cookie完成: accountId={}, accountNote={}", accountId, accountNote);
             return accountId;
 
+        } catch (com.xianyusmart.exception.BusinessException e) { throw e;
         } catch (Exception e) {
             log.error("保存账号和Cookie失败: accountNote={}", accountNote, e);
             throw new RuntimeException("保存账号和Cookie失败: " + e.getMessage(), e);
@@ -466,60 +477,21 @@ public class AccountServiceImpl implements AccountService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean deleteAccountAndRelatedData(Long accountId) {
-        try {
-            log.info("开始删除账号及其所有关联数据: accountId={}", accountId);
-            
-            // 1. 删除闲鱼聊天消息表数据
-            int chatMessageCount = chatMessageMapper.deleteByAccountId(accountId);
-            log.info("删除聊天消息数据: accountId={}, 删除数量={}", accountId, chatMessageCount);
-            
-            // 2. 删除闲鱼商品信息表数据
-            LambdaQueryWrapper<XianyuGoodsInfo> goodsInfoQuery = new LambdaQueryWrapper<>();
-            goodsInfoQuery.eq(XianyuGoodsInfo::getXianyuAccountId, accountId);
-            int goodsInfoCount = goodsInfoMapper.delete(goodsInfoQuery);
-            log.info("删除商品信息数据: accountId={}, 删除数量={}", accountId, goodsInfoCount);
-            
-            // 3. 删除闲鱼商品配置表数据
-            int goodsConfigCount = goodsConfigMapper.deleteByAccountId(accountId);
-            log.info("删除商品配置数据: accountId={}, 删除数量={}", accountId, goodsConfigCount);
-            
-            // 4. 删除闲鱼商品自动发货配置表数据
-            int autoDeliveryConfigCount = autoDeliveryConfigMapper.deleteByAccountId(accountId);
-            log.info("删除自动发货配置数据: accountId={}, 删除数量={}", accountId, autoDeliveryConfigCount);
-            
-            // 5. 删除订单数据
-            int orderCount = orderMapper.deleteByAccountId(accountId);
-            log.info("删除订单数据: accountId={}, 删除数量={}", accountId, orderCount);
-            
-            // 6. 删除自动回复记录数据
-            int autoReplyRecordCount = autoReplyRecordMapper.deleteByAccountId(accountId);
-            log.info("删除自动回复记录数据: accountId={}, 删除数量={}", accountId, autoReplyRecordCount);
-            
-            // 7. 删除操作记录数据
-            int operationLogCount = operationLogMapper.deleteByAccountId(accountId);
-            log.info("删除操作记录数据: accountId={}, 删除数量={}", accountId, operationLogCount);
-            
-            // 8. 删除Cookie数据
-            LambdaQueryWrapper<XianyuCookie> cookieQuery = new LambdaQueryWrapper<>();
-            cookieQuery.eq(XianyuCookie::getXianyuAccountId, accountId);
-            int cookieCount = cookieMapper.delete(cookieQuery);
-            log.info("删除Cookie数据: accountId={}, 删除数量={}", accountId, cookieCount);
-            
-            // 10. 删除闲鱼账号表数据
-            int accountCount = accountMapper.deleteById(accountId);
-            log.info("删除账号数据: accountId={}, 删除数量={}", accountId, accountCount);
-            
-            log.info("账号及其所有关联数据删除成功: accountId={}", accountId);
-            return true;
-        } catch (Exception e) {
-            log.error("删除账号及其关联数据失败: accountId={}", accountId, e);
-            throw new RuntimeException("删除账号失败: " + e.getMessage(), e);
-        }
+        throw new com.xianyusmart.exception.BusinessException(400,
+                "永久删除须使用带requestId、expectedVersion和双重确认的账号生命周期命令");
     }
-    
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean updateAccountCookie(Long accountId, String unb, String cookieText) {
+        requireCredentialAccount(accountId);
+        return automation.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REFRESH,()->updateAccountCookieAllowed(accountId,unb,cookieText));
+    }
+    private void requireCredentialAccount(Long accountId) {
+        Long tenant=com.xianyusmart.context.TenantContext.get();accountAccessService.requireAccess(accountId);
+        if(tenant==null||lifecycleJdbc.queryForObject("SELECT COUNT(*) FROM xianyu_account WHERE id=? AND tenant_id=?",Integer.class,accountId,tenant)!=1)throw new com.xianyusmart.exception.BusinessException(404,"账号不存在或未授权");
+    }
+    private boolean updateAccountCookieAllowed(Long accountId,String unb,String cookieText) {
         try {
             synchronized (accountCredentialCoordinator.lockFor(accountId)) {
                 log.info("更新账号Cookie: accountId={}", accountId);
@@ -549,7 +521,7 @@ public class AccountServiceImpl implements AccountService {
                     cookie.setCookieStatus(1);
                     cookie.setExpireTime(getFutureTimeString(30));
                     cookie.setUpdatedTime(getCurrentTimeString());
-                    cookieMapper.updateById(cookie);
+                    if(cookieMapper.updateById(cookie)!=1)throw new com.xianyusmart.exception.BusinessException(409,"凭据版本已变化，原凭据保留");
                     log.info("更新Cookie成功: accountId={}", accountId);
                 } else {
                     cookie = new XianyuCookie();
@@ -569,6 +541,7 @@ public class AccountServiceImpl implements AccountService {
             }
             return true;
 
+        } catch (com.xianyusmart.exception.BusinessException e) { throw e;
         } catch (Exception e) {
             TransactionAspectSupport.currentTransactionStatus().setRollbackOnly();
             log.error("更新账号Cookie失败: accountId={}", accountId, e);

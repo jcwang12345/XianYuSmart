@@ -3,6 +3,7 @@ package com.xianyusmart.service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xianyusmart.context.TenantContext;
+import com.xianyusmart.context.UserContext;
 import com.xianyusmart.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -32,6 +33,8 @@ public class ProductBatchExecutionService {
     private final NotificationCenterService notificationCenterService;
     private final ProductBatchQaMockService qaMockService;
     private final boolean dispatchEnabled;
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
     private final String workerId = "product-batch-" + java.util.UUID.randomUUID().toString().substring(0, 8);
 
     public ProductBatchExecutionService(JdbcTemplate jdbcTemplate,
@@ -72,7 +75,7 @@ public class ProductBatchExecutionService {
 
     @Scheduled(fixedDelayString = "${app.product-batch.dispatch-delay-ms:5000}", initialDelay = 30000)
     public void dispatch() {
-        if (!dispatchEnabled) return;
+        if (!backgroundPlatformActivityPolicy.enabled() || !dispatchEnabled) return;
         List<Map<String, Object>> jobs = jdbcTemplate.queryForList("""
                 SELECT * FROM xianyu_goods_batch_job
                  WHERE status IN ('QUEUED','RUNNING','CANCEL_REQUESTED') ORDER BY created_time, id LIMIT 10
@@ -80,6 +83,29 @@ public class ProductBatchExecutionService {
         for (Map<String, Object> job : jobs) {
             executeJob(job);
         }
+    }
+
+    /** Explicit single-product action. It does not open the background dispatcher or drain other jobs. */
+    public void dispatchOneUserJob(Long jobId) {
+        Long tenantId = UserContext.getTenantId();
+        Long operatorId = UserContext.getUserId();
+        if (tenantId == null || tenantId <= 0 || operatorId == null || jobId == null || jobId <= 0) {
+            throw new BusinessException(400, "单品任务身份或任务ID无效");
+        }
+        List<Map<String, Object>> jobs = jdbcTemplate.queryForList("""
+                SELECT * FROM xianyu_goods_batch_job WHERE tenant_id=? AND id=?
+                """, tenantId, jobId);
+        if (jobs.isEmpty()) throw new BusinessException(404, "单品任务不存在");
+        Map<String, Object> job = jobs.getFirst();
+        if (!operatorId.equals(number(job.get("operator_user_id")))
+                || !"EXPLICIT_IDS".equals(text(job.get("selection_mode")))
+                || integer(job.get("selected_count"), 0) != 1
+                || integer(job.get("executable_count"), 0) != 1
+                || integer(job.get("conflict_count"), 0) != 0) {
+            throw new BusinessException(403, "只能立即执行自己创建且预检通过的单件任务");
+        }
+        if (!List.of("QUEUED", "RUNNING").contains(text(job.get("status")))) return;
+        executeJob(job);
     }
 
     /** QA 控制器使用的单步调度；只接受已经持久化为 QA_MOCK 的任务。 */

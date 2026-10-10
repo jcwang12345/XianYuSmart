@@ -1,5 +1,7 @@
 app:
-  # 裸机 3000 仅用于开发验收：允许真实账号保持连接和只读同步，禁止任何真实平台写入。
+  # 裸机 3000 仅允许操作者显式发起有界只读验收；所有后台平台访问与凭据保活统一关闭。
+  background-platform-activity-enabled: false
+  # 真实平台写入在 QA 始终关闭。
   # 需要真实写入必须在非 qa 环境显式运行，不能通过 QA 夹具绕过。
   platform-writes:
     enabled: ${QA_PLATFORM_WRITES_ENABLED:false}
@@ -22,3 +24,14 @@ spring:
       static-locations:
         - file:${user.dir}/src/main/resources/static/
         - classpath:/static/
+
+# UI 与只读证据验收不自动拉起真实账号会话；需要连接验收时由操作者显式发起。
+websocket:
+  recovery-enabled: false
+  # 让 QA 能在 60 秒观察窗内跨过一次真实保活到期点；总闸关闭时仍必须零平台访问、零凭据改写。
+  credential-refresh-min-minutes: 1
+  credential-refresh-max-minutes: 1
+
+xianyu:
+  shop-profile:
+    schedule-enabled: false

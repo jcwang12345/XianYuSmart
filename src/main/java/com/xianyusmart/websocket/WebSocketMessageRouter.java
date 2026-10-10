@@ -72,6 +72,8 @@ public class WebSocketMessageRouter {
         if (syncHandler != null) {
             handlerMap.put("/s/sync", syncHandler);
             log.info("注册WebSocket处理器: /s/sync -> {}", syncHandler.getClass().getSimpleName());
+            handlerMap.put("/s/sync_failover", syncHandler);
+            log.info("注册WebSocket处理器: /s/sync_failover -> {}", syncHandler.getClass().getSimpleName());
         }
         
         log.info("WebSocket消息路由器初始化完成，共注册 {} 个处理器", handlerMap.size());

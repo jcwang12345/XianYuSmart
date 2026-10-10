@@ -26,6 +26,7 @@ import {
   type WorkspaceConversationDetail
 } from '@/api/message'
 import { newRequestId } from '@/api/matrix'
+import { hasPermission } from '@/utils/permission'
 import { getKeywordReplyRules } from '@/api/keywordReply'
 import {
   acknowledgeOperationException,
@@ -38,9 +39,16 @@ import MultiImageUploader from '@/components/MultiImageUploader.vue'
 import { showError, showSuccess, showWarning } from '@/utils'
 import '@/styles/merchant-workbench.css'
 
+const canSendMessages = computed(() => hasPermission('action:message-send'))
+const canLoadQuickReplies = computed(() => canSendMessages.value
+  && hasPermission('menu:auto-reply') && hasPermission('action:automation-write'))
+const canEditBuyer = computed(() => hasPermission('action:buyer-write'))
+const canReadNotifications = computed(() => hasPermission('menu:health'))
+const canManageNotifications = computed(() => hasPermission('action:system-write'))
 const route = useRoute()
 const router = useRouter()
 const workspaceInitializing = ref(true)
+const inboxRefreshing = ref(false)
 const routeAccountDenied = ref(false)
 
 const {
@@ -80,6 +88,7 @@ const inboxMode = ref<InboxMode>(['conversations', 'notifications', 'handoffs'].
   ? requestedInbox as InboxMode
   : 'conversations')
 const mobileStage = ref<'list' | 'conversation' | 'context'>('list')
+const conversationListElement = ref<HTMLElement | null>(null)
 const notificationSearch = ref('')
 const notificationFilter = ref<'all' | 'pending' | 'delivery'>('all')
 const notificationLogs = ref<NotificationLog[]>([])
@@ -264,6 +273,10 @@ const conversations = computed(() => {
 })
 
 const selected = computed(() => conversations.value.find(item => item.sid === selectedSid.value) || conversations.value[0])
+const currentHandoffPaused = computed(() => selected.value?.workspace?.autoReplyState === 'HUMAN_REQUIRED'
+  && ['OPEN', 'CLAIMED'].includes(selected.value.workspace.handoffStatus || ''))
+const currentManualPaused = computed(() => selected.value?.workspace?.manualTakeoverState === 'MANUAL'
+  && !currentHandoffPaused.value)
 const orderedContext = computed(() => [...contextMessages.value].reverse())
 const incomingCount = computed(() => conversations.value.reduce((count, item) => count
   + item.messages.filter(message => message.senderUserId !== getCurrentAccountUnb.value).length, 0))
@@ -429,7 +442,7 @@ const loadConversationContext = async (syncPlatform = false, showLoading = true)
   } finally {
     if (displayLoading) contextLoading.value = false
   }
-  if (!syncPlatform) return
+  if (!syncPlatform || !canSendMessages.value) return
   platformSyncing.value = true
   try {
     await syncContextMessages({ xianyuAccountId: accountId, sid, maxMessages: 500 }, true)
@@ -449,7 +462,7 @@ const loadConversationContext = async (syncPlatform = false, showLoading = true)
 
 const loadQuickReplies = async () => {
   quickReplies.value = []
-  if (!selectedAccountId.value || !selected.value?.latest.xyGoodsId) return
+  if (!canLoadQuickReplies.value || !selectedAccountId.value || !selected.value?.latest.xyGoodsId) return
   try {
     const response = await getKeywordReplyRules({
       xianyuAccountId: selectedAccountId.value,
@@ -465,6 +478,7 @@ const loadQuickReplies = async () => {
 }
 
 const sendCurrentMessage = async () => {
+  if (!canSendMessages.value) return
   if (!selectedAccountId.value || !selected.value) return
   const text = messageText.value.trim()
   const images = imageUrls.value.split(',').map(value => value.trim()).filter(Boolean)
@@ -534,6 +548,12 @@ const refresh = async () => {
 }
 
 const loadSupportNotifications = async (silent = false) => {
+  if (!canReadNotifications.value) {
+    operationExceptions.value = []
+    notificationLogs.value = []
+    notificationError.value = '当前成员没有通知诊断读取权限，可继续查看买家会话和待接管任务。'
+    return
+  }
   if (!silent) notificationLoading.value = true
   notificationError.value = ''
   try {
@@ -601,6 +621,13 @@ const switchInbox = (mode: InboxMode) => {
   void syncWorkspaceRoute('push')
   if (mode === 'notifications') void loadSupportNotifications()
   if (mode === 'handoffs') void loadHandoffs()
+}
+
+const viewCurrentHandoff = () => {
+  const taskId = selected.value?.workspace?.handoffTaskId
+  handoffStatus.value = 'ALL'
+  if (taskId) selectedHandoffId.value = taskId
+  switchInbox('handoffs')
 }
 
 const inboxTabs: InboxMode[] = ['conversations', 'notifications', 'handoffs']
@@ -677,9 +704,15 @@ const acknowledgeSelectedNotification = async () => {
 }
 
 const refreshCurrentInbox = async () => {
-  if (inboxMode.value === 'notifications') return loadSupportNotifications()
-  if (inboxMode.value === 'handoffs') return loadHandoffs()
-  return refresh()
+  if (inboxRefreshing.value) return
+  inboxRefreshing.value = true
+  try {
+    if (inboxMode.value === 'notifications') await loadSupportNotifications()
+    else if (inboxMode.value === 'handoffs') await loadHandoffs()
+    else await refresh()
+  } finally {
+    inboxRefreshing.value = false
+  }
 }
 
 const changeAccount = async () => {
@@ -696,19 +729,32 @@ const openConversation = (sid: string) => {
   mobileStage.value = 'conversation'
 }
 
-const openMobileContext = () => {
+const openMobileContext = async () => {
   contextExpanded.value = true
   mobileStage.value = 'context'
+  await nextTick()
+  document.getElementById('conversation-context-back')?.focus()
 }
 
-const backToConversationList = () => {
+const backToConversationList = async () => {
+  const returnSid = selectedSid.value
   contextExpanded.value = false
   mobileStage.value = 'list'
+  await nextTick()
+  const list = conversationListElement.value
+  const trigger = Array.from(list?.querySelectorAll<HTMLButtonElement>('button[data-conversation-sid]') || [])
+    .find(button => button.dataset.conversationSid === returnSid)
+  // Filtering or polling may remove the original conversation while its detail is open.
+  const fallback = list?.querySelector<HTMLElement>('input, button:not(:disabled)') || list
+  const focusTarget = trigger || fallback
+  focusTarget?.focus()
 }
 
-const backToConversation = () => {
+const backToConversation = async () => {
   contextExpanded.value = false
   mobileStage.value = 'conversation'
+  await nextTick()
+  document.getElementById('conversation-context-toggle')?.focus()
 }
 
 const focusSendReceiptReview = async () => {
@@ -737,8 +783,13 @@ watch([handoffStatus, selectedAccountId], () => {
   if (inboxMode.value === 'handoffs') loadHandoffs(true)
 })
 
-watch(() => [route.query.accountId, route.query.inbox] as const, async ([rawAccountId, rawInbox]) => {
+watch(() => [route.query.accountId, route.query.inbox] as const, async ([rawAccountId, rawInbox], _previous, onCleanup) => {
   if (workspaceInitializing.value) return
+  let current = true
+  onCleanup(() => { current = false })
+  const focusedTab = inboxTabs
+    .map(mode => document.getElementById(`support-tab-${mode}`))
+    .find(tab => tab !== null && tab === document.activeElement)
   const routeAccountId = Number(rawAccountId)
   const requestedAccountIdValid = Number.isSafeInteger(routeAccountId) && routeAccountId > 0
   const requestedAccount = requestedAccountIdValid
@@ -760,14 +811,21 @@ watch(() => [route.query.accountId, route.query.inbox] as const, async ([rawAcco
     workspaceInboxLoaded.value = false
     mobileStage.value = 'list'
     await handleAccountChange()
+    if (!current || selectedAccountId.value !== requestedAccount.id) return
     await Promise.all([loadWorkspaceInbox(), loadSupportNotifications(true), loadHandoffs(true)])
+    if (!current || selectedAccountId.value !== requestedAccount.id) return
   }
   const requestedMode = String(rawInbox || 'conversations')
   if (['conversations', 'notifications', 'handoffs'].includes(requestedMode) && inboxMode.value !== requestedMode) {
     inboxMode.value = requestedMode as InboxMode
     mobileStage.value = 'list'
-    if (inboxMode.value === 'notifications') await loadSupportNotifications(true)
-    if (inboxMode.value === 'handoffs') await loadHandoffs(true)
+    await nextTick()
+    if (!current) return
+    if (!routeAccountDenied.value && inboxMode.value === requestedMode && focusedTab && document.activeElement === focusedTab) {
+      document.getElementById(`support-tab-${requestedMode}`)?.focus()
+    }
+    if (requestedMode === 'notifications') await loadSupportNotifications(true)
+    if (requestedMode === 'handoffs') await loadHandoffs(true)
   }
 })
 
@@ -852,7 +910,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="workbench chat">
+  <section class="workbench chat" @keydown.esc="mobileStage === 'context' && backToConversation()">
     <header class="workbench__header">
       <div><h1>集成客服</h1><p>统一处理买家会话、订单与账号通知，重要事件不再散落。</p></div>
       <div class="workbench__actions">
@@ -861,9 +919,10 @@ onBeforeUnmount(() => {
           <option v-else-if="!accounts.length" :value="null" disabled>{{ workspaceInitializing ? '正在读取账号范围' : '暂无可用账号' }}</option>
           <option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.accountNote || account.unb }}</option>
         </select>
-        <button class="workbench__btn" :disabled="routeAccountDenied || loading || platformSyncing || notificationLoading || handoffLoading" @click="refreshCurrentInbox">
-          {{ loading || platformSyncing || notificationLoading || handoffLoading ? '同步中' : '刷新' }}
+        <button class="workbench__btn" :aria-busy="inboxRefreshing || refreshing" :disabled="routeAccountDenied || inboxRefreshing || refreshing || loading || platformSyncing || notificationLoading || handoffLoading" @click="refreshCurrentInbox">
+          {{ inboxRefreshing || refreshing ? '刷新中…' : loading || platformSyncing || notificationLoading || handoffLoading ? '同步中' : '刷新' }}
         </button>
+        <span v-if="inboxRefreshing" class="chat__loading" role="status">正在刷新，当前筛选和会话已保留</span>
       </div>
     </header>
 
@@ -882,7 +941,7 @@ onBeforeUnmount(() => {
         买家会话 <span>{{ conversations.length }}</span>
       </button>
       <button id="support-tab-notifications" role="tab" aria-controls="support-panel-notifications" :aria-selected="inboxMode === 'notifications'" :tabindex="inboxMode === 'notifications' ? 0 : -1" :class="{ 'chat__inbox-tab--active': inboxMode === 'notifications' }" @keydown="moveInboxFocus($event, 'notifications')" @click="switchInbox('notifications')">
-        通知消息 <span :class="{ 'chat__tab-count--alert': pendingNotificationCount > 0 }">{{ pendingNotificationCount }}</span>
+        通知消息 <span :class="{ 'chat__tab-count--alert': pendingNotificationCount > 0 }">{{ canReadNotifications ? pendingNotificationCount : '未授权' }}</span>
       </button>
       <button id="support-tab-handoffs" role="tab" aria-controls="support-panel-handoffs" :aria-selected="inboxMode === 'handoffs'" :tabindex="inboxMode === 'handoffs' ? 0 : -1" :class="{ 'chat__inbox-tab--active': inboxMode === 'handoffs' }" @keydown="moveInboxFocus($event, 'handoffs')" @click="switchInbox('handoffs')">
         AI 待接管 <span :class="{ 'chat__tab-count--alert': handoffPendingCount > 0 }">{{ handoffPendingCount }}</span>
@@ -890,7 +949,7 @@ onBeforeUnmount(() => {
     </nav>
 
     <div v-if="!workspaceInitializing && !routeAccountDenied && inboxMode === 'conversations'" id="support-panel-conversations" class="chat__layout" :data-mobile-stage="mobileStage" role="tabpanel" aria-labelledby="support-tab-conversations">
-      <aside class="workbench__card chat__conversations" aria-label="买家会话列表">
+      <aside ref="conversationListElement" class="workbench__card chat__conversations" aria-label="买家会话列表" tabindex="-1">
         <div class="chat__summary">
           <strong>在线消息 <span>{{ conversations.length }}</span></strong>
           <div><span>全部 {{ conversations.length }}</span><span>买家消息 {{ incomingCount }}</span></div>
@@ -909,6 +968,7 @@ onBeforeUnmount(() => {
         <button
           v-for="conversation in conversations"
           :key="conversation.sid"
+          :data-conversation-sid="conversation.sid"
           class="chat__conversation"
           :class="{ 'chat__conversation--active': selected?.sid === conversation.sid }"
           @click="openConversation(conversation.sid)"
@@ -919,7 +979,9 @@ onBeforeUnmount(() => {
             <strong>{{ conversation.buyerName }}</strong>
             <span>{{ conversation.goodsTitle }}</span>
             <p>{{ isImageMessage(conversation.latest) ? '[图片]' : conversation.latest.msgContent }}</p>
-            <small v-if="conversation.workspace?.pinned || conversation.workspace?.unreadCount || (conversation.workspace?.keywordFlag && conversation.workspace.keywordFlag !== 'NONE')">
+            <small v-if="conversation.workspace?.autoReplyState === 'HUMAN_REQUIRED' || conversation.workspace?.manualTakeoverState === 'MANUAL' || conversation.workspace?.pinned || conversation.workspace?.unreadCount || (conversation.workspace?.keywordFlag && conversation.workspace.keywordFlag !== 'NONE')">
+              {{ conversation.workspace?.autoReplyState === 'HUMAN_REQUIRED' ? '自动回复暂停 · ' : '' }}
+              {{ conversation.workspace?.manualTakeoverState === 'MANUAL' && conversation.workspace?.autoReplyState !== 'HUMAN_REQUIRED' ? '人工接管中 · ' : '' }}
               {{ conversation.workspace?.pinned ? '置顶 · ' : '' }}{{ conversation.workspace?.unreadCount ? `未读 ${conversation.workspace.unreadCount} · ` : '' }}{{ conversation.workspace?.keywordFlag && conversation.workspace.keywordFlag !== 'NONE' ? conversation.workspace.keywordFlag : '' }}
             </small>
           </div>
@@ -936,17 +998,25 @@ onBeforeUnmount(() => {
             <div><strong>{{ selected.buyerName }}</strong><span>{{ selected.goodsTitle }}</span></div>
             <span v-if="workspaceRecord?.slaBreached" class="chat__sla">响应已超时</span>
             <button class="workbench__btn chat__mobile-back" @click="backToConversationList">返回会话</button>
-            <button class="workbench__btn" :disabled="workspaceSaving" @click="takeoverCurrent">人工接管 15 分钟</button>
-            <button class="workbench__btn" :disabled="platformSyncing" @click="loadConversationContext(true)">
+            <button class="workbench__btn" :disabled="workspaceSaving || !canSendMessages" @click="takeoverCurrent">人工接管 15 分钟</button>
+            <button class="workbench__btn" :disabled="platformSyncing || !canSendMessages" @click="loadConversationContext(true)">
               {{ platformSyncing ? '同步历史中' : '同步完整历史' }}
             </button>
             <button v-if="selectedUncertainAttempt" class="workbench__btn chat__mobile-risk" @click="focusSendReceiptReview">
               发送待核对
             </button>
-            <button class="workbench__btn chat__context-toggle" :aria-expanded="contextExpanded" aria-controls="conversation-context" @click="openMobileContext">
+            <button id="conversation-context-toggle" class="workbench__btn chat__context-toggle" :aria-expanded="contextExpanded" aria-controls="conversation-context" @click="openMobileContext">
               会话资料
             </button>
           </header>
+
+          <div v-if="currentHandoffPaused" class="chat__handoff-pause" role="status">
+            <span>此会话有未处理的转人工任务，自动回复已暂停。请核对会话并完成任务；这不代表账号掉线。</span>
+            <button class="workbench__btn" @click="viewCurrentHandoff">查看待接管任务</button>
+          </div>
+          <div v-else-if="currentManualPaused" class="chat__handoff-pause" role="status">
+            <span>此会话处于人工接管时段，自动回复暂时暂停；{{ selected.workspace?.manualTakeoverUntil ? `预计 ${String(selected.workspace.manualTakeoverUntil).replace('T', ' ').slice(0, 19)} 后恢复` : '到期后恢复' }}。暂停期间的消息不会补发。</span>
+          </div>
 
           <div ref="messagesRef" class="chat__messages">
             <div v-if="contextLoading" class="chat__loading">正在读取完整会话…</div>
@@ -967,10 +1037,10 @@ onBeforeUnmount(() => {
               <button v-for="reply in quickReplies" :key="reply" @click="messageText = reply">{{ reply }}</button>
             </div>
             <MultiImageUploader v-if="showImageUploader && selectedAccountId" v-model="imageUrls" :account-id="selectedAccountId" :max="5" />
-            <textarea v-model="messageText" class="workbench__textarea" rows="3" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendCurrentMessage"></textarea>
+            <textarea v-model="messageText" :disabled="!canSendMessages" class="workbench__textarea" rows="3" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendCurrentMessage"></textarea>
             <div class="chat__composer-actions">
-              <button class="workbench__btn" @click="showImageUploader = !showImageUploader">发送图片</button>
-              <button class="workbench__btn workbench__btn--primary" :disabled="sending" @click="sendCurrentMessage">{{ sending ? '发送中' : '发送' }}</button>
+              <button class="workbench__btn" :disabled="!canSendMessages" @click="showImageUploader = !showImageUploader">发送图片</button>
+              <button class="workbench__btn workbench__btn--primary" :disabled="sending || !canSendMessages" @click="sendCurrentMessage">{{ sending ? '发送中' : '发送' }}</button>
             </div>
           </footer>
         </template>
@@ -978,7 +1048,7 @@ onBeforeUnmount(() => {
       </main>
 
       <aside id="conversation-context" class="workbench__card chat__context" :class="{ 'chat__context--open': contextExpanded }">
-        <div class="chat__context-mobile-header"><button class="workbench__btn" @click="backToConversation">返回会话</button><strong>买家与商品资料</strong></div>
+        <div class="chat__context-mobile-header"><button id="conversation-context-back" class="workbench__btn" @click="backToConversation">返回会话</button><strong>买家与商品资料</strong></div>
         <template v-if="selected">
           <button v-if="selectedUncertainAttempt" class="chat__context-risk" @click="focusSendReceiptReview">
             <strong>发送结果待核对</strong><span>先核对，禁止重发 →</span>
@@ -992,13 +1062,15 @@ onBeforeUnmount(() => {
           </section>
           <section>
             <h2>自动回复状态</h2>
+            <p v-if="currentHandoffPaused" class="chat__inline-notice" role="status">本会话待人工处理，自动回复已暂停。商品开关不等于当前会话可自动回复。</p>
+            <p v-else-if="currentManualPaused" class="chat__inline-notice" role="status">本会话正在人工接管，自动回复将在接管到期后对新消息恢复。</p>
             <div class="chat__status">
               <span :class="{ 'chat__status--on': selected.goods?.xianyuAutoReplyOn === 1 }">
-                {{ selected.goods?.xianyuAutoReplyOn === 1 ? '已开启' : '未开启' }}
+                {{ !selected.goods ? '未读取' : selected.goods.xianyuAutoReplyOn === 1 ? '已开启' : '未开启' }}
               </span>
-              <small>关键词回复 {{ selected.goods?.xianyuKeywordReplyOn === 1 ? '已开启' : '未开启' }}</small>
+              <small>关键词回复 {{ !selected.goods ? '未读取' : selected.goods.xianyuKeywordReplyOn === 1 ? '已开启' : '未开启' }}</small>
             </div>
-            <router-link class="workbench__btn" to="/auto-reply">配置自动回复</router-link>
+            <router-link v-if="hasPermission('menu:auto-reply')" class="workbench__btn" to="/auto-reply">配置自动回复</router-link>
           </section>
           <section>
             <h2>会话运营</h2>
@@ -1007,7 +1079,7 @@ onBeforeUnmount(() => {
             <label>关键词标记<select v-model="workspaceForm.keywordFlag" class="workbench__select"><option value="NONE">无标记</option><option value="INTENT">高意向</option><option value="AFTERSALE">售后</option><option value="RISK">风险</option></select></label>
             <label>客户备注<textarea v-model="workspaceForm.customerNote" class="workbench__textarea" maxlength="500"></textarea></label>
             <label class="chat__check chat__check--danger"><input v-model="workspaceForm.blacklisted" type="checkbox"><span>加入黑名单并停止自动化</span></label>
-            <button class="workbench__btn" :disabled="workspaceSaving" @click="saveWorkspaceSettings">保存会话设置</button>
+            <button class="workbench__btn" :disabled="workspaceSaving || !canEditBuyer" @click="saveWorkspaceSettings">保存会话设置</button>
             <small v-if="workspaceRecord">未读 {{ workspaceRecord.unreadCount || 0 }} · 历史 {{ workspaceRecord.historyCoverageStatus || '未同步' }} · 接管 {{ workspaceRecord.manualTakeoverState || '自动' }}</small>
           </section>
           <section v-if="selectedUncertainAttempt" id="send-receipt-review" class="chat__receipt-review">
@@ -1040,8 +1112,8 @@ onBeforeUnmount(() => {
               <p>{{ resolutionPreview.confirmation }}</p>
             </div>
             <div class="chat__receipt-actions">
-              <button class="workbench__btn" :disabled="resolutionBusy" @click="previewSendResolution">核对预检</button>
-              <button class="workbench__btn workbench__btn--primary" :disabled="resolutionBusy || !resolutionPreview" @click="executeSendResolution">确认记录结果</button>
+              <button class="workbench__btn" :disabled="resolutionBusy || !canSendMessages" @click="previewSendResolution">核对预检</button>
+              <button class="workbench__btn workbench__btn--primary" :disabled="resolutionBusy || !canSendMessages || !resolutionPreview" @click="executeSendResolution">确认记录结果</button>
             </div>
             <small v-if="uncertainSendAttempts.length > 1">本会话还有 {{ uncertainSendAttempts.length - 1 }} 条结果未知记录；请逐条处理，完成后将自动显示下一条。</small>
           </section>
@@ -1063,14 +1135,14 @@ onBeforeUnmount(() => {
     <div v-else-if="!workspaceInitializing && !routeAccountDenied && inboxMode === 'notifications'" id="support-panel-notifications" class="chat__layout chat__layout--notifications" role="tabpanel" aria-labelledby="support-tab-notifications">
       <aside class="workbench__card chat__conversations">
         <div class="chat__summary">
-          <strong>通知消息 <span>{{ supportNotifications.length }}</span></strong>
-          <div class="chat__notification-filters">
+          <strong>通知消息 <span>{{ canReadNotifications ? supportNotifications.length : '未授权' }}</span></strong>
+          <div v-if="canReadNotifications" class="chat__notification-filters">
             <button :class="{ active: notificationFilter === 'all' }" @click="notificationFilter = 'all'">全部</button>
             <button :class="{ active: notificationFilter === 'pending' }" @click="notificationFilter = 'pending'">待处理 {{ pendingNotificationCount }}</button>
             <button :class="{ active: notificationFilter === 'delivery' }" @click="notificationFilter = 'delivery'">发送记录</button>
           </div>
-          <input v-model="notificationSearch" class="workbench__input" placeholder="搜索通知标题或内容">
-          <p v-if="notificationError" class="chat__inline-error" role="alert">{{ notificationError }} <button @click="loadSupportNotifications()">重试</button></p>
+          <input v-if="canReadNotifications" v-model="notificationSearch" class="workbench__input" placeholder="搜索通知标题或内容">
+          <p v-if="notificationError" class="chat__inline-error" role="alert">{{ notificationError }} <button v-if="canReadNotifications" @click="loadSupportNotifications()">重试</button></p>
         </div>
         <button
           v-for="item in supportNotifications"
@@ -1088,7 +1160,7 @@ onBeforeUnmount(() => {
           <time>{{ formatMessageTime(item.time) }}</time>
         </button>
         <div v-if="notificationLoading && !supportNotifications.length" class="workbench__empty">正在读取通知…</div>
-        <div v-else-if="!supportNotifications.length" class="workbench__empty">暂无工作台通知</div>
+        <div v-else-if="!supportNotifications.length && !notificationError" class="workbench__empty">暂无工作台通知</div>
       </aside>
 
       <main class="workbench__card chat__notification-detail">
@@ -1117,7 +1189,7 @@ onBeforeUnmount(() => {
             <button
               v-if="selectedNotification.source === 'exception'"
               class="workbench__btn workbench__btn--primary"
-              :disabled="acknowledgingNotification === selectedNotification.id"
+              :disabled="acknowledgingNotification === selectedNotification.id || !canManageNotifications"
               @click="acknowledgeSelectedNotification"
             >
               {{ acknowledgingNotification === selectedNotification.id ? '处理中' : '标记已处理' }}
@@ -1125,8 +1197,8 @@ onBeforeUnmount(() => {
           </footer>
         </template>
         <div v-else class="workbench__empty">
-          <strong>暂无通知消息</strong>
-          <span>订单、退款、发货、账号安全和客服超时事件会集中显示在这里。</span>
+          <strong>{{ !canReadNotifications ? '通知诊断未授权' : notificationError ? '通知暂时无法读取' : '暂无通知消息' }}</strong>
+          <span>{{ !canReadNotifications ? '可继续查看买家会话和待接管任务。' : notificationError ? '请重试读取通知；当前状态不能表示没有通知。' : '订单、退款、发货、账号安全和客服超时事件会集中显示在这里。' }}</span>
         </div>
       </main>
     </div>
@@ -1206,10 +1278,10 @@ onBeforeUnmount(() => {
 
           <footer>
             <button class="workbench__btn" @click="openHandoffConversation">打开对应会话</button>
-            <button v-if="selectedHandoff.status === 'OPEN'" class="workbench__btn workbench__btn--primary" :disabled="handoffActionBusy" @click="claimSelectedHandoff">认领并暂停自动回复</button>
+            <button v-if="selectedHandoff.status === 'OPEN'" class="workbench__btn workbench__btn--primary" :disabled="handoffActionBusy || !canSendMessages" @click="claimSelectedHandoff">{{ selectedHandoff.blockingScope === 'MESSAGE' ? '认领本条待办（不暂停会话）' : '认领并暂停自动回复' }}</button>
             <template v-if="['OPEN', 'CLAIMED'].includes(selectedHandoff.status)">
-              <button class="workbench__btn" :disabled="handoffActionBusy" @click="resolveSelectedHandoff('IGNORED')">忽略</button>
-              <button class="workbench__btn workbench__btn--primary" :disabled="handoffActionBusy" @click="resolveSelectedHandoff('RESOLVED')">标记已解决</button>
+              <button class="workbench__btn" :disabled="handoffActionBusy || !canSendMessages" @click="resolveSelectedHandoff('IGNORED')">忽略</button>
+              <button class="workbench__btn workbench__btn--primary" :disabled="handoffActionBusy || !canSendMessages" @click="resolveSelectedHandoff('RESOLVED')">标记已解决</button>
             </template>
           </footer>
         </template>
@@ -1271,6 +1343,8 @@ onBeforeUnmount(() => {
 .chat__avatar--image { display: block; object-fit: cover; }
 .chat__main { display: flex; flex-direction: column; }
 .chat__main-header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid #eaecf0; }
+.chat__handoff-pause { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; color: #7a2e0e; background: #fff4e5; border-bottom: 1px solid #fed7aa; font-size: 13px; line-height: 1.5; }
+.chat__handoff-pause .workbench__btn { flex: 0 0 auto; }
 .chat__main-header > div:nth-child(2) { display: flex; min-width: 0; flex: 1; flex-direction: column; }
 .chat__main-header span { overflow: hidden; color: #667085; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat__main-header .chat__sla { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; color: #b42318; background: #fee4e2; font-size: 11px; }
@@ -1396,6 +1470,7 @@ onBeforeUnmount(() => {
   .chat__inbox-tabs { overflow-x: auto; gap: 12px; }
   .chat__inbox-tabs button { flex: 0 0 auto; }
   .chat__main-header { flex-wrap: wrap; }
+  .chat__handoff-pause { align-items: flex-start; flex-direction: column; }
   .chat__main-header > div:nth-child(2) { min-width: calc(100% - 52px); }
   .chat__message { max-width: 88%; }
   .chat__main-header .workbench__btn { padding: 6px 8px; font-size: 11px; }

@@ -17,14 +17,17 @@ public class ProductSyncStateService {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    public void completed(Long accountId, String requestId, boolean fullCoverage) {
-        upsert(accountId, requestId, "SUCCEEDED", fullCoverage ? "FULL" : "PARTIAL", null, null);
-        jdbcTemplate.update("""
-                UPDATE xianyu_goods
-                   SET sync_status='SUCCEEDED', coverage_status=?, last_synced_time=NOW(3),
-                       last_sync_request_id=?, last_sync_error_code=NULL, last_sync_error_message=NULL
-                 WHERE tenant_id=? AND xianyu_account_id=?
-                """, fullCoverage ? "FULL" : "PARTIAL", requestId, tenant(), accountId);
+    public void completed(Long accountId,String requestId,boolean fullCoverage,List<String> savedItemIds) {
+        completed(accountId,requestId,fullCoverage ? "FULL" : "PARTIAL",fullCoverage ? "SUCCEEDED" : "PARTIAL",List.of(),fullCoverage?null:"LIST_PARTIAL");
+    }
+    public void completed(Long accountId,String requestId,String listCoverage,String status,List<String> detailSuccessIds,String errorCode) {
+        upsert(accountId,requestId,status,listCoverage,errorCode,errorCode==null?null:"请核对同步任务的列表、保存和详情阶段");
+        // Generic row success time is advanced only for a verified detail snapshot.
+        for(String itemId:detailSuccessIds) jdbcTemplate.update("""
+          UPDATE xianyu_goods SET sync_status='SUCCEEDED',coverage_status='FULL',last_synced_time=NOW(3),
+            last_sync_request_id=?,last_sync_error_code=NULL,last_sync_error_message=NULL
+          WHERE tenant_id=? AND xianyu_account_id=? AND xy_good_id=?
+          """,requestId,tenant(),accountId,itemId);
     }
 
     public void failed(Long accountId, String requestId, String errorCode, String errorMessage) {
@@ -37,15 +40,15 @@ public class ProductSyncStateService {
                 INSERT INTO xianyu_account_dataset_state
                 (tenant_id, xianyu_account_id, dataset_code, source, sync_status, coverage_status,
                  as_of_time, last_attempt_time, last_success_time, last_error_code, last_error_message, request_id)
-                VALUES (?,?,'PRODUCTS','PLATFORM_WEB',?,?,NOW(3),NOW(3),?, ?,?,?)
+                VALUES (?,?,'PRODUCTS_ON_SALE','PLATFORM_WEB',?,?,NOW(3),NOW(3),?, ?,?,?)
                 ON DUPLICATE KEY UPDATE source=VALUES(source), sync_status=VALUES(sync_status),
-                 coverage_status=VALUES(coverage_status), as_of_time=VALUES(as_of_time),
+                 coverage_status=VALUES(coverage_status), as_of_time=IF(VALUES(sync_status)='SUCCEEDED',VALUES(as_of_time),as_of_time),
                  last_attempt_time=VALUES(last_attempt_time),
                  last_success_time=COALESCE(VALUES(last_success_time), last_success_time),
                  last_error_code=VALUES(last_error_code), last_error_message=VALUES(last_error_message),
                  request_id=VALUES(request_id)
                 """, tenant(), accountId, syncStatus, coverage,
-                "FAILED".equals(syncStatus) ? null : new java.sql.Timestamp(System.currentTimeMillis()),
+                !"SUCCEEDED".equals(syncStatus) ? null : new java.sql.Timestamp(System.currentTimeMillis()),
                 errorCode, errorMessage, requestId);
     }
 

@@ -2,6 +2,7 @@ package com.xianyusmart.event.chatMessageEvent.lister;
 
 import com.xianyusmart.event.chatMessageEvent.ChatMessageData;
 import com.xianyusmart.event.chatMessageEvent.ChatMessageReceivedEvent;
+import com.xianyusmart.mapper.XianyuChatMessageMapper;
 import com.xianyusmart.service.AccountService;
 import com.xianyusmart.service.AutoReplyDelayService;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +42,9 @@ public class ChatMessageEventHumanInterventionListener {
     @Autowired
     private AccountService accountService;
 
+    @Autowired
+    private XianyuChatMessageMapper chatMessageMapper;
+
     /**
      * 处理聊天消息接收事件 - 检测卖家手动回复并触发人工接管
      *
@@ -76,8 +80,18 @@ public class ChatMessageEventHumanInterventionListener {
                 return;
             }
 
-            log.info("【账号{}】[HumanInterventionListener]检测到卖家手动回复，触发人工接管: xyGoodsId={}, sId={}, content={}",
-                    message.getXianyuAccountId(), message.getXyGoodsId(), message.getSId(), message.getMsgContent());
+            // WebSocket reconnect replays previously persisted outgoing messages. The save
+            // listener deduplicates storage, but listeners receive the event independently;
+            // replay must not restart a ten-minute human takeover window.
+            if (message.getPnmId() != null && !message.getPnmId().isBlank()
+                    && chatMessageMapper.findByPnmId(message.getXianyuAccountId(), message.getPnmId()) != null) {
+                log.info("【账号{}】卖家历史消息重放，跳过人工接管: pnmId={}",
+                        message.getXianyuAccountId(), message.getPnmId());
+                return;
+            }
+
+            log.info("【账号{}】[HumanInterventionListener]检测到新卖家手动回复，触发人工接管: xyGoodsId={}, sId={}, pnmId={}",
+                    message.getXianyuAccountId(), message.getXyGoodsId(), message.getSId(), message.getPnmId());
 
             // 4. 触发人工接管（内部会检查人工干预开关、标记接管、取消待执行延时任务）
             autoReplyDelayService.recordSellerManualReply(

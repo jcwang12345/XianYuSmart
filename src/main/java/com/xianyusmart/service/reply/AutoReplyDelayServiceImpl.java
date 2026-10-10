@@ -52,6 +52,11 @@ import java.util.concurrent.*;
 @Slf4j
 @Service
 public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
+    private final Object[] submissionGates = java.util.stream.IntStream.range(0, 128)
+            .mapToObj(ignored -> new Object()).toArray();
     
     @Autowired
     private AutoReplyService autoReplyService;
@@ -77,6 +82,14 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
     @Autowired
     @Qualifier("taskExecutor")
     private Executor taskExecutor;
+
+    private org.springframework.transaction.support.TransactionTemplate submissionTransaction;
+
+    @Autowired
+    public void setSubmissionTransactionManager(org.springframework.transaction.PlatformTransactionManager manager) {
+        submissionTransaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+        submissionTransaction.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    }
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -136,6 +149,18 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
             log.warn("消息数据无效，无法提交延时任务");
             return;
         }
+        synchronized (submissionGate(messageData.getXianyuAccountId(), messageData.getSId())) {
+            accountAutomationPolicy.guarded(messageData.getXianyuAccountId(),
+                    com.xianyusmart.service.AccountAutomationPolicy.Action.REPLY,
+                    () -> { submitDelayTaskLocked(messageData); return null; });
+        }
+    }
+
+    private Object submissionGate(Long accountId, String sessionId) {
+        return submissionGates[Math.floorMod(java.util.Objects.hash(accountId, sessionId), submissionGates.length)];
+    }
+
+    private void submitDelayTaskLocked(ChatMessageData messageData) {
         
         Long accountId = messageData.getXianyuAccountId();
         // A replay must not cancel the pending reply before discovering its duplicate key.
@@ -155,29 +180,41 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
         int delaySeconds = configProvider.getDelaySeconds(accountId, messageData.getXyGoodsId());
         log.info("【账号{}】提交延时回复任务: sId={}, delay={}s", accountId, sId, delaySeconds);
         
-        // 取消该会话之前的延时任务（买家连续发消息时重新计时）
-        cancelDelayTask(accountId, sId);
-        
-        // 追加消息到待处理列表
-        pendingMessages.compute(taskKey, (key, existingList) -> {
-            if (existingList == null) existingList = new ArrayList<>();
-            existingList.add(messageData);
-            return existingList;
+        List<ChatMessageData> messageList = new ArrayList<>(pendingMessages.getOrDefault(taskKey, List.of()));
+        messageList.add(messageData);
+        if (submissionTransaction == null) throw new IllegalStateException("Reply transaction manager unavailable");
+        // Commit the replacement before cancelling its predecessor's timer. A failed insert or
+        // cancellation rolls back both changes and leaves the original task available.
+        Long recordId = submissionTransaction.execute(status -> {
+            Long id = persistTask(messageList, delaySeconds);
+            autoReplyRecordMapper.cancelPendingBySessionExcept(accountId, sId, id);
+            return id;
         });
-        
-        List<ChatMessageData> messageList = new ArrayList<>(pendingMessages.get(taskKey));
-        Long recordId = persistTask(messageList, delaySeconds);
-
-        // 提交新的延时任务
-        ScheduledFuture<?> future = scheduler.schedule(
-                () -> dispatchTask(recordId, messageList), delaySeconds, TimeUnit.SECONDS);
-        
-        pendingTasks.put(taskKey, future);
+        ScheduledFuture<?> previous = pendingTasks.remove(taskKey);
+        if (previous != null && !previous.isDone()) previous.cancel(false);
+        pendingMessages.put(taskKey, messageList);
+        try {
+            ScheduledFuture<?> future = scheduler.schedule(
+                    () -> dispatchTask(recordId, messageList), delaySeconds, TimeUnit.SECONDS);
+            pendingTasks.put(taskKey, future);
+        } catch (RuntimeException failure) {
+            // The committed state=0 record is recovered by recoverDueTasks; never lose it
+            // because the in-memory scheduler rejects a task.
+            log.warn("延时回复调度失败，等待持久任务恢复: accountId={}, recordId={}, failureType={}",
+                    accountId, recordId, failure.getClass().getSimpleName());
+            throw failure;
+        }
     }
     
     @Override
     public void cancelDelayTask(Long accountId, String sId) {
         if (accountId == null || sId == null) return;
+        synchronized (submissionGate(accountId, sId)) {
+            cancelDelayTaskLocked(accountId, sId);
+        }
+    }
+
+    private void cancelDelayTaskLocked(Long accountId, String sId) {
         String taskKey = buildTaskKey(accountId, sId);
         ScheduledFuture<?> future = pendingTasks.remove(taskKey);
         if (future != null && !future.isDone()) {
@@ -221,8 +258,10 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
         takeoverManager.takeover(accountId, xyGoodsId, sId, minutes);
 
         // 立即取消该会话的延时任务和待处理消息
-        cancelDelayTask(accountId, sId);
-        pendingMessages.remove(buildTaskKey(accountId, sId));
+        synchronized (submissionGate(accountId, sId)) {
+            cancelDelayTaskLocked(accountId, sId);
+            pendingMessages.remove(buildTaskKey(accountId, sId));
+        }
 
         log.info("【账号{}】卖家手动回复，人工接管: sId={}, xyGoodsId={}, {}分钟后恢复", accountId, sId, xyGoodsId, minutes);
     }
@@ -278,8 +317,12 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
         }
         ChatMessageData lastMessage = messages.getLast();
         String taskKey = buildTaskKey(lastMessage.getXianyuAccountId(), lastMessage.getSId());
-        pendingTasks.remove(taskKey);
-        pendingMessages.remove(taskKey);
+        synchronized (submissionGate(lastMessage.getXianyuAccountId(), lastMessage.getSId())) {
+            if (pendingMessages.get(taskKey) == messages) {
+                pendingTasks.remove(taskKey);
+                pendingMessages.remove(taskKey);
+            }
+        }
         taskExecutor.execute(() -> {
             String token=java.util.UUID.randomUUID().toString();
             if (autoReplyRecordMapper.claim(recordId, token, 600) == 1)
@@ -288,6 +331,18 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
     }
 
     private void executeClaimedTask(Long recordId, List<ChatMessageData> messages, String token) {
+        Long accountId=messages.getLast().getXianyuAccountId();
+        try {
+            accountAutomationPolicy.guarded(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REPLY,
+                    () -> { executeClaimedTaskAllowed(recordId,messages,token); return null; });
+        } catch(com.xianyusmart.exception.BusinessException blocked) {
+            if(!accountAutomationPolicy.allows(accountId,com.xianyusmart.service.AccountAutomationPolicy.Action.REPLY))
+                autoReplyRecordMapper.cancelById(recordId);
+            else throw blocked;
+        }
+    }
+
+    private void executeClaimedTaskAllowed(Long recordId, List<ChatMessageData> messages, String token) {
         ChatMessageData lastMessage = messages.getLast();
         Long accountId = lastMessage.getXianyuAccountId();
         String sId = lastMessage.getSId();
@@ -299,8 +354,13 @@ public class AutoReplyDelayServiceImpl implements AutoReplyDelayService {
                 return;
             }
             TenantContext.set(account.getTenantId());
-            if (takeoverManager.isTakenOver(accountId, sId) || aiHandoffService.hasPending(accountId, sId)) {
+            if (takeoverManager.isTakenOver(accountId, sId)) {
                 autoReplyRecordMapper.cancelById(recordId);
+                return;
+            }
+            if (aiHandoffService.hasPending(accountId, sId)) {
+                autoReplyRecordMapper.pauseForActiveHandoff(recordId);
+                log.info("【账号{}】会话仍有未处理转人工任务，自动回复暂停: recordId={}", accountId, recordId);
                 return;
             }
             // 延时期间可能暂停买家自动化，执行前再次校验可避免已排队回复继续发送。

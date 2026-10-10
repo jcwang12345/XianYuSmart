@@ -30,6 +30,7 @@ public class ItemDetailSnapshotService {
     public void save(Long accountId, String itemId, String detail,
                      List<XianyuGoodsSku> skus,
                      List<XianyuGoodsSkuProperty> properties) {
+        ProductSyncCommitGuard.requireAuthority();
         if (!goodsInfoService.updateDetailInfo(accountId, itemId, detail)) {
             throw new IllegalStateException("商品详情快照写入失败");
         }

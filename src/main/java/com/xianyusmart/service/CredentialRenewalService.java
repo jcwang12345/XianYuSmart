@@ -21,6 +21,11 @@ import java.util.concurrent.Executor;
 @Service
 @Slf4j
 public class CredentialRenewalService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.xianyusmart.service.AccountAutomationPolicy accountAutomationPolicy;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
     private static final long REMINDER_MS = 6 * 60 * 60 * 1000L;
     private static final long RENEWAL_WINDOW_MS = 30 * 60 * 1000L;
     private static final int MAX_GENERATIONS = 10;
@@ -49,6 +54,7 @@ public class CredentialRenewalService {
     }
     /** Called by the existing expiry escalation only, not every network disconnect. */
     public void request(Long accountId) {
+        if(!accountAutomationPolicy.allows(accountId,AccountAutomationPolicy.Action.REFRESH))return;
         if (accountId == null || !running.add(accountId)) return;
         Long tenant = TenantContext.get();
         try {
@@ -85,6 +91,14 @@ public class CredentialRenewalService {
         } catch (RuntimeException e) { running.remove(accountId); throw e; }
     }
     private void generate(Flow flow) {
+        if(!accountAutomationPolicy.allows(flow.account,AccountAutomationPolicy.Action.REFRESH)) {
+            images.remove(flow.image);flow.terminal=true;return;
+        }
+        accountAutomationPolicy.guarded(flow.account,AccountAutomationPolicy.Action.REFRESH,
+                () -> { generateAllowed(flow);return null; });
+    }
+
+    private void generateAllowed(Flow flow) {
         images.remove(flow.image);
         flow.generation++;
         boolean canMail = email.getObject().isEmailConfigured() && email.getObject().isCookieExpireNotifyEnabled();
@@ -93,7 +107,7 @@ public class CredentialRenewalService {
             notice(flow,"CREDENTIAL_EXPIRED","需要重新扫码登录", "自动恢复未成功。未配置二维码接收渠道，请在账号管理中重新扫码；配置企业微信凭证失效通知或邮件后可直接接收二维码。",null);
             return;
         }
-        var result = qr.generateQRCode(flow.account);
+        var result = qr.generateRenewalQRCode(flow.account);
         // Share the actual local session deadline; never invent a guaranteed platform TTL.
         flow.expiresAt=result.getExpiresAt()==null ? 0 : Math.min(result.getExpiresAt(),flow.windowEndsAt);
         if (!result.isSuccess() || result.getSessionId()==null || flow.expiresAt <= System.currentTimeMillis()) {
@@ -117,6 +131,7 @@ public class CredentialRenewalService {
     }
     @Scheduled(fixedDelay=10000, initialDelay=30000)
     public void checkFlows() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         for (Flow flow : flows.values()) {
             if (flow.terminal || flow.nextCheck > System.currentTimeMillis() || !running.add(flow.account)) continue;
             try { executor.execute(() -> {
@@ -129,12 +144,21 @@ public class CredentialRenewalService {
     }
     @Scheduled(fixedDelay=60000, initialDelay=120000)
     public void remindExpiredAccounts() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         for(var account:accounts.selectExpiredCredentialAccounts()) {
             try { TenantContext.set(account.getTenantId());request(account.getId()); }
             finally { TenantContext.clear(); }
         }
     }
     private void check(Flow flow) {
+        if(!accountAutomationPolicy.allows(flow.account,AccountAutomationPolicy.Action.REFRESH)) {
+            images.remove(flow.image);flow.terminal=true;return;
+        }
+        accountAutomationPolicy.guarded(flow.account,AccountAutomationPolicy.Action.REFRESH,
+                () -> { checkAllowed(flow);return null; });
+    }
+
+    private void checkAllowed(Flow flow) {
         XianyuAccount account=accounts.selectById(flow.account);
         if(account==null || !Integer.valueOf(1).equals(account.getStatus())) { images.remove(flow.image);flow.terminal=true;return; }
         var status=qr.getSessionStatus(flow.session);

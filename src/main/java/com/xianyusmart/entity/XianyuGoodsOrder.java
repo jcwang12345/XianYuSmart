@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 public class XianyuGoodsOrder {
     private Integer externalAttemptStarted;
     private String platformTradeStatus;
+    private String refundStatus;
     private java.time.LocalDateTime platformStatusCheckedAt;
     
     private Long id;

@@ -35,14 +35,26 @@ public class OrderEngagementService {
     @Transactional
     public Admission beginInvite(Long tenantId, Long accountId, Long orderRecordId, String orderId,
                                  int messageIndex, String content) {
+        if (messageIndex < 0 || messageIndex >= 5) throw new IllegalArgumentException("邀评消息序号不合法");
+        return begin("REVIEW_INVITE", tenantId, accountId, orderRecordId, orderId,
+                ":" + messageIndex, "invite-" + tenantId + "-" + accountId + "-" + orderId + "-" + messageIndex, content);
+    }
+
+    @Transactional
+    public Admission beginAutoRate(Long tenantId, Long accountId, Long orderRecordId, String orderId, String content) {
+        return begin("AUTO_RATE", tenantId, accountId, orderRecordId, orderId,
+                "", "rate-" + tenantId + "-" + accountId + "-" + orderId, content);
+    }
+
+    private Admission begin(String type, Long tenantId, Long accountId, Long orderRecordId, String orderId,
+                            String suffix, String requestId, String content) {
         if (tenantId == null || accountId == null || orderId == null || orderId.isBlank()) {
             throw new IllegalArgumentException("邀评事件缺少租户、账号或订单");
         }
         // 账号行锁把日配额判断与事件创建串行化，多实例也不会突破账号上限。
         jdbcTemplate.queryForObject("SELECT id FROM xianyu_account WHERE tenant_id=? AND id=? FOR UPDATE",
                 Long.class, tenantId, accountId);
-        String eventKey = "REVIEW_INVITE:" + accountId + ":" + orderId + ":" + messageIndex;
-        String requestId = "invite-" + tenantId + "-" + accountId + "-" + orderId + "-" + messageIndex;
+        String eventKey = type + ":" + accountId + ":" + orderId + suffix;
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT id,status,attempt_count,next_retry_time FROM xianyu_order_engagement_event
                  WHERE tenant_id=? AND event_key=? FOR UPDATE
@@ -72,10 +84,10 @@ public class OrderEngagementService {
         }
         Integer used = jdbcTemplate.queryForObject("""
                 SELECT COUNT(*) FROM xianyu_order_engagement_event
-                 WHERE tenant_id=? AND xianyu_account_id=? AND event_type='REVIEW_INVITE'
+                 WHERE tenant_id=? AND xianyu_account_id=? AND event_type=?
                    AND status IN ('PROCESSING','SUCCESS','UNKNOWN','MANUAL_REQUIRED')
                    AND created_time>=CURRENT_DATE AND created_time<DATE_ADD(CURRENT_DATE,INTERVAL 1 DAY)
-                """, Integer.class, tenantId, accountId);
+                """, Integer.class, tenantId, accountId, type);
         if (used != null && used >= dailyLimit) {
             return new Admission(Decision.DAILY_LIMIT, null, requestId, 0);
         }
@@ -83,8 +95,8 @@ public class OrderEngagementService {
                 INSERT INTO xianyu_order_engagement_event
                 (tenant_id,xianyu_account_id,order_record_id,order_id,event_type,event_key,request_id,
                  status,attempt_count,content_sha256)
-                VALUES (?,?,?,?, 'REVIEW_INVITE',?,?, 'PROCESSING',1,?)
-                """, tenantId, accountId, orderRecordId, orderId, eventKey, requestId, sha256(content));
+                VALUES (?,?,?,?, ?,?,?, 'PROCESSING',1,?)
+                """, tenantId, accountId, orderRecordId, orderId, type, eventKey, requestId, sha256(content));
         Long eventId = jdbcTemplate.queryForObject("""
                 SELECT id FROM xianyu_order_engagement_event WHERE tenant_id=? AND event_key=?
                 """, Long.class, tenantId, eventKey);

@@ -21,13 +21,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 商品详情的统一只读获取链路。优先使用带令牌刷新的 MTop API，失败后才使用
- * 账号隔离的 Playwright 上下文打开商品页并捕获同一个详情接口的响应。
+ * 商品详情的统一只读获取链路。默认仅使用带令牌刷新的 MTop API；明确验证挑战、
+ * 过期或忙碌时立即停止。仅显式启用页面兜底后，普通未知失败才使用账号隔离页面
+ * 捕获同一个详情接口。
  *
  * <p>浏览器兜底只读取页面和网络响应，不点击、提交或修改任何平台数据。</p>
  */
@@ -39,15 +41,22 @@ public class PlatformItemDetailFetchService {
     private static final String ITEM_URL = "https://www.goofish.com/item?id=";
     private static final int MIN_FALLBACK_TIMEOUT_MS = 5_000;
     private static final int MAX_FALLBACK_TIMEOUT_MS = 120_000;
+    // Metadata only, never a navigation allowlist or a reconstructed verification link.
+    private static final Set<String> RECOVERY_HOSTS = Set.of("www.goofish.com",
+            "passport.goofish.com", "h5api.m.goofish.com", "login.goofish.com", "login.taobao.com");
+    private static final Set<String> RECOVERY_STATIC_PATHS = Set.of("/", "/_____tmd_____/punish",
+            "/newlogin/login.do");
 
     private final PlaywrightManager playwrightManager;
     private final XianyuApiCallUtils apiCallUtils;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ItemVerificationEntryService verificationEntries;
     // 锁按已授权账号长期复用。不要在 unlock 后移除，否则新请求可能创建第二把锁并并行进入。
     private final ConcurrentMap<Long, ReentrantLock> accountLocks = new ConcurrentHashMap<>();
 
-    @Value("${xianyu.item-detail.browser-fallback-enabled:true}")
-    private boolean browserFallbackEnabled = true;
+    @Value("${xianyu.item-detail.browser-fallback-enabled:false}")
+    private boolean browserFallbackEnabled = false;
 
     @Value("${xianyu.item-detail.browser-fallback-timeout-ms:45000}")
     private int browserFallbackTimeoutMs = 45000;
@@ -73,33 +82,38 @@ public class PlatformItemDetailFetchService {
             apiResult = apiCallUtils.callApiWithRetry(
                     accountId, DETAIL_API, Map.of("itemId", itemId), cookieText);
         } catch (Exception e) {
-            log.warn("商品详情 API 调用异常，转只读页面兜底: accountId={}, itemId={}, errorType={}",
+            log.warn("商品详情 API 调用异常: accountId={}, itemId={}, errorType={}",
                     accountId, itemId, e.getClass().getSimpleName());
             apiResult = new XianyuApiCallUtils.ApiCallResult(
                     false, null, "平台详情接口调用异常", false);
+        }
+        if (verificationEntries != null) {
+            verificationEntries.observe(accountId, itemId, apiResult == null ? null : apiResult.getResponse());
         }
         if (apiResult != null && apiResult.isSuccess()) {
             String normalized = normalizeAndValidate(apiResult.getResponse(), itemId);
             if (normalized != null) {
                 return FetchResult.success(Source.API, normalized);
             }
-            log.warn("商品详情 API 返回的商品身份不匹配，转只读页面兜底: accountId={}, itemId={}",
+            log.warn("商品详情 API 返回的商品身份不匹配: accountId={}, itemId={}",
                     accountId, itemId);
-        } else {
-            log.warn("商品详情 API 失败，转只读页面兜底: accountId={}, itemId={}, reason={}",
-                    accountId, itemId, safeApiMessage(apiResult));
         }
-
+        RecoveryInfo recovery = recoveryInfo(apiResult);
+        if (recovery.kind() != FailureKind.UNKNOWN) {
+            // A challenge is a stop condition, not an invitation to try another surface/API.
+            log.warn("商品详情请求已阻断: accountId={}, itemId={}, kind={}, code={}, entryPresence={}, officialHost={}, staticPath={}",
+                    accountId, itemId, recovery.kind(), recovery.platformCode(), recovery.entryPresence(),
+                    recovery.officialHost(), recovery.staticPath());
+            return classifiedFailure(recovery);
+        }
         if (!browserFallbackEnabled) {
-            return failureFromApi(apiResult, "只读页面兜底已关闭");
+            log.warn("商品详情 API 未取得可验证响应，按接口模式停止: accountId={}, itemId={}",
+                    accountId, itemId);
+            return FetchResult.unavailable(safeApiMessage(apiResult));
         }
-
-        FetchResult browserResult = fetchFromPage(accountId, itemId, cookieText);
-        if (browserResult.status() == Status.UNAVAILABLE && isVerificationFailure(apiResult)) {
-            return FetchResult.verificationRequired(
-                    "账号登录状态失效，请前往连接管理完成扫码或账号验证");
-        }
-        return browserResult;
+        log.warn("商品详情 API 未取得可验证响应，转显式启用的只读页面兜底: accountId={}, itemId={}",
+                accountId, itemId);
+        return fetchFromPage(accountId, itemId, cookieText);
     }
 
     private FetchResult fetchFromPage(Long accountId, String itemId, String cookieText) {
@@ -123,7 +137,7 @@ public class PlatformItemDetailFetchService {
                                         .setTimeout(effectiveTimeoutMs)));
             } catch (PlaywrightException e) {
                 if (pageRequiresVerification(page)) {
-                    return FetchResult.verificationRequired("平台要求重新扫码或完成账号验证");
+                    return FetchResult.verificationRequired("商品页要求登录或验证，请仅按官方页面提示手工完成；未证明整个账号凭证过期");
                 }
                 return FetchResult.unavailable("商品页未捕获到有效详情响应: " + safeMessage(e));
             }
@@ -131,10 +145,17 @@ public class PlatformItemDetailFetchService {
             if (response == null || !response.ok()) {
                 return FetchResult.unavailable("商品页详情响应不可用");
             }
-            String normalized = normalizeAndValidate(response.text(), itemId);
+            String responseText = response.text();
+            if (verificationEntries != null) verificationEntries.observe(accountId, itemId, responseText);
+            RecoveryInfo recovery = recoveryInfo(new XianyuApiCallUtils.ApiCallResult(
+                    false, responseText, null, false));
+            if (recovery.kind() != FailureKind.UNKNOWN) {
+                return classifiedFailure(recovery);
+            }
+            String normalized = normalizeAndValidate(responseText, itemId);
             if (normalized == null) {
                 if (pageRequiresVerification(page)) {
-                    return FetchResult.verificationRequired("平台要求重新扫码或完成账号验证");
+                    return FetchResult.verificationRequired("商品页要求登录或验证，请仅按官方页面提示手工完成；未证明整个账号凭证过期");
                 }
                 return FetchResult.unavailable("商品页返回的详情与目标商品不一致");
             }
@@ -219,24 +240,69 @@ public class PlatformItemDetailFetchService {
         return value;
     }
 
-    private FetchResult failureFromApi(XianyuApiCallUtils.ApiCallResult apiResult, String fallbackMessage) {
-        if (isVerificationFailure(apiResult)) {
-            return FetchResult.verificationRequired(safeApiMessage(apiResult));
+    RecoveryInfo recoveryInfo(XianyuApiCallUtils.ApiCallResult result) {
+        JsonNode root = null;
+        if (result != null && result.getResponse() != null) {
+            try { root = objectMapper.readTree(unwrapJsonp(result.getResponse().trim())); }
+            catch (Exception ignored) { /* Raw failure content must not enter logs/results. */ }
         }
-        String message = safeApiMessage(apiResult);
-        return FetchResult.unavailable(message == null || message.isBlank() ? fallbackMessage : message);
+        String ret = "";
+        if (root != null && root.path("ret").isArray() && !root.path("ret").isEmpty()
+                && root.path("ret").get(0).isTextual()) {
+            ret = root.path("ret").get(0).asText();
+        } else if (result != null && result.getErrorMessage() != null) {
+            ret = result.getErrorMessage();
+        }
+        String code = ret.split("::", 2)[0].trim();
+        FailureKind kind = switch (code) {
+            case "FAIL_SYS_USER_VALIDATE" -> FailureKind.REQUEST_VERIFICATION;
+            case "FAIL_SYS_TOKEN_EXOIRED", "FAIL_SYS_TOKEN_EXPIRED", "FAIL_SYS_SESSION_EXPIRED" -> FailureKind.TOKEN_EXPIRED;
+            case "FAIL_SYS_TRAFFIC_LIMIT", "FAIL_SYS_REQUEST_BUSY" -> FailureKind.PLATFORM_BUSY;
+            default -> result != null && result.isTokenExpired() ? FailureKind.TOKEN_EXPIRED : FailureKind.UNKNOWN;
+        };
+        String safeCode = switch (code) {
+            case "FAIL_SYS_USER_VALIDATE", "FAIL_SYS_TOKEN_EXOIRED", "FAIL_SYS_TOKEN_EXPIRED",
+                    "FAIL_SYS_SESSION_EXPIRED", "FAIL_SYS_TRAFFIC_LIMIT", "FAIL_SYS_REQUEST_BUSY" -> code;
+            default -> null;
+        };
+        EntryPresence presence = root == null ? EntryPresence.UNKNOWN : EntryPresence.ABSENT;
+        String host = null, path = null;
+        JsonNode entry = root == null ? null : root.path("data").get("url");
+        if (entry != null && !entry.isNull() && (!entry.isTextual() || !entry.asText().isBlank())) {
+            presence = EntryPresence.PRESENT;
+            if (entry.isTextual() && entry.asText().length() <= 8192) {
+                try {
+                    URI uri = URI.create(entry.asText());
+                    String candidate = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+                    if ("https".equalsIgnoreCase(uri.getScheme()) && uri.getRawUserInfo() == null
+                            && (uri.getPort() == -1 || uri.getPort() == 443) && RECOVERY_HOSTS.contains(candidate)) {
+                        host = candidate;
+                        if (RECOVERY_STATIC_PATHS.contains(uri.getRawPath())) path = uri.getRawPath();
+                    }
+                } catch (IllegalArgumentException ignored) { /* Keep presence only. */ }
+            }
+        }
+        return new RecoveryInfo(kind, safeCode, presence, host, path);
     }
 
-    private boolean isVerificationFailure(XianyuApiCallUtils.ApiCallResult apiResult) {
-        if (apiResult == null) {
-            return false;
+    private FetchResult classifiedFailure(RecoveryInfo recovery) {
+        String message = switch (recovery.kind()) {
+            case REQUEST_VERIFICATION -> "本次商品详情请求需要平台安全验证（FAIL_SYS_USER_VALIDATE），未证明整个账号凭证过期。请仅按官方页面提示手工完成；不要反复扫码";
+            case TOKEN_EXPIRED -> "商品详情接口令牌或会话已明确过期，请在连接管理按正常流程更新当前账号凭证";
+            case PLATFORM_BUSY -> "平台商品详情请求忙碌，请稍后重试";
+            case UNKNOWN -> "商品详情接口暂不可用，失败原因尚未确认";
+        };
+        if (recovery.kind() == FailureKind.REQUEST_VERIFICATION) {
+            message += switch (recovery.entryPresence()) {
+                case UNKNOWN -> "；验证入口存在性未知";
+                case ABSENT -> "；本次响应未提供验证入口";
+                case PRESENT -> "；本次响应提供验证入口，完整链接未公开";
+            };
+            if (recovery.officialHost() != null) message += "；官方host=" + recovery.officialHost();
+            if (recovery.staticPath() != null) message += "；静态path=" + recovery.staticPath();
         }
-        String message = apiResult.getErrorMessage() == null ? "" : apiResult.getErrorMessage();
-        String response = apiResult.getResponse() == null ? "" : apiResult.getResponse();
-        return apiResult.isTokenExpired()
-                || message.contains("验证") || message.contains("登录") || message.contains("令牌")
-                || response.contains("FAIL_SYS_USER_VALIDATE")
-                || response.contains("FAIL_SYS_SESSION_EXPIRED");
+        return new FetchResult(recovery.kind() == FailureKind.PLATFORM_BUSY ? Status.BUSY
+                : Status.VERIFICATION_REQUIRED, null, null, message, recovery);
     }
 
     private boolean pageRequiresVerification(Page page) {
@@ -282,12 +348,8 @@ public class PlatformItemDetailFetchService {
         if (apiResult == null) {
             return "平台详情接口未返回结果";
         }
-        String message = apiResult.getErrorMessage();
-        if (message == null || message.isBlank()) {
-            return "平台详情接口暂不可用";
-        }
-        String safe = redactSecrets(message.lines().findFirst().orElse(message));
-        return safe.length() <= 240 ? safe : safe.substring(0, 240);
+        // Unknown upstream text can contain signed URLs or unlabelled credentials.
+        return "平台详情接口暂不可用，失败原因尚未确认";
     }
 
     private String redactSecrets(String value) {
@@ -295,8 +357,9 @@ public class PlatformItemDetailFetchService {
             return null;
         }
         return value
+                .replaceAll("(?i)https?://[^\\s\"<>]+", "[URL_OMITTED]")
                 .replaceAll("(?i)(authorization\\s*[:=]\\s*)([^\\s,;]+)", "$1[REDACTED]")
-                .replaceAll("(?i)((?:cookie|token|access_token|_m_h5_tk|_m_h5_tk_enc|sid|sign)"
+                .replaceAll("(?i)((?:cookie|token|access_token|_m_h5_tk|_m_h5_tk_enc|sid|sign|ticket|session_id)"
                                 + "\\s*[:=]\\s*)([^\\s,;&]+)",
                         "$1[REDACTED]");
     }
@@ -313,7 +376,16 @@ public class PlatformItemDetailFetchService {
         UNAVAILABLE
     }
 
-    public record FetchResult(Status status, Source source, String response, String errorMessage) {
+    public enum FailureKind { REQUEST_VERIFICATION, TOKEN_EXPIRED, PLATFORM_BUSY, UNKNOWN }
+    public enum EntryPresence { UNKNOWN, ABSENT, PRESENT }
+    public record RecoveryInfo(FailureKind kind, String platformCode, EntryPresence entryPresence,
+                               String officialHost, String staticPath) { }
+
+    public record FetchResult(Status status, Source source, String response, String errorMessage,
+                              RecoveryInfo recoveryInfo) {
+        public FetchResult(Status status, Source source, String response, String errorMessage) {
+            this(status, source, response, errorMessage, null);
+        }
         static FetchResult success(Source source, String response) {
             return new FetchResult(Status.SUCCESS, source, response, null);
         }

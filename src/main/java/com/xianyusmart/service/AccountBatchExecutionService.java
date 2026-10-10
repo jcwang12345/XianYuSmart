@@ -4,6 +4,7 @@ import com.xianyusmart.context.TenantContext;
 import com.xianyusmart.entity.XianyuAccount;
 import com.xianyusmart.mapper.XianyuAccountMapper;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -19,19 +20,23 @@ public class AccountBatchExecutionService {
     private final XianyuAccountMapper accounts;
     private final WebSocketService webSocket;
     private final CredentialRenewalService renewal;
+    private final ShopProfileSyncService profileSync;
     private final boolean qaMockEnabled;
     private final long qaTenantId;
     private final Set<Long> qaAccountIds;
 
+    @Autowired
     public AccountBatchExecutionService(XianyuAccountMapper accounts,
                                         WebSocketService webSocket,
                                         CredentialRenewalService renewal,
+                                        ShopProfileSyncService profileSync,
                                         @Value("${app.account-batch.qa-mock.enabled:false}") boolean qaMockEnabled,
                                         @Value("${app.account-batch.qa-mock.tenant-id:-1}") long qaTenantId,
                                         @Value("${app.account-batch.qa-mock.account-ids:}") String qaAccountIds) {
         this.accounts = accounts;
         this.webSocket = webSocket;
         this.renewal = renewal;
+        this.profileSync = profileSync;
         this.qaMockEnabled = qaMockEnabled;
         this.qaTenantId = qaTenantId;
         this.qaAccountIds = Arrays.stream(qaAccountIds.split(","))
@@ -39,11 +44,24 @@ public class AccountBatchExecutionService {
                 .map(Long::valueOf).collect(Collectors.toUnmodifiableSet());
     }
 
+    AccountBatchExecutionService(XianyuAccountMapper accounts,
+                                 WebSocketService webSocket,
+                                 CredentialRenewalService renewal,
+                                 boolean qaMockEnabled,
+                                 long qaTenantId,
+                                 String qaAccountIds) {
+        this(accounts, webSocket, renewal, null, qaMockEnabled, qaTenantId, qaAccountIds);
+    }
+
     public boolean isQaEligible(Long tenantId, Long accountId) {
         return qaMockEnabled && tenantId != null && tenantId == qaTenantId && qaAccountIds.contains(accountId);
     }
 
     public Map<String, Object> execute(String operation, Long accountId) {
+        return execute(operation, accountId, "account-batch-" + operation.toLowerCase() + "-" + accountId);
+    }
+
+    public Map<String, Object> execute(String operation, Long accountId, String requestId) {
         XianyuAccount account = accounts.selectById(accountId);
         if (account == null) throw new IllegalArgumentException("账号不存在或无权访问");
         boolean qaMock = isQaEligible(TenantContext.get(), accountId);
@@ -56,6 +74,7 @@ public class AccountBatchExecutionService {
             case "ENABLE" -> enable(account, qaMock, result);
             case "DISABLE" -> disable(account, qaMock, result);
             case "SYNC" -> sync(account, qaMock, result);
+            case "PROFILE_SYNC" -> profileSync(account, qaMock, requestId, result);
             case "RENEW" -> renew(account, qaMock, result);
             default -> throw new IllegalArgumentException("不支持的账号批量操作");
         }
@@ -98,5 +117,22 @@ public class AccountBatchExecutionService {
         result.put("outcome", "RENEWAL_PREPARATION_ACCEPTED");
         result.put("delivery", qaMock ? "QA_FIXTURE_ONLY" : "CONFIGURED_PRIVATE_CHANNEL");
         result.put("recoveryHint", qaMock ? "隔离 QA 不生成真实二维码" : "二维码将在企业微信或邮件私密通道送达；需逐账号扫码确认");
+    }
+
+    private void profileSync(XianyuAccount account, boolean qaMock, String requestId, Map<String, Object> result) {
+        if (Integer.valueOf(0).equals(account.getStatus())) throw new IllegalStateException("账号已停用，无法同步店铺画像");
+        if (qaMock) {
+            result.put("syncScope", "SHOP_PROFILE");
+            result.put("outcome", "QA_FIXTURE_ONLY");
+            return;
+        }
+        if (profileSync == null) throw new IllegalStateException("店铺画像同步服务不可用");
+        Map<String, Object> syncResult = profileSync.runBlocking(account.getId(), requestId, "BATCH");
+        result.put("syncScope", "SHOP_PROFILE");
+        result.put("profileSync", syncResult);
+        if (!"SUCCEEDED".equals(syncResult.get("status"))) {
+            throw new IllegalStateException("店铺画像同步未成功：" + syncResult.getOrDefault("errorMessage", syncResult.get("status")));
+        }
+        result.put("outcome", "PROFILE_SYNCED");
     }
 }

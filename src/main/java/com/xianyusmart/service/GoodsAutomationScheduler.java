@@ -19,6 +19,8 @@ public class GoodsAutomationScheduler {
     private final AtomicBoolean polishing = new AtomicBoolean(false);
     private final AtomicBoolean followingUp = new AtomicBoolean(false);
     private final AtomicBoolean retryingDeliveryMessages = new AtomicBoolean(false);
+    @org.springframework.beans.factory.annotation.Autowired
+    private BackgroundPlatformActivityPolicy backgroundPlatformActivityPolicy = new BackgroundPlatformActivityPolicy();
 
     public GoodsAutomationScheduler(GoodsAutomationService goodsAutomationService,
                                     BuyerMessageService buyerMessageService) {
@@ -28,6 +30,7 @@ public class GoodsAutomationScheduler {
 
     @Scheduled(fixedDelayString = "${app.automation.rate-delay-ms:60000}", initialDelayString = "${app.automation.initial-delay-ms:60000}")
     public void rateEnabledGoods() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         if (!rating.compareAndSet(false, true)) {
             return;
         }
@@ -42,6 +45,7 @@ public class GoodsAutomationScheduler {
 
     @Scheduled(fixedDelayString = "${app.automation.polish-delay-ms:60000}", initialDelayString = "${app.automation.initial-delay-ms:60000}")
     public void polishEnabledGoods() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         if (!polishing.compareAndSet(false, true)) {
             return;
         }
@@ -56,6 +60,7 @@ public class GoodsAutomationScheduler {
 
     @Scheduled(fixedDelayString = "${app.automation.receipt-follow-up-delay-ms:5000}", initialDelayString = "${app.automation.initial-delay-ms:60000}")
     public void sendReceiptFollowUps() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         if (!followingUp.compareAndSet(false, true)) {
             return;
         }
@@ -70,6 +75,7 @@ public class GoodsAutomationScheduler {
 
     @Scheduled(fixedDelayString = "${app.automation.delivery-message-retry-delay-ms:15000}", initialDelayString = "${app.automation.initial-delay-ms:60000}")
     public void retryDeliveryMessages() {
+        if (!backgroundPlatformActivityPolicy.enabled()) return;
         if (!retryingDeliveryMessages.compareAndSet(false, true)) {
             return;
         }
